@@ -22,7 +22,7 @@ gonetdicom
 
 ## Status
 
-**Phase 1** — PDU encode/decode, Association SCU, C-ECHO SCU.
+**Phase 2 (partial)** — C-ECHO + C-STORE SCU/SCP. Dataset bytes are caller-encoded (godicom `EncodeDataset` still pending).
 
 ## Install
 
@@ -68,13 +68,49 @@ func main() {
 }
 ```
 
+## C-STORE SCU
+
+Propose a storage presentation context, then send already-encoded dataset bytes:
+
+```go
+cfg := ae.Config{
+	AETitle: "STORESCU",
+	PresentationContexts: []ae.PresentationContext{{
+		ID: 1,
+		AbstractSyntax: "1.2.840.10008.5.1.4.1.1.7", // Secondary Capture
+		TransferSyntaxes: []string{"1.2.840.10008.1.2"},
+	}},
+}
+assoc, err := ae.Dial(ctx, cfg, "pacs.example:11112", "ANY-SCP")
+// ...
+res, err := assoc.CStore(ctx, ae.StoreRequest{
+	AffectedSOPClassUID:    "1.2.840.10008.5.1.4.1.1.7",
+	AffectedSOPInstanceUID: "1.2.3.4.5",
+	Dataset:                encodedDataset, // Implicit VR LE (or negotiated TS)
+})
+```
+
+## C-STORE SCP
+
+```go
+ln, _ := net.Listen("tcp", ":11112")
+_ = ae.Serve(ctx, ln, ae.ServerConfig{
+	AETitle:                  "STORESCP",
+	AcceptedAbstractSyntaxes: []string{"1.2.840.10008.5.1.4.1.1.7"},
+	OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
+		// persist req.Dataset
+		return 0x0000
+	},
+})
+```
+
 ## Packages
 
 | Package | Role |
 |---------|------|
-| `pdu` | A-ASSOCIATE / P-DATA-TF / A-RELEASE / A-ABORT |
-| `dimse` | C-ECHO command sets (Implicit VR LE) |
-| `ae` | Association SCU + `CEcho` |
+| `pdu` | A-ASSOCIATE / P-DATA-TF / A-RELEASE / A-ABORT + PDV fragmentation |
+| `dimse` | C-ECHO / C-STORE command sets (Implicit VR LE) |
+| `ae` | Association SCU (`CEcho`, `CStore`) + SCP (`Serve`) |
 
 ## Roadmap (working plan)
 
@@ -89,9 +125,10 @@ func main() {
 - [x] C-ECHO SCU (smoke path)
 
 ### Phase 2 — Core DIMSE services
-- C-STORE SCU/SCP
-- C-FIND SCU (Patient/Study root)
-- C-MOVE / C-GET as needed
+- [x] C-STORE SCU/SCP (encoded dataset bytes)
+- [ ] godicom `EncodeDataset` integration
+- [ ] C-FIND SCU (Patient/Study root)
+- [ ] C-MOVE / C-GET as needed
 
 ### Phase 3 — DICOMweb MVP
 - WADO-RS Retrieve Instance (`application/dicom`) + Metadata (`dicom+json`)
@@ -106,7 +143,7 @@ func main() {
 
 ```
 gonetdicom/
-├── ae/                # Association SCU
+├── ae/                # Association SCU / SCP
 ├── dimse/             # DIMSE command sets
 ├── pdu/               # Upper Layer PDUs
 ├── pynetdicom/        # submodule → pydicom/pynetdicom

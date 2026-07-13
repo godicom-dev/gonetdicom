@@ -28,6 +28,13 @@ var ErrAborted = errors.New("ae: association aborted")
 // ErrNoContext is returned when no accepted presentation context is available.
 var ErrNoContext = errors.New("ae: no accepted presentation context")
 
+// PresentationContext proposes an abstract syntax and transfer syntaxes.
+type PresentationContext struct {
+	ID               byte
+	AbstractSyntax   string
+	TransferSyntaxes []string
+}
+
 // Config configures an Application Entity for outbound associations.
 type Config struct {
 	AETitle                   string
@@ -35,6 +42,8 @@ type Config struct {
 	ImplementationClassUID    string
 	ImplementationVersionName string
 	DialTimeout               time.Duration
+	// PresentationContexts to propose. If empty, Verification only is proposed.
+	PresentationContexts []PresentationContext
 }
 
 func (c Config) withDefaults() Config {
@@ -53,19 +62,34 @@ func (c Config) withDefaults() Config {
 	if c.DialTimeout == 0 {
 		c.DialTimeout = 30 * time.Second
 	}
+	if len(c.PresentationContexts) == 0 {
+		c.PresentationContexts = []PresentationContext{{
+			ID:               1,
+			AbstractSyntax:   pdu.VerificationSOPClass,
+			TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian},
+		}}
+	}
 	return c
+}
+
+// AcceptedContext is a presentation context accepted by the peer.
+type AcceptedContext struct {
+	ID             byte
+	AbstractSyntax string
+	TransferSyntax string
 }
 
 // Association is an established DIMSE association (SCU role).
 type Association struct {
-	conn   net.Conn
-	cfg    Config
-	called string
-	ac     *pdu.AAssociateAC
-	nextID uint16
+	conn     net.Conn
+	cfg      Config
+	called   string
+	peerMax  uint32
+	contexts []AcceptedContext
+	nextID   uint16
 }
 
-// Dial associates with addr (host:port) as an SCU requesting Verification.
+// Dial associates with addr (host:port) as an SCU.
 func Dial(ctx context.Context, cfg Config, addr, calledAE string) (*Association, error) {
 	cfg = cfg.withDefaults()
 	if calledAE == "" {
@@ -92,7 +116,6 @@ func Dial(ctx context.Context, cfg Config, addr, calledAE string) (*Association,
 }
 
 // AcceptFromConn completes association as SCU using an already-connected conn.
-// Useful for tests (net.Pipe) and custom dialers.
 func AcceptFromConn(ctx context.Context, cfg Config, conn net.Conn, calledAE string) (*Association, error) {
 	cfg = cfg.withDefaults()
 	if calledAE == "" {
@@ -111,15 +134,30 @@ func AcceptFromConn(ctx context.Context, cfg Config, conn net.Conn, calledAE str
 }
 
 func (a *Association) negotiate(ctx context.Context) error {
+	pcs := make([]pdu.PresentationContextRQ, 0, len(a.cfg.PresentationContexts))
+	byID := make(map[byte]PresentationContext, len(a.cfg.PresentationContexts))
+	for i, pc := range a.cfg.PresentationContexts {
+		id := pc.ID
+		if id == 0 {
+			id = byte(2*i + 1) // odd IDs: 1,3,5,...
+		}
+		if len(pc.TransferSyntaxes) == 0 {
+			pc.TransferSyntaxes = []string{pdu.ImplicitVRLittleEndian}
+		}
+		pc.ID = id
+		byID[id] = pc
+		pcs = append(pcs, pdu.PresentationContextRQ{
+			ID:               id,
+			AbstractSyntax:   pc.AbstractSyntax,
+			TransferSyntaxes: pc.TransferSyntaxes,
+		})
+	}
+
 	rq := &pdu.AAssociateRQ{
 		CalledAETitle:          a.called,
 		CallingAETitle:         a.cfg.AETitle,
 		ApplicationContextName: pdu.ApplicationContextName,
-		PresentationContexts: []pdu.PresentationContextRQ{{
-			ID:               1,
-			AbstractSyntax:   pdu.VerificationSOPClass,
-			TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian},
-		}},
+		PresentationContexts:   pcs,
 		UserInformation: pdu.UserInformation{
 			MaxLength:                 a.cfg.MaxPDULength,
 			ImplementationClassUID:    a.cfg.ImplementationClassUID,
@@ -135,9 +173,23 @@ func (a *Association) negotiate(ctx context.Context) error {
 	}
 	switch p := raw.(type) {
 	case *pdu.AAssociateAC:
-		a.ac = p
-		if a.verificationContextID() == 0 {
-			return fmt.Errorf("%w: verification not accepted", ErrNoContext)
+		a.peerMax = p.UserInformation.MaxLength
+		for _, ac := range p.PresentationContexts {
+			if ac.Result != 0 {
+				continue
+			}
+			prop, ok := byID[ac.ID]
+			if !ok {
+				continue
+			}
+			a.contexts = append(a.contexts, AcceptedContext{
+				ID:             ac.ID,
+				AbstractSyntax: prop.AbstractSyntax,
+				TransferSyntax: ac.TransferSyntax,
+			})
+		}
+		if len(a.contexts) == 0 {
+			return fmt.Errorf("%w: no presentation context accepted", ErrNoContext)
 		}
 		return nil
 	case *pdu.AAssociateRJ:
@@ -149,54 +201,48 @@ func (a *Association) negotiate(ctx context.Context) error {
 	}
 }
 
-func (a *Association) verificationContextID() byte {
-	if a.ac == nil {
-		return 0
-	}
-	for _, pc := range a.ac.PresentationContexts {
-		if pc.Result == 0 && pc.ID != 0 {
-			return pc.ID
-		}
-	}
-	return 0
+// Contexts returns accepted presentation contexts.
+func (a *Association) Contexts() []AcceptedContext {
+	return append([]AcceptedContext(nil), a.contexts...)
 }
 
-// CEcho sends a C-ECHO-RQ and waits for a successful C-ECHO-RSP.
-func (a *Association) CEcho(ctx context.Context) error {
-	pcid := a.verificationContextID()
-	if pcid == 0 {
-		return ErrNoContext
+func (a *Association) contextByAbstract(uid string) (AcceptedContext, bool) {
+	for _, c := range a.contexts {
+		if c.AbstractSyntax == uid {
+			return c, true
+		}
 	}
-	msgID := a.nextID
+	return AcceptedContext{}, false
+}
+
+func (a *Association) nextMessageID() uint16 {
+	id := a.nextID
 	a.nextID++
 	if a.nextID == 0 {
 		a.nextID = 1
 	}
+	return id
+}
 
+// CEcho sends a C-ECHO-RQ and waits for a successful C-ECHO-RSP.
+func (a *Association) CEcho(ctx context.Context) error {
+	pc, ok := a.contextByAbstract(pdu.VerificationSOPClass)
+	if !ok {
+		return fmt.Errorf("%w: verification", ErrNoContext)
+	}
+	msgID := a.nextMessageID()
 	cmd, err := (&dimse.CEchoRQ{MessageID: msgID}).Encode()
 	if err != nil {
 		return err
 	}
-	tf := &pdu.PDataTF{PDVs: []pdu.PDV{pdu.NewCommandPDV(pcid, cmd)}}
-	if err := a.writePDU(ctx, tf); err != nil {
+	if err := a.sendMessage(ctx, pc.ID, cmd, nil); err != nil {
 		return err
 	}
-
-	raw, err := a.readPDU(ctx)
+	rspCmd, _, err := a.recvMessage(ctx)
 	if err != nil {
 		return err
 	}
-	pd, ok := raw.(*pdu.PDataTF)
-	if !ok {
-		if ab, ok := raw.(*pdu.AAbort); ok {
-			return fmt.Errorf("%w: source=%d reason=%d", ErrAborted, ab.Source, ab.ReasonDiagnostic)
-		}
-		return fmt.Errorf("ae: unexpected PDU %T for C-ECHO", raw)
-	}
-	if len(pd.PDVs) == 0 || !pd.PDVs[0].IsCommand() {
-		return fmt.Errorf("ae: C-ECHO response missing command PDV")
-	}
-	rsp, err := dimse.DecodeCEchoRSP(pd.PDVs[0].Fragment())
+	rsp, err := dimse.DecodeCEchoRSP(rspCmd)
 	if err != nil {
 		return fmt.Errorf("ae: decode C-ECHO-RSP: %w", err)
 	}
@@ -207,6 +253,69 @@ func (a *Association) CEcho(ctx context.Context) error {
 		return fmt.Errorf("ae: C-ECHO status 0x%04x", rsp.Status)
 	}
 	return nil
+}
+
+func (a *Association) sendMessage(ctx context.Context, pcid byte, command, dataset []byte) error {
+	pdus, err := pdu.FragmentMessage(pcid, command, dataset, a.peerMax)
+	if err != nil {
+		return err
+	}
+	for _, p := range pdus {
+		if err := a.writePDU(ctx, p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *Association) recvMessage(ctx context.Context) (command, dataset []byte, err error) {
+	var (
+		cmdBuf   []byte
+		dsBuf    []byte
+		gotCmd   bool
+		cmdDone  bool
+		dsDone   bool
+		expectDS bool
+	)
+	for {
+		raw, err := a.readPDU(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		switch p := raw.(type) {
+		case *pdu.PDataTF:
+			for _, pdv := range p.PDVs {
+				frag := pdv.Fragment()
+				if pdv.IsCommand() {
+					cmdBuf = append(cmdBuf, frag...)
+					gotCmd = true
+					if pdv.IsLast() {
+						cmdDone = true
+						hasDS, err := dimse.CommandHasDataset(cmdBuf)
+						if err != nil {
+							return nil, nil, fmt.Errorf("ae: command set: %w", err)
+						}
+						expectDS = hasDS
+						if !expectDS {
+							dsDone = true
+						}
+					}
+				} else {
+					dsBuf = append(dsBuf, frag...)
+					if pdv.IsLast() {
+						dsDone = true
+					}
+				}
+			}
+			if gotCmd && cmdDone && dsDone {
+				return cmdBuf, dsBuf, nil
+			}
+		case *pdu.AAbort:
+			return nil, nil, fmt.Errorf("%w: source=%d reason=%d", ErrAborted, p.Source, p.ReasonDiagnostic)
+		default:
+			return nil, nil, fmt.Errorf("ae: unexpected PDU %T while receiving message", p)
+		}
+	}
 }
 
 // Release performs association release and closes the connection.
