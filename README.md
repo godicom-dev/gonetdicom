@@ -22,7 +22,7 @@ gonetdicom
 
 ## Status
 
-**Phase 2 (partial)** — C-ECHO + C-STORE SCU/SCP. Dataset bytes are caller-encoded (godicom `EncodeDataset` still pending).
+**Phase 2 (partial)** — C-ECHO + C-STORE SCU/SCP with godicom `EncodeDataset` (`v0.21.0`).
 
 ## Install
 
@@ -70,7 +70,7 @@ func main() {
 
 ## C-STORE SCU
 
-Propose a storage presentation context, then send already-encoded dataset bytes:
+Propose a storage presentation context, then send a godicom Dataset (or pre-encoded bytes):
 
 ```go
 cfg := ae.Config{
@@ -83,10 +83,13 @@ cfg := ae.Config{
 }
 assoc, err := ae.Dial(ctx, cfg, "pacs.example:11112", "ANY-SCP")
 // ...
+ds := godicom.NewDataset()
+ds.Set(godicom.NewDataElement(godicom.MustTag("SOPClassUID"), godicom.VRUI, "..."))
+// ...
 res, err := assoc.CStore(ctx, ae.StoreRequest{
 	AffectedSOPClassUID:    "1.2.840.10008.5.1.4.1.1.7",
 	AffectedSOPInstanceUID: "1.2.3.4.5",
-	Dataset:                encodedDataset, // Implicit VR LE (or negotiated TS)
+	Data:                   ds, // encoded via godicom with negotiated TS
 })
 ```
 
@@ -125,8 +128,8 @@ _ = ae.Serve(ctx, ln, ae.ServerConfig{
 - [x] C-ECHO SCU (smoke path)
 
 ### Phase 2 — Core DIMSE services
-- [x] C-STORE SCU/SCP (encoded dataset bytes)
-- [ ] godicom `EncodeDataset` integration
+- [x] C-STORE SCU/SCP
+- [x] godicom `EncodeDataset` integration (`StoreRequest.Data`)
 - [ ] C-FIND SCU (Patient/Study root)
 - [ ] C-MOVE / C-GET as needed
 

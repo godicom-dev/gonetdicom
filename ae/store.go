@@ -4,17 +4,19 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/godicom-dev/godicom"
 	"github.com/godicom-dev/gonetdicom/dimse"
 )
 
 // StoreRequest is a C-STORE-RQ payload.
 //
-// Dataset must already be encoded in the transfer syntax negotiated for
-// AffectedSOPClassUID.
+// Provide either Dataset (already encoded) or Data (godicom Dataset to encode
+// with the negotiated transfer syntax). Data takes precedence when both are set.
 type StoreRequest struct {
 	AffectedSOPClassUID                  string
 	AffectedSOPInstanceUID               string
 	Dataset                              []byte
+	Data                                 *godicom.Dataset
 	Priority                             uint16 // 0 defaults to PriorityLow
 	MoveOriginatorApplicationEntityTitle string
 	MoveOriginatorMessageID              uint16
@@ -35,12 +37,21 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 	if req.AffectedSOPInstanceUID == "" {
 		return nil, fmt.Errorf("ae: C-STORE missing Affected SOP Instance UID")
 	}
-	if len(req.Dataset) == 0 {
-		return nil, fmt.Errorf("ae: C-STORE missing dataset")
-	}
 	pc, ok := a.contextByAbstract(req.AffectedSOPClassUID)
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNoContext, req.AffectedSOPClassUID)
+	}
+
+	payload := req.Dataset
+	if req.Data != nil {
+		encoded, err := req.Data.Encode(pc.TransferSyntax)
+		if err != nil {
+			return nil, fmt.Errorf("ae: encode dataset: %w", err)
+		}
+		payload = encoded
+	}
+	if len(payload) == 0 {
+		return nil, fmt.Errorf("ae: C-STORE missing dataset")
 	}
 
 	priority := req.Priority
@@ -60,7 +71,7 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 	if err != nil {
 		return nil, err
 	}
-	if err := a.sendMessage(ctx, pc.ID, cmd, req.Dataset); err != nil {
+	if err := a.sendMessage(ctx, pc.ID, cmd, payload); err != nil {
 		return nil, err
 	}
 	rspCmd, _, err := a.recvMessage(ctx)

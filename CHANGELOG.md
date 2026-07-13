@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Depend on godicom `v0.21.0`; `StoreRequest.Data` encodes via `Dataset.Encode` under the negotiated transfer syntax
+
+### Added (Phase 2 C-STORE)
 - Phase 2 C-STORE: `dimse` C-STORE-RQ/RSP, PDV fragmentation, `ae.CStore` SCU, `ae.Serve` SCP with `OnCStore`
 - Multi presentation-context association negotiation on SCU `Config`
 - Golden fixture roundtrips for C-STORE command sets (pynetdicom test bytes)
