@@ -57,6 +57,8 @@ type ServerConfig struct {
 	OnCFind                  FindHandler
 	OnCMove                  MoveHandler
 	OnCGet                   GetHandler
+	OnNAction                NActionHandler
+	OnNEventReport           EventReportHandler
 	// RoleSelections lists SOP Classes for which this SCP supports non-default
 	// SCP/SCU roles (values are the *acceptor* capabilities). Empty means
 	// default roles only (requestor=SCU, acceptor=SCP) and no role reply items.
@@ -307,6 +309,14 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 
 	if getRQ, err := dimse.DecodeCGetRQ(cmd); err == nil {
 		return scpHandleGet(ctx, conn, cfg, accepted, peerMax, pcid, getRQ, ds)
+	}
+
+	if actionRQ, err := dimse.DecodeNActionRQ(cmd); err == nil {
+		return scpHandleNAction(ctx, conn, cfg, accepted, peerMax, pcid, actionRQ, ds)
+	}
+
+	if erRQ, err := dimse.DecodeNEventReportRQ(cmd); err == nil {
+		return scpHandleNEventReport(ctx, conn, cfg, accepted, peerMax, pcid, erRQ, ds)
 	}
 
 	rq, err := dimse.DecodeCStoreRQ(cmd)
@@ -667,6 +677,151 @@ func writeMessage(conn net.Conn, pcid byte, command, dataset []byte, maxPDU uint
 		if err := pdu.Write(conn, p); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func scpHandleNAction(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NActionRQ, ds []byte) error {
+	ac, ok := accepted[pcid]
+	status := uint16(0x0122)
+	result := ActionResult{
+		Status:                 status,
+		ActionTypeID:           rq.ActionTypeID,
+		AffectedSOPClassUID:    rq.RequestedSOPClassUID,
+		AffectedSOPInstanceUID: rq.RequestedSOPInstanceUID,
+	}
+	var push *EventReportRequest
+	if ok && ac.AbstractSyntax == rq.RequestedSOPClassUID {
+		var info *godicom.Dataset
+		if len(ds) > 0 {
+			decoded, err := godicom.DecodeDataset(ds, ac.TransferSyntax)
+			if err != nil {
+				return fmt.Errorf("ae: decode action information: %w", err)
+			}
+			info = decoded
+		}
+		if cfg.OnNAction != nil {
+			result, push = cfg.OnNAction(ctx, ActionRequest{
+				RequestedSOPClassUID:    rq.RequestedSOPClassUID,
+				RequestedSOPInstanceUID: rq.RequestedSOPInstanceUID,
+				ActionTypeID:            rq.ActionTypeID,
+				ActionInformation:       ds,
+				ActionInformationData:   info,
+			})
+		} else {
+			result.Status = dimse.StatusSuccess
+		}
+		if result.AffectedSOPClassUID == "" {
+			result.AffectedSOPClassUID = rq.RequestedSOPClassUID
+		}
+		if result.AffectedSOPInstanceUID == "" {
+			result.AffectedSOPInstanceUID = rq.RequestedSOPInstanceUID
+		}
+		if result.ActionTypeID == 0 {
+			result.ActionTypeID = rq.ActionTypeID
+		}
+	}
+
+	reply := result.ActionReply
+	if result.ActionReplyData != nil {
+		if !ok {
+			return fmt.Errorf("ae: cannot encode action reply without accepted context")
+		}
+		encoded, err := result.ActionReplyData.Encode(ac.TransferSyntax)
+		if err != nil {
+			return fmt.Errorf("ae: encode action reply: %w", err)
+		}
+		reply = encoded
+	}
+	rsp, err := (&dimse.NActionRSP{
+		MessageIDBeingRespondedTo: rq.MessageID,
+		ActionTypeID:              result.ActionTypeID,
+		AffectedSOPClassUID:       result.AffectedSOPClassUID,
+		AffectedSOPInstanceUID:    result.AffectedSOPInstanceUID,
+		Status:                    result.Status,
+		HasDataset:                len(reply) > 0,
+	}).Encode()
+	if err != nil {
+		return err
+	}
+	if err := writeMessage(conn, pcid, rsp, reply, peerMax); err != nil {
+		return err
+	}
+	if push == nil {
+		return nil
+	}
+	return scpSendEventReport(conn, accepted, peerMax, push)
+}
+
+func scpHandleNEventReport(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NEventReportRQ, ds []byte) error {
+	ac, ok := accepted[pcid]
+	status := uint16(0x0122)
+	if ok && ac.AbstractSyntax == rq.AffectedSOPClassUID {
+		var info *godicom.Dataset
+		if len(ds) > 0 {
+			decoded, err := godicom.DecodeDataset(ds, ac.TransferSyntax)
+			if err != nil {
+				return fmt.Errorf("ae: decode event information: %w", err)
+			}
+			info = decoded
+		}
+		if cfg.OnNEventReport != nil {
+			status = cfg.OnNEventReport(ctx, EventReportRequest{
+				AffectedSOPClassUID:    rq.AffectedSOPClassUID,
+				AffectedSOPInstanceUID: rq.AffectedSOPInstanceUID,
+				EventTypeID:            rq.EventTypeID,
+				EventInformation:       ds,
+				EventInformationData:   info,
+			})
+		} else {
+			status = dimse.StatusSuccess
+		}
+	}
+	rsp, err := (&dimse.NEventReportRSP{
+		MessageIDBeingRespondedTo: rq.MessageID,
+		EventTypeID:               rq.EventTypeID,
+		AffectedSOPClassUID:       rq.AffectedSOPClassUID,
+		AffectedSOPInstanceUID:    rq.AffectedSOPInstanceUID,
+		Status:                    status,
+	}).Encode()
+	if err != nil {
+		return err
+	}
+	return writeMessage(conn, pcid, rsp, nil, peerMax)
+}
+
+func scpSendEventReport(conn net.Conn, accepted map[byte]acceptedContext, peerMax uint32, req *EventReportRequest) error {
+	pcid, ts, ok := contextByAbstractAccepted(accepted, req.AffectedSOPClassUID)
+	if !ok {
+		return fmt.Errorf("ae: no context for N-EVENT-REPORT %s", req.AffectedSOPClassUID)
+	}
+	payload := req.EventInformation
+	if req.EventInformationData != nil {
+		encoded, err := req.EventInformationData.Encode(ts)
+		if err != nil {
+			return fmt.Errorf("ae: encode event information: %w", err)
+		}
+		payload = encoded
+	}
+	cmd, err := (&dimse.NEventReportRQ{
+		MessageID:              1,
+		EventTypeID:            req.EventTypeID,
+		AffectedSOPClassUID:    req.AffectedSOPClassUID,
+		AffectedSOPInstanceUID: req.AffectedSOPInstanceUID,
+		HasDataset:             len(payload) > 0,
+	}).Encode()
+	if err != nil {
+		return err
+	}
+	if err := writeMessage(conn, pcid, cmd, payload, peerMax); err != nil {
+		return err
+	}
+	rspCmd, _, err := readMessage(conn)
+	if err != nil {
+		return err
+	}
+	if _, err := dimse.DecodeNEventReportRSP(rspCmd); err != nil {
+		return fmt.Errorf("ae: decode N-EVENT-REPORT-RSP: %w", err)
 	}
 	return nil
 }
