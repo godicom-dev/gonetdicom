@@ -159,12 +159,16 @@ client := &dicomweb.Client{BaseURL: "https://pacs.example/dicom-web"}
 // STOW-RS
 _, err := client.StoreFiles(ctx, "", []*godicom.FileDataset{fd})
 
-// WADO-RS instance + metadata
+// WADO-RS instance / series / study + metadata
 raw, err := client.RetrieveInstance(ctx, studyUID, seriesUID, sopUID)
+parts, err := client.RetrieveSeries(ctx, studyUID, seriesUID)
+parts, err = client.RetrieveStudy(ctx, studyUID)
 meta, err := client.RetrieveInstanceMetadata(ctx, studyUID, seriesUID, sopUID)
 
-// QIDO-RS
+// QIDO-RS studies / series / instances
 matches, err := client.SearchStudies(ctx, url.Values{"PatientID": {"P001"}})
+series, err := client.SearchSeries(ctx, studyUID, url.Values{"Modality": {"CT"}})
+instances, err := client.SearchInstances(ctx, studyUID, seriesUID, nil)
 ```
 
 Origin-server MVP for tests/demos:
@@ -203,8 +207,9 @@ http.ListenAndServe(":8080", dicomweb.Handler(store, "/dicom-web"))
 
 ### Phase 3 — DICOMweb MVP
 - [x] WADO-RS Retrieve Instance (`application/dicom`) + Metadata (`dicom+json`)
+- [x] WADO-RS Retrieve Study / Series (+ metadata)
 - [x] STOW-RS Store
-- [x] Thin QIDO-RS (Search for Studies)
+- [x] QIDO-RS Search for Studies / Series / Instances
 
 ### Phase 4 — Harden
 - Tests against pynetdicom fixtures / real PACS
