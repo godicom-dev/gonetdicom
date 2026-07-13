@@ -33,6 +33,7 @@ const (
 	ItemUserInformation        = 0x50
 	ItemMaxLength              = 0x51
 	ItemImplementationClassUID = 0x52
+	ItemRoleSelection          = 0x54
 	ItemImplementationVersion  = 0x55
 )
 

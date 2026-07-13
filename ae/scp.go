@@ -40,6 +40,8 @@ type GetHandler func(ctx context.Context, req GetRequest) GetPlan
 type acceptedContext struct {
 	AbstractSyntax string
 	TransferSyntax string
+	AsSCU          bool // local (acceptor) roles
+	AsSCP          bool
 }
 
 // ServerConfig configures an Association acceptor (SCP).
@@ -55,6 +57,10 @@ type ServerConfig struct {
 	OnCFind                  FindHandler
 	OnCMove                  MoveHandler
 	OnCGet                   GetHandler
+	// RoleSelections lists SOP Classes for which this SCP supports non-default
+	// SCP/SCU roles (values are the *acceptor* capabilities). Empty means
+	// default roles only (requestor=SCU, acceptor=SCP) and no role reply items.
+	RoleSelections []pdu.RoleSelection
 	// TLS, when non-nil, wraps accepted connections with TLS (use with ServeTLS
 	// or a tls.Listener). Ignored by Serve on a plain listener.
 	TLS *tls.Config
@@ -146,6 +152,10 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 
 	var acContexts []pdu.PresentationContextAC
 	accepted := map[byte]acceptedContext{}
+	rqRoles := roleMap(rq.UserInformation.RoleSelections)
+	acRoles := roleMap(cfg.RoleSelections)
+	var replyRoles []pdu.RoleSelection
+
 	for _, pc := range rq.PresentationContexts {
 		_, ok := allowed[pc.AbstractSyntax]
 		if !ok || len(pc.TransferSyntaxes) == 0 {
@@ -162,14 +172,34 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 				break
 			}
 		}
+
+		asSCU, asSCP := false, true // default acceptor roles
+		result := byte(0)
+		if rqRole, rqOK := rqRoles[pc.AbstractSyntax]; rqOK {
+			if acRole, acOK := acRoles[pc.AbstractSyntax]; acOK {
+				out := negotiateRoles(rqRole.SCURole, rqRole.SCPRole, true, acRole.SCURole, acRole.SCPRole, true)
+				asSCU, asSCP = out.AcSCU, out.AcSCP
+				if !out.ReqSCU && !out.ReqSCP {
+					result = 1 // user rejection
+				} else {
+					replyRoles = append(replyRoles, replyRole(pc.AbstractSyntax, rqRole, acRole))
+				}
+			}
+			// else: proposed but acceptor has no configured support → default, no reply
+		}
+
 		acContexts = append(acContexts, pdu.PresentationContextAC{
 			ID:             pc.ID,
-			Result:         0,
+			Result:         result,
 			TransferSyntax: ts,
 		})
-		accepted[pc.ID] = acceptedContext{
-			AbstractSyntax: pc.AbstractSyntax,
-			TransferSyntax: ts,
+		if result == 0 {
+			accepted[pc.ID] = acceptedContext{
+				AbstractSyntax: pc.AbstractSyntax,
+				TransferSyntax: ts,
+				AsSCU:          asSCU,
+				AsSCP:          asSCP,
+			}
 		}
 	}
 
@@ -182,6 +212,7 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 			MaxLength:                 cfg.MaxPDULength,
 			ImplementationClassUID:    cfg.ImplementationClassUID,
 			ImplementationVersionName: cfg.ImplementationVersionName,
+			RoleSelections:            replyRoles,
 		},
 	}
 	if err := pdu.Write(conn, ac); err != nil {
