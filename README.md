@@ -148,6 +148,21 @@ cfg := ae.Config{
 }
 ```
 
+## Storage Commitment (N-ACTION / N-EVENT-REPORT)
+
+```go
+res, err := assoc.NAction(ctx, ae.ActionRequest{
+	RequestedSOPClassUID:    ae.StorageCommitmentPushModelSOPClass,
+	RequestedSOPInstanceUID: ae.StorageCommitmentPushModelSOPInstance,
+	ActionTypeID:            dimse.StorageCommitmentActionTypeRequest,
+	ActionInformationData:   info, // TransactionUID + ReferencedSOPSequence
+	OnNEventReport: func(_ context.Context, req ae.EventReportRequest) uint16 {
+		// handle commitment result (EventTypeID 1=success / 2=failures)
+		return 0x0000
+	},
+})
+```
+
 ## C-STORE SCP
 
 ```go
@@ -227,8 +242,8 @@ GONETDICOM_PACS_ADDR=host:11112 GONETDICOM_PACS_AE=ANY-SCP \
 | Package | Role |
 |---------|------|
 | `pdu` | A-ASSOCIATE / P-DATA-TF / A-RELEASE / A-ABORT + PDV fragmentation |
-| `dimse` | C-ECHO / C-STORE / C-FIND / C-MOVE / C-GET command sets (Implicit VR LE) |
-| `ae` | Association SCU/SCP + TLS / idle timeout / optional slog |
+| `dimse` | C-ECHO / C-STORE / C-FIND / C-MOVE / C-GET / C-CANCEL + N-ACTION / N-EVENT-REPORT |
+| `ae` | Association SCU/SCP + TLS / idle timeout / optional slog / role selection |
 | `dicomweb` | WADO-RS (incl. rendered/bulkdata) / STOW-RS / QIDO-RS client + origin-server MVP |
 
 ## Roadmap (working plan)
@@ -250,6 +265,7 @@ GONETDICOM_PACS_ADDR=host:11112 GONETDICOM_PACS_AE=ANY-SCP \
 - [x] C-MOVE / C-GET SCU/SCP (sub-op counts; C-GET interleaved C-STORE)
 - [x] SCP/SCU Role Selection Negotiation (PDU `0x54`, `ae.BuildRole`)
 - [x] C-CANCEL-RQ (`ae.CCancel`) for outstanding FIND/MOVE/GET
+- [x] Storage Commitment Push Model (`ae.NAction` / `ae.NEventReport`)
 
 ### Phase 3 — DICOMweb MVP
 - [x] WADO-RS Retrieve Instance (`application/dicom`) + Metadata (`dicom+json`)

@@ -22,11 +22,12 @@
 10. ~~v0.3.0 release~~ ✅
 11. ~~SCP/SCU Role Selection (PDU 0x54, C-GET real-PACS prerequisite)~~ ✅
 12. ~~C-CANCEL (FIND/MOVE/GET)~~ ✅
+13. ~~Storage Commitment Push Model (N-ACTION / N-EVENT-REPORT)~~ ✅
 
 ## Explicitly later
 
 - Full SCP framework parity with pynetdicom
-- N-ACTION / N-EVENT-REPORT (Storage Commitment path)
+- Remaining DIMSE-N (N-GET/SET/CREATE/DELETE); async new-association event report
 - C-MOVE SCP → MoveDestination C-STORE sub-operations
 - User Identity Negotiation
 - DICOM WebSockets
