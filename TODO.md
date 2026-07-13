@@ -29,6 +29,7 @@
 17. ~~User Identity Negotiation~~ ✅
 18. ~~v0.6.0 release~~ ✅
 19. ~~Remaining DIMSE-N (N-GET/SET/CREATE/DELETE)~~ ✅
+20. ~~v0.7.0 release~~ ✅
 
 ## Explicitly later
 
