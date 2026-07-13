@@ -83,6 +83,10 @@ type ServerConfig struct {
 	// SCP/SCU roles (values are the *acceptor* capabilities). Empty means
 	// default roles only (requestor=SCU, acceptor=SCP) and no role reply items.
 	RoleSelections []pdu.RoleSelection
+	// OnUserIdentity verifies a User Identity RQ item. Nil means identity is
+	// ignored and the association is accepted without an AC response item
+	// (pynetdicom default when no EVT_USER_ID handler is bound).
+	OnUserIdentity UserIdentityHandler
 	// TLS, when non-nil, wraps accepted connections with TLS (use with ServeTLS
 	// or a tls.Listener). Ignored by Serve on a plain listener.
 	TLS *tls.Config
@@ -165,6 +169,24 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 		return fmt.Errorf("ae: expected A-ASSOCIATE-RQ, got %T", raw)
 	}
 
+	var userIdentityAC *pdu.UserIdentityAC
+	if rq.UserInformation.UserIdentityRQ != nil && cfg.OnUserIdentity != nil {
+		ok, resp := cfg.OnUserIdentity(*rq.UserInformation.UserIdentityRQ)
+		if !ok {
+			_ = pdu.Write(conn, &pdu.AAssociateRJ{
+				Result:           0x02, // transient
+				Source:           0x02, // ACSE
+				ReasonDiagnostic: 0x01, // no reason given (pynetdicom)
+			})
+			return fmt.Errorf("%w: user identity verification failed", ErrRejected)
+		}
+		req := rq.UserInformation.UserIdentityRQ
+		if req.PositiveResponseRequested && len(resp) > 0 &&
+			req.Type >= pdu.UserIdentityKerberos && req.Type <= pdu.UserIdentityJWT {
+			userIdentityAC = &pdu.UserIdentityAC{ServerResponse: append([]byte(nil), resp...)}
+		}
+	}
+
 	allowed := map[string]struct{}{
 		pdu.VerificationSOPClass: {},
 	}
@@ -235,6 +257,7 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 			ImplementationClassUID:    cfg.ImplementationClassUID,
 			ImplementationVersionName: cfg.ImplementationVersionName,
 			RoleSelections:            replyRoles,
+			UserIdentityAC:            userIdentityAC,
 		},
 	}
 	if err := pdu.Write(conn, ac); err != nil {

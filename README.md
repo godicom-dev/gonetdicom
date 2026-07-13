@@ -204,6 +204,26 @@ _ = ae.Serve(ctx, moveLn, ae.ServerConfig{
 
 Status-only handlers can still return `MovePlan{Responses: ...}` without `Stores`.
 
+## User Identity Negotiation
+
+Propose identity on the SCU; verify (or ignore) on the SCP. Rejection uses A-ASSOCIATE-RJ `(result=2, source=2, reason=1)` like pynetdicom. Kerberos/SAML/JWT may return a server response AC item when requested:
+
+```go
+assoc, err := ae.Dial(ctx, ae.Config{
+	AETitle:      "IDSCU",
+	UserIdentity: ae.UsernamePasscodeIdentity("alice", "secret", false),
+}, addr, "IDSCP")
+
+_ = ae.Serve(ctx, ln, ae.ServerConfig{
+	AETitle: "IDSCP",
+	OnUserIdentity: func(req pdu.UserIdentityRQ) (bool, []byte) {
+		return string(req.PrimaryField) == "alice", nil
+	},
+})
+```
+
+Nil `OnUserIdentity` accepts the association and omits any AC response item.
+
 ## DICOMweb (WADO / STOW / QIDO)
 
 ```go

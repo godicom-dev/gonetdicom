@@ -35,6 +35,17 @@ const (
 	ItemImplementationClassUID = 0x52
 	ItemRoleSelection          = 0x54
 	ItemImplementationVersion  = 0x55
+	ItemUserIdentityRQ         = 0x58
+	ItemUserIdentityAC         = 0x59
+)
+
+// User Identity Type values (PS3.7 Annex D.3.3.7).
+const (
+	UserIdentityUsername         = 1
+	UserIdentityUsernamePasscode = 2
+	UserIdentityKerberos         = 3
+	UserIdentitySAML             = 4
+	UserIdentityJWT              = 5
 )
 
 // Standard UIDs used during association.

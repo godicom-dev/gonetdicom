@@ -222,3 +222,116 @@ func TestUserInformationRoleSelectionRoundtrip(t *testing.T) {
 		t.Fatalf("roles: %+v", got.RoleSelections)
 	}
 }
+
+func TestDecodeEncodeGoldenUserIdentity(t *testing.T) {
+	t.Parallel()
+
+	t.Run("username", func(t *testing.T) {
+		items, err := decodeItems(goldenUserIdentityRQUsername)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 1 || items[0].Type != ItemUserIdentityRQ {
+			t.Fatalf("items: %+v", items)
+		}
+		id, err := decodeUserIdentityRQ(items[0].Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if id.Type != UserIdentityUsername || !id.PositiveResponseRequested {
+			t.Fatalf("id: %+v", id)
+		}
+		if string(id.PrimaryField) != "pynetdicom" || len(id.SecondaryField) != 0 {
+			t.Fatalf("fields: %+v", id)
+		}
+		got, err := encodeUserIdentityRQ(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, goldenUserIdentityRQUsername) {
+			t.Fatalf("roundtrip\ngot  %x\nwant %x", got, goldenUserIdentityRQUsername)
+		}
+	})
+
+	t.Run("username/password", func(t *testing.T) {
+		items, err := decodeItems(goldenUserIdentityRQUserPass)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := decodeUserIdentityRQ(items[0].Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if id.Type != UserIdentityUsernamePasscode || id.PositiveResponseRequested {
+			t.Fatalf("id: %+v", id)
+		}
+		if string(id.PrimaryField) != "pynetdicom" || string(id.SecondaryField) != "p4ssw0rd" {
+			t.Fatalf("fields: %+v", id)
+		}
+		got, err := encodeUserIdentityRQ(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, goldenUserIdentityRQUserPass) {
+			t.Fatalf("roundtrip\ngot  %x\nwant %x", got, goldenUserIdentityRQUserPass)
+		}
+	})
+
+	t.Run("ac", func(t *testing.T) {
+		items, err := decodeItems(goldenUserIdentityAC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 1 || items[0].Type != ItemUserIdentityAC {
+			t.Fatalf("items: %+v", items)
+		}
+		id, err := decodeUserIdentityAC(items[0].Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(id.ServerResponse) != "Accepted" {
+			t.Fatalf("response: %q", id.ServerResponse)
+		}
+		got, err := encodeUserIdentityAC(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, goldenUserIdentityAC) {
+			t.Fatalf("roundtrip\ngot  %x\nwant %x", got, goldenUserIdentityAC)
+		}
+	})
+}
+
+func TestUserInformationUserIdentityRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	ui := UserInformation{
+		MaxLength:                 16384,
+		ImplementationClassUID:    "1.2.826.0.1.3680043.10.541.1",
+		ImplementationVersionName: "GONETDICOM_001",
+		UserIdentityRQ: &UserIdentityRQ{
+			Type:                      UserIdentityUsernamePasscode,
+			PositiveResponseRequested: false,
+			PrimaryField:              []byte("user"),
+			SecondaryField:            []byte("secret"),
+		},
+	}
+	raw, err := encodeUserInformation(ui)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := decodeItems(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := decodeUserInformation(items[0].Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UserIdentityRQ == nil || string(got.UserIdentityRQ.PrimaryField) != "user" {
+		t.Fatalf("got: %+v", got.UserIdentityRQ)
+	}
+	if string(got.UserIdentityRQ.SecondaryField) != "secret" {
+		t.Fatalf("secondary: %q", got.UserIdentityRQ.SecondaryField)
+	}
+}
