@@ -30,11 +30,11 @@
 18. ~~v0.6.0 release~~ ✅
 19. ~~Remaining DIMSE-N (N-GET/SET/CREATE/DELETE)~~ ✅
 20. ~~v0.7.0 release~~ ✅
+21. ~~Async new-association event report + parallel C-MOVE stores~~ ✅
 
 ## Explicitly later
 
 - Full SCP framework parity with pynetdicom
-- Async new-association event report
 - DICOM WebSockets
 - HTJ2K / JPEG encode for Accept renegotiation (blocked upstream on JPEG)
 - Study/series multipart rendered; BulkDataURI in metadata; richer QIDO fuzzy matching

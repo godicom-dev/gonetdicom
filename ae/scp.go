@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
+	"time"
 
 	"github.com/godicom-dev/godicom"
 	"github.com/godicom-dev/gonetdicom/dimse"
@@ -40,6 +42,11 @@ type MoveDestination struct {
 	Addr      string // host:port
 	CalledAE  string // if empty, use the Move Destination AE Title
 	CallingAE string // if empty, use ServerConfig.AETitle
+	// MaxAssociations is the maximum number of parallel Storage SCU associations
+	// used for C-MOVE C-STORE sub-operations. 0 or 1 uses a single association
+	// (sequential stores). Values >1 fan out stores across associations — a
+	// Go concurrency advantage over typical single-threaded DIMSE stacks.
+	MaxAssociations int
 }
 
 // GetPlan is the SCP response plan for a C-GET-RQ.
@@ -580,19 +587,24 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, cfg ServerConfig, 
 		return fmt.Errorf("ae: C-MOVE stores missing SOP Class UID")
 	}
 
-	assoc, err := Dial(ctx, Config{
-		AETitle:              calling,
-		PresentationContexts: pcs,
-		TLS:                  cfg.TLS,
-		Logger:               cfg.Logger,
-	}, dest.Addr, called)
-	if err != nil {
-		return fmt.Errorf("ae: dial Move Destination: %w", err)
+	prepared := make([]StoreRequest, len(stores))
+	for i, store := range stores {
+		if store.MoveOriginatorApplicationEntityTitle == "" {
+			store.MoveOriginatorApplicationEntityTitle = moveOriginatorAE
+		}
+		if store.MoveOriginatorMessageID == 0 {
+			store.MoveOriginatorMessageID = rq.MessageID
+		}
+		prepared[i] = store
 	}
-	defer func() { _ = assoc.Release(ctx) }()
 
-	total := uint16(len(stores))
-	var completed, failed, warning uint16
+	total := uint16(len(prepared))
+	var (
+		mu                         sync.Mutex
+		completed, failed, warning uint16
+		done                       uint16
+		writeErr                   error
+	)
 
 	writePending := func(remaining, completed, failed, warning uint16) error {
 		return writeRetrieveResponses(conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
@@ -607,35 +619,97 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, cfg ServerConfig, 
 		return err
 	}
 
-	for i, store := range stores {
-		if store.MoveOriginatorApplicationEntityTitle == "" {
-			store.MoveOriginatorApplicationEntityTitle = moveOriginatorAE
+	record := func(ok bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if writeErr != nil {
+			return
 		}
-		if store.MoveOriginatorMessageID == 0 {
-			store.MoveOriginatorMessageID = rq.MessageID
-		}
-		res, err := assoc.CStore(ctx, store)
-		remaining := total - uint16(i+1)
-		if err != nil || res == nil || res.Status != dimse.StatusSuccess {
-			failed++
-		} else {
+		done++
+		if ok {
 			completed++
+		} else {
+			failed++
 		}
-		if err := writePending(remaining, completed, failed, warning); err != nil {
-			return err
-		}
+		writeErr = writePending(total-done, completed, failed, warning)
 	}
 
+	maxAssoc := dest.MaxAssociations
+	if maxAssoc <= 0 {
+		maxAssoc = 1
+	}
+	if maxAssoc > len(prepared) {
+		maxAssoc = len(prepared)
+	}
+
+	dialCfg := Config{
+		AETitle:              calling,
+		PresentationContexts: pcs,
+		TLS:                  cfg.TLS,
+		Logger:               cfg.Logger,
+	}
+
+	if maxAssoc == 1 {
+		assoc, err := Dial(ctx, dialCfg, dest.Addr, called)
+		if err != nil {
+			return fmt.Errorf("ae: dial Move Destination: %w", err)
+		}
+		defer func() { _ = assoc.Release(ctx) }()
+		for _, store := range prepared {
+			res, err := assoc.CStore(ctx, store)
+			record(err == nil && res != nil && res.Status == dimse.StatusSuccess)
+			if writeErr != nil {
+				return writeErr
+			}
+		}
+	} else {
+		jobs := make(chan StoreRequest, len(prepared))
+		for _, store := range prepared {
+			jobs <- store
+		}
+		close(jobs)
+
+		var wg sync.WaitGroup
+		for w := 0; w < maxAssoc; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				assoc, err := Dial(ctx, dialCfg, dest.Addr, called)
+				if err != nil {
+					return
+				}
+				defer func() { _ = assoc.Release(ctx) }()
+				for store := range jobs {
+					res, err := assoc.CStore(ctx, store)
+					record(err == nil && res != nil && res.Status == dimse.StatusSuccess)
+				}
+			}()
+		}
+		wg.Wait()
+		if writeErr != nil {
+			return writeErr
+		}
+		mu.Lock()
+		if remaining := total - done; remaining > 0 {
+			failed += remaining
+		}
+		mu.Unlock()
+	}
+
+	mu.Lock()
+	c, f, w := completed, failed, warning
+	mu.Unlock()
+
 	final := dimse.StatusSuccess
-	if failed > 0 && completed > 0 {
+	if f > 0 && c > 0 {
 		final = dimse.StatusWarning
-	} else if failed > 0 {
+	} else if f > 0 {
 		final = 0xA702
 	}
 	return writeRetrieveResponses(conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
 		Status: final,
 		SubOperations: dimse.SubOperations{
-			Remaining: 0, Completed: completed, Failed: failed, Warning: warning, Present: true,
+			Remaining: 0, Completed: c, Failed: f, Warning: w, Present: true,
 		},
 	}})
 }
@@ -922,6 +996,13 @@ func scpHandleNAction(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 	if push == nil {
 		return nil
 	}
+	if push.AsyncDestination != nil && push.AsyncDestination.Addr != "" {
+		dest := *push.AsyncDestination
+		report := *push
+		report.AsyncDestination = nil
+		go scpSendEventReportNewAssoc(cfg, dest, report)
+		return nil
+	}
 	return scpSendEventReport(conn, accepted, peerMax, push)
 }
 
@@ -996,6 +1077,53 @@ func scpSendEventReport(conn net.Conn, accepted map[byte]acceptedContext, peerMa
 		return fmt.Errorf("ae: decode N-EVENT-REPORT-RSP: %w", err)
 	}
 	return nil
+}
+
+func scpSendEventReportNewAssoc(cfg ServerConfig, dest EventReportDestination, req EventReportRequest) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	calling := dest.CallingAE
+	if calling == "" {
+		calling = cfg.AETitle
+	}
+	called := dest.CalledAE
+	if called == "" {
+		if log := cfg.log(); log != nil {
+			log.Error("ae: async N-EVENT-REPORT missing CalledAE")
+		}
+		return
+	}
+	if req.AffectedSOPClassUID == "" {
+		if log := cfg.log(); log != nil {
+			log.Error("ae: async N-EVENT-REPORT missing Affected SOP Class UID")
+		}
+		return
+	}
+
+	assoc, err := Dial(ctx, Config{
+		AETitle: calling,
+		PresentationContexts: []PresentationContext{{
+			ID:               1,
+			AbstractSyntax:   req.AffectedSOPClassUID,
+			TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian},
+		}},
+		TLS:    cfg.TLS,
+		Logger: cfg.Logger,
+	}, dest.Addr, called)
+	if err != nil {
+		if log := cfg.log(); log != nil {
+			log.Error("ae: async N-EVENT-REPORT dial failed", "addr", dest.Addr, "err", err)
+		}
+		return
+	}
+	defer func() { _ = assoc.Release(ctx) }()
+
+	if _, err := assoc.NEventReport(ctx, req); err != nil {
+		if log := cfg.log(); log != nil {
+			log.Error("ae: async N-EVENT-REPORT failed", "err", err)
+		}
+	}
 }
 
 func scpHandleNGet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NGetRQ) error {
