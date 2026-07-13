@@ -27,6 +27,7 @@
 15. ~~C-MOVE SCP → MoveDestination C-STORE sub-operations~~ ✅
 16. ~~v0.5.0 release~~ ✅
 17. ~~User Identity Negotiation~~ ✅
+18. ~~v0.6.0 release~~ ✅
 
 ## Explicitly later
 

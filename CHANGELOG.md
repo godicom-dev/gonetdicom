@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-13
+
 ### Added
 - User Identity Negotiation (PDU `0x58`/`0x59`): `pdu.UserIdentityRQ`/`UserIdentityAC`, `ae.Config.UserIdentity`, `ServerConfig.OnUserIdentity`, helpers `UsernameIdentity` / `UsernamePasscodeIdentity` (pynetdicom-aligned accept/reject + Kerberos/SAML/JWT AC response)
 
