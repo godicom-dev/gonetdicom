@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/godicom-dev/godicom"
 	"github.com/godicom-dev/gonetdicom/dimse"
 	"github.com/godicom-dev/gonetdicom/pdu"
 )
@@ -12,6 +13,15 @@ import (
 // StoreHandler handles an incoming C-STORE-RQ on an SCP association.
 // Return a DIMSE status (0x0000 = success).
 type StoreHandler func(ctx context.Context, req StoreRequest) uint16
+
+// FindHandler handles an incoming C-FIND-RQ. Return Pending matches followed by
+// a final Success/Failure/Cancel response (without Identifier).
+type FindHandler func(ctx context.Context, req FindRequest) []FindMatch
+
+type acceptedContext struct {
+	AbstractSyntax string
+	TransferSyntax string
+}
 
 // ServerConfig configures an Association acceptor (SCP).
 type ServerConfig struct {
@@ -23,6 +33,7 @@ type ServerConfig struct {
 	// (plus Verification is always accepted for C-ECHO).
 	AcceptedAbstractSyntaxes []string
 	OnCStore                 StoreHandler
+	OnCFind                  FindHandler
 }
 
 func (c ServerConfig) withDefaults() ServerConfig {
@@ -85,7 +96,7 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 	}
 
 	var acContexts []pdu.PresentationContextAC
-	accepted := map[byte]string{} // id -> abstract syntax
+	accepted := map[byte]acceptedContext{}
 	for _, pc := range rq.PresentationContexts {
 		_, ok := allowed[pc.AbstractSyntax]
 		if !ok || len(pc.TransferSyntaxes) == 0 {
@@ -107,7 +118,10 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 			Result:         0,
 			TransferSyntax: ts,
 		})
-		accepted[pc.ID] = pc.AbstractSyntax
+		accepted[pc.ID] = acceptedContext{
+			AbstractSyntax: pc.AbstractSyntax,
+			TransferSyntax: ts,
+		}
 	}
 
 	ac := &pdu.AAssociateAC{
@@ -129,7 +143,7 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 	return scpLoop(ctx, conn, cfg, accepted, peerMax)
 }
 
-func scpLoop(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]string, peerMax uint32) error {
+func scpLoop(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32) error {
 	var cmdBuf, dsBuf []byte
 	var cmdDone, dsDone bool
 	var pcid byte
@@ -191,7 +205,7 @@ func scpLoop(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[
 	}
 }
 
-func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]string, peerMax uint32, pcid byte, cmd, ds []byte) error {
+func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, cmd, ds []byte) error {
 	if echoRQ, err := dimse.DecodeCEchoRQ(cmd); err == nil {
 		rsp, err := (&dimse.CEchoRSP{
 			MessageIDBeingRespondedTo: echoRQ.MessageID,
@@ -203,12 +217,16 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 		return writeMessage(conn, pcid, rsp, nil, peerMax)
 	}
 
+	if findRQ, err := dimse.DecodeCFindRQ(cmd); err == nil {
+		return scpHandleFind(ctx, conn, cfg, accepted, peerMax, pcid, findRQ, ds)
+	}
+
 	rq, err := dimse.DecodeCStoreRQ(cmd)
 	if err != nil {
 		return fmt.Errorf("ae: unsupported DIMSE command: %w", err)
 	}
 	status := uint16(0x0122) // SOP class not supported
-	if abs, ok := accepted[pcid]; ok && abs == rq.AffectedSOPClassUID {
+	if abs, ok := accepted[pcid]; ok && abs.AbstractSyntax == rq.AffectedSOPClassUID {
 		if cfg.OnCStore != nil {
 			status = cfg.OnCStore(ctx, StoreRequest{
 				AffectedSOPClassUID:                  rq.AffectedSOPClassUID,
@@ -232,6 +250,69 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 		return err
 	}
 	return writeMessage(conn, pcid, rsp, nil, peerMax)
+}
+
+func scpHandleFind(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CFindRQ, ds []byte) error {
+	ac, ok := accepted[pcid]
+	if !ok || ac.AbstractSyntax != rq.AffectedSOPClassUID {
+		rsp, err := (&dimse.CFindRSP{
+			MessageIDBeingRespondedTo: rq.MessageID,
+			AffectedSOPClassUID:       rq.AffectedSOPClassUID,
+			Status:                    0x0122,
+		}).Encode()
+		if err != nil {
+			return err
+		}
+		return writeMessage(conn, pcid, rsp, nil, peerMax)
+	}
+
+	var ident *godicom.Dataset
+	if len(ds) > 0 {
+		decoded, err := godicom.DecodeDataset(ds, ac.TransferSyntax)
+		if err != nil {
+			return fmt.Errorf("ae: decode C-FIND identifier: %w", err)
+		}
+		ident = decoded
+	}
+
+	var matches []FindMatch
+	if cfg.OnCFind != nil {
+		matches = cfg.OnCFind(ctx, FindRequest{
+			QueryModel:     rq.AffectedSOPClassUID,
+			Identifier:     ds,
+			IdentifierData: ident,
+			Priority:       rq.Priority,
+		})
+	} else {
+		matches = []FindMatch{{Status: dimse.StatusSuccess}}
+	}
+	if len(matches) == 0 {
+		matches = []FindMatch{{Status: dimse.StatusSuccess}}
+	}
+
+	for _, m := range matches {
+		hasDS := m.Identifier != nil && dimse.IsPending(m.Status)
+		rsp, err := (&dimse.CFindRSP{
+			MessageIDBeingRespondedTo: rq.MessageID,
+			AffectedSOPClassUID:       rq.AffectedSOPClassUID,
+			Status:                    m.Status,
+			HasDataset:                hasDS,
+		}).Encode()
+		if err != nil {
+			return err
+		}
+		var payload []byte
+		if hasDS {
+			payload, err = m.Identifier.Encode(ac.TransferSyntax)
+			if err != nil {
+				return fmt.Errorf("ae: encode C-FIND identifier: %w", err)
+			}
+		}
+		if err := writeMessage(conn, pcid, rsp, payload, peerMax); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeMessage(conn net.Conn, pcid byte, command, dataset []byte, maxPDU uint32) error {
