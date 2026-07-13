@@ -33,11 +33,11 @@ func TestCMoveSCURoundtrip(t *testing.T) {
 			AcceptedAbstractSyntaxes: []string{
 				ae.PatientRootQueryRetrieveInformationModelMove,
 			},
-			OnCMove: func(_ context.Context, req ae.MoveRequest) []ae.RetrieveMatch {
+			OnCMove: func(_ context.Context, req ae.MoveRequest) ae.MovePlan {
 				if req.MoveDestination != "STORESCP" {
 					t.Errorf("MoveDestination=%q", req.MoveDestination)
 				}
-				return []ae.RetrieveMatch{
+				return ae.MovePlan{Responses: []ae.RetrieveMatch{
 					{
 						Status: dimse.StatusPending,
 						SubOperations: dimse.SubOperations{
@@ -50,7 +50,7 @@ func TestCMoveSCURoundtrip(t *testing.T) {
 							Remaining: 0, Completed: 1, Present: true,
 						},
 					},
-				}
+				}}
 			},
 		})
 	}()
@@ -232,5 +232,114 @@ func TestCGetSCURoundtrip(t *testing.T) {
 		t.Fatalf("release: %v", err)
 	}
 	cancel()
+	<-errCh
+}
+
+func TestCMoveDestinationStore(t *testing.T) {
+	t.Parallel()
+
+	ctUID := string(uid.CTImageStorage)
+	sopInstance := "1.2.3.4.5.6"
+
+	storeLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storeLn.Close()
+
+	moveLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer moveLn.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stored atomic.Int32
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- ae.Serve(ctx, storeLn, ae.ServerConfig{
+			AETitle:                  "STORESCP",
+			AcceptedAbstractSyntaxes: []string{ctUID},
+			OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
+				stored.Add(1)
+				if req.MoveOriginatorApplicationEntityTitle != "MOVESCU" {
+					t.Errorf("MoveOriginator=%q", req.MoveOriginatorApplicationEntityTitle)
+				}
+				if req.AffectedSOPInstanceUID != sopInstance {
+					t.Errorf("SOPInstance=%q", req.AffectedSOPInstanceUID)
+				}
+				return dimse.StatusSuccess
+			},
+		})
+	}()
+	go func() {
+		errCh <- ae.Serve(ctx, moveLn, ae.ServerConfig{
+			AETitle: "MOVESCP",
+			AcceptedAbstractSyntaxes: []string{
+				ae.PatientRootQueryRetrieveInformationModelMove,
+			},
+			MoveDestinations: map[string]ae.MoveDestination{
+				"STORESCP": {Addr: storeLn.Addr().String()},
+			},
+			OnCMove: func(_ context.Context, _ ae.MoveRequest) ae.MovePlan {
+				ds := godicom.NewDataset()
+				ds.Set(godicom.NewDataElement(godicom.MustTag("SOPClassUID"), godicom.VRUI, ctUID))
+				ds.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, sopInstance))
+				ds.Set(godicom.NewDataElement(godicom.MustTag("PatientName"), godicom.VRPN, "DOE^JOHN"))
+				return ae.MovePlan{
+					Stores: []ae.StoreRequest{{
+						AffectedSOPClassUID:    ctUID,
+						AffectedSOPInstanceUID: sopInstance,
+						Data:                   ds,
+					}},
+				}
+			},
+		})
+	}()
+
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dialCancel()
+
+	assoc, err := ae.Dial(dialCtx, ae.Config{
+		AETitle: "MOVESCU",
+		PresentationContexts: []ae.PresentationContext{{
+			ID:               1,
+			AbstractSyntax:   ae.PatientRootQueryRetrieveInformationModelMove,
+			TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian},
+		}},
+	}, moveLn.Addr().String(), "MOVESCP")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	query := godicom.NewDataset()
+	query.Set(godicom.NewDataElement(godicom.MustTag("QueryRetrieveLevel"), godicom.VRCS, "IMAGE"))
+	query.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, sopInstance))
+
+	matches, err := assoc.CMove(dialCtx, ae.MoveRequest{
+		QueryModel:      ae.PatientRootQueryRetrieveInformationModelMove,
+		MoveDestination: "STORESCP",
+		IdentifierData:  query,
+	})
+	if err != nil {
+		t.Fatalf("C-MOVE: %v", err)
+	}
+	if stored.Load() != 1 {
+		t.Fatalf("stored=%d", stored.Load())
+	}
+	if len(matches) < 2 {
+		t.Fatalf("matches=%d", len(matches))
+	}
+	last := matches[len(matches)-1]
+	if last.Status != dimse.StatusSuccess || last.SubOperations.Completed != 1 {
+		t.Fatalf("final: %+v", last)
+	}
+	if err := assoc.Release(dialCtx); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	cancel()
+	<-errCh
 	<-errCh
 }

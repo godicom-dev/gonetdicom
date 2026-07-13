@@ -177,6 +177,33 @@ _ = ae.Serve(ctx, ln, ae.ServerConfig{
 })
 ```
 
+## C-MOVE SCP (Move Destination C-STORE)
+
+Configure `MoveDestinations` and return `MovePlan.Stores` from `OnCMove`. The SCP dials the destination AE and performs C-STORE sub-operations (pending/final C-MOVE-RSP derived from store outcomes):
+
+```go
+_ = ae.Serve(ctx, moveLn, ae.ServerConfig{
+	AETitle: "MOVESCP",
+	AcceptedAbstractSyntaxes: []string{
+		ae.PatientRootQueryRetrieveInformationModelMove,
+	},
+	MoveDestinations: map[string]ae.MoveDestination{
+		"STORESCP": {Addr: "127.0.0.1:11112"},
+	},
+	OnCMove: func(_ context.Context, req ae.MoveRequest) ae.MovePlan {
+		return ae.MovePlan{
+			Stores: []ae.StoreRequest{{
+				AffectedSOPClassUID:    ctUID,
+				AffectedSOPInstanceUID: sopUID,
+				Data:                   ds,
+			}},
+		}
+	},
+})
+```
+
+Status-only handlers can still return `MovePlan{Responses: ...}` without `Stores`.
+
 ## DICOMweb (WADO / STOW / QIDO)
 
 ```go
