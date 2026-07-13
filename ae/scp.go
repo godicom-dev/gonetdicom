@@ -20,10 +20,27 @@ type StoreHandler func(ctx context.Context, req StoreRequest) uint16
 // a final Success/Failure/Cancel response (without Identifier).
 type FindHandler func(ctx context.Context, req FindRequest) []FindMatch
 
-// MoveHandler handles an incoming C-MOVE-RQ. Return Pending responses followed
-// by a final status. Sub-operation C-STORE to MoveDestination is out of scope
-// for this MVP (status/sub-op counts only).
-type MoveHandler func(ctx context.Context, req MoveRequest) []RetrieveMatch
+// MoveHandler handles an incoming C-MOVE-RQ. Return a MovePlan with Stores to
+// C-STORE to MoveDestination and/or explicit Responses.
+type MoveHandler func(ctx context.Context, req MoveRequest) MovePlan
+
+// MovePlan is the SCP response plan for a C-MOVE-RQ.
+//
+// When Stores is non-empty and ServerConfig.MoveDestinations resolves the
+// Move Destination, the SCP opens a Storage SCU association and performs
+// C-STORE sub-operations. If Responses is empty, pending/final C-MOVE-RSP
+// statuses are derived from store outcomes.
+type MovePlan struct {
+	Stores    []StoreRequest
+	Responses []RetrieveMatch
+}
+
+// MoveDestination is an outbound Storage SCP endpoint for C-MOVE sub-operations.
+type MoveDestination struct {
+	Addr      string // host:port
+	CalledAE  string // if empty, use the Move Destination AE Title
+	CallingAE string // if empty, use ServerConfig.AETitle
+}
 
 // GetPlan is the SCP response plan for a C-GET-RQ.
 //
@@ -59,6 +76,9 @@ type ServerConfig struct {
 	OnCGet                   GetHandler
 	OnNAction                NActionHandler
 	OnNEventReport           EventReportHandler
+	// MoveDestinations maps Move Destination AE Title → Storage SCP endpoint.
+	// Required to perform real C-STORE sub-operations during C-MOVE.
+	MoveDestinations map[string]MoveDestination
 	// RoleSelections lists SOP Classes for which this SCP supports non-default
 	// SCP/SCU roles (values are the *acceptor* capabilities). Empty means
 	// default roles only (requestor=SCU, acceptor=SCP) and no role reply items.
@@ -222,10 +242,10 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 	}
 
 	peerMax := rq.UserInformation.MaxLength
-	return scpLoop(ctx, conn, cfg, accepted, peerMax)
+	return scpLoop(ctx, conn, cfg, accepted, peerMax, rq.CallingAETitle)
 }
 
-func scpLoop(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32) error {
+func scpLoop(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, callingAE string) error {
 	var cmdBuf, dsBuf []byte
 	var cmdDone, dsDone bool
 	var pcid byte
@@ -272,7 +292,7 @@ func scpLoop(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[
 			if !cmdDone || !dsDone {
 				continue
 			}
-			if err := scpHandleMessage(ctx, conn, cfg, accepted, peerMax, pcid, cmdBuf, dsBuf); err != nil {
+			if err := scpHandleMessage(ctx, conn, cfg, accepted, peerMax, pcid, cmdBuf, dsBuf, callingAE); err != nil {
 				return err
 			}
 			reset()
@@ -287,7 +307,7 @@ func scpLoop(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[
 	}
 }
 
-func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, cmd, ds []byte) error {
+func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, cmd, ds []byte, callingAE string) error {
 	if echoRQ, err := dimse.DecodeCEchoRQ(cmd); err == nil {
 		rsp, err := (&dimse.CEchoRSP{
 			MessageIDBeingRespondedTo: echoRQ.MessageID,
@@ -304,7 +324,7 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 	}
 
 	if moveRQ, err := dimse.DecodeCMoveRQ(cmd); err == nil {
-		return scpHandleMove(ctx, conn, cfg, accepted, peerMax, pcid, moveRQ, ds)
+		return scpHandleMove(ctx, conn, cfg, accepted, peerMax, pcid, moveRQ, ds, callingAE)
 	}
 
 	if getRQ, err := dimse.DecodeCGetRQ(cmd); err == nil {
@@ -427,7 +447,7 @@ func scpHandleFind(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 	return nil
 }
 
-func scpHandleMove(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CMoveRQ, ds []byte) error {
+func scpHandleMove(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CMoveRQ, ds []byte, callingAE string) error {
 	ac, ok := accepted[pcid]
 	if !ok || ac.AbstractSyntax != rq.AffectedSOPClassUID {
 		rsp, err := (&dimse.CMoveRSP{
@@ -450,22 +470,131 @@ func scpHandleMove(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 		ident = decoded
 	}
 
-	var matches []RetrieveMatch
+	var plan MovePlan
 	if cfg.OnCMove != nil {
-		matches = cfg.OnCMove(ctx, MoveRequest{
+		plan = cfg.OnCMove(ctx, MoveRequest{
 			QueryModel:      rq.AffectedSOPClassUID,
 			MoveDestination: rq.MoveDestination,
 			Identifier:      ds,
 			IdentifierData:  ident,
 			Priority:        rq.Priority,
 		})
-	} else {
-		matches = []RetrieveMatch{{Status: dimse.StatusSuccess}}
 	}
-	if len(matches) == 0 {
-		matches = []RetrieveMatch{{Status: dimse.StatusSuccess}}
+	if len(plan.Stores) > 0 {
+		if err := scpPerformMoveStores(ctx, conn, cfg, peerMax, pcid, ac.TransferSyntax, rq, callingAE, plan.Stores); err != nil {
+			fail := []RetrieveMatch{{
+				Status: 0xA801,
+				SubOperations: dimse.SubOperations{
+					Failed: uint16(len(plan.Stores)), Present: true,
+				},
+			}}
+			if len(plan.Responses) > 0 {
+				fail = plan.Responses
+			}
+			return writeRetrieveResponses(conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, fail)
+		}
+		return nil
 	}
-	return writeRetrieveResponses(conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, matches)
+	if len(plan.Responses) == 0 {
+		plan.Responses = []RetrieveMatch{{Status: dimse.StatusSuccess}}
+	}
+	return writeRetrieveResponses(conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, plan.Responses)
+}
+
+func scpPerformMoveStores(ctx context.Context, conn net.Conn, cfg ServerConfig, peerMax uint32, pcid byte, transferSyntax string, rq *dimse.CMoveRQ, moveOriginatorAE string, stores []StoreRequest) error {
+	dest, ok := cfg.MoveDestinations[rq.MoveDestination]
+	if !ok || dest.Addr == "" {
+		return fmt.Errorf("ae: unknown Move Destination %q", rq.MoveDestination)
+	}
+	called := dest.CalledAE
+	if called == "" {
+		called = rq.MoveDestination
+	}
+	calling := dest.CallingAE
+	if calling == "" {
+		calling = cfg.AETitle
+	}
+
+	seen := map[string]struct{}{}
+	var pcs []PresentationContext
+	id := byte(1)
+	for _, s := range stores {
+		if s.AffectedSOPClassUID == "" {
+			continue
+		}
+		if _, ok := seen[s.AffectedSOPClassUID]; ok {
+			continue
+		}
+		seen[s.AffectedSOPClassUID] = struct{}{}
+		pcs = append(pcs, PresentationContext{
+			ID:               id,
+			AbstractSyntax:   s.AffectedSOPClassUID,
+			TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian},
+		})
+		id += 2
+	}
+	if len(pcs) == 0 {
+		return fmt.Errorf("ae: C-MOVE stores missing SOP Class UID")
+	}
+
+	assoc, err := Dial(ctx, Config{
+		AETitle:              calling,
+		PresentationContexts: pcs,
+		TLS:                  cfg.TLS,
+		Logger:               cfg.Logger,
+	}, dest.Addr, called)
+	if err != nil {
+		return fmt.Errorf("ae: dial Move Destination: %w", err)
+	}
+	defer func() { _ = assoc.Release(ctx) }()
+
+	total := uint16(len(stores))
+	var completed, failed, warning uint16
+
+	writePending := func(remaining, completed, failed, warning uint16) error {
+		return writeRetrieveResponses(conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
+			Status: dimse.StatusPending,
+			SubOperations: dimse.SubOperations{
+				Remaining: remaining, Completed: completed, Failed: failed, Warning: warning, Present: true,
+			},
+		}})
+	}
+
+	if err := writePending(total, 0, 0, 0); err != nil {
+		return err
+	}
+
+	for i, store := range stores {
+		if store.MoveOriginatorApplicationEntityTitle == "" {
+			store.MoveOriginatorApplicationEntityTitle = moveOriginatorAE
+		}
+		if store.MoveOriginatorMessageID == 0 {
+			store.MoveOriginatorMessageID = rq.MessageID
+		}
+		res, err := assoc.CStore(ctx, store)
+		remaining := total - uint16(i+1)
+		if err != nil || res == nil || res.Status != dimse.StatusSuccess {
+			failed++
+		} else {
+			completed++
+		}
+		if err := writePending(remaining, completed, failed, warning); err != nil {
+			return err
+		}
+	}
+
+	final := dimse.StatusSuccess
+	if failed > 0 && completed > 0 {
+		final = dimse.StatusWarning
+	} else if failed > 0 {
+		final = 0xA702
+	}
+	return writeRetrieveResponses(conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
+		Status: final,
+		SubOperations: dimse.SubOperations{
+			Remaining: 0, Completed: completed, Failed: failed, Warning: warning, Present: true,
+		},
+	}})
 }
 
 func scpHandleGet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CGetRQ, ds []byte) error {

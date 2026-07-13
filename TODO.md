@@ -24,12 +24,12 @@
 12. ~~C-CANCEL (FIND/MOVE/GET)~~ ✅
 13. ~~Storage Commitment Push Model (N-ACTION / N-EVENT-REPORT)~~ ✅
 14. ~~v0.4.0 release~~ ✅
+15. ~~C-MOVE SCP → MoveDestination C-STORE sub-operations~~ ✅
 
 ## Explicitly later
 
 - Full SCP framework parity with pynetdicom
 - Remaining DIMSE-N (N-GET/SET/CREATE/DELETE); async new-association event report
-- C-MOVE SCP → MoveDestination C-STORE sub-operations
 - User Identity Negotiation
 - DICOM WebSockets
 - HTJ2K / JPEG encode for Accept renegotiation (blocked upstream on JPEG)

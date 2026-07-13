@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- C-MOVE SCP performs real C-STORE sub-operations to Move Destination: `MovePlan`, `ServerConfig.MoveDestinations`, Move Originator AE/Message ID on outbound stores
+
+### Changed
+- **Breaking:** `OnCMove` now returns `MovePlan` (`Stores` + `Responses`) instead of `[]RetrieveMatch`
+
 ## [0.4.0] - 2026-07-13
 
 ### Added
