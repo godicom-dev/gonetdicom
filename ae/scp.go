@@ -18,6 +18,23 @@ type StoreHandler func(ctx context.Context, req StoreRequest) uint16
 // a final Success/Failure/Cancel response (without Identifier).
 type FindHandler func(ctx context.Context, req FindRequest) []FindMatch
 
+// MoveHandler handles an incoming C-MOVE-RQ. Return Pending responses followed
+// by a final status. Sub-operation C-STORE to MoveDestination is out of scope
+// for this MVP (status/sub-op counts only).
+type MoveHandler func(ctx context.Context, req MoveRequest) []RetrieveMatch
+
+// GetPlan is the SCP response plan for a C-GET-RQ.
+//
+// Stores are sent as C-STORE-RQ on the same association (SCU role), then
+// Responses are sent as C-GET-RSP.
+type GetPlan struct {
+	Stores    []StoreRequest
+	Responses []RetrieveMatch
+}
+
+// GetHandler handles an incoming C-GET-RQ.
+type GetHandler func(ctx context.Context, req GetRequest) GetPlan
+
 type acceptedContext struct {
 	AbstractSyntax string
 	TransferSyntax string
@@ -34,6 +51,8 @@ type ServerConfig struct {
 	AcceptedAbstractSyntaxes []string
 	OnCStore                 StoreHandler
 	OnCFind                  FindHandler
+	OnCMove                  MoveHandler
+	OnCGet                   GetHandler
 }
 
 func (c ServerConfig) withDefaults() ServerConfig {
@@ -221,6 +240,14 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 		return scpHandleFind(ctx, conn, cfg, accepted, peerMax, pcid, findRQ, ds)
 	}
 
+	if moveRQ, err := dimse.DecodeCMoveRQ(cmd); err == nil {
+		return scpHandleMove(ctx, conn, cfg, accepted, peerMax, pcid, moveRQ, ds)
+	}
+
+	if getRQ, err := dimse.DecodeCGetRQ(cmd); err == nil {
+		return scpHandleGet(ctx, conn, cfg, accepted, peerMax, pcid, getRQ, ds)
+	}
+
 	rq, err := dimse.DecodeCStoreRQ(cmd)
 	if err != nil {
 		return fmt.Errorf("ae: unsupported DIMSE command: %w", err)
@@ -313,6 +340,221 @@ func scpHandleFind(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 		}
 	}
 	return nil
+}
+
+func scpHandleMove(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CMoveRQ, ds []byte) error {
+	ac, ok := accepted[pcid]
+	if !ok || ac.AbstractSyntax != rq.AffectedSOPClassUID {
+		rsp, err := (&dimse.CMoveRSP{
+			MessageIDBeingRespondedTo: rq.MessageID,
+			AffectedSOPClassUID:       rq.AffectedSOPClassUID,
+			Status:                    0x0122,
+		}).Encode()
+		if err != nil {
+			return err
+		}
+		return writeMessage(conn, pcid, rsp, nil, peerMax)
+	}
+
+	var ident *godicom.Dataset
+	if len(ds) > 0 {
+		decoded, err := godicom.DecodeDataset(ds, ac.TransferSyntax)
+		if err != nil {
+			return fmt.Errorf("ae: decode C-MOVE identifier: %w", err)
+		}
+		ident = decoded
+	}
+
+	var matches []RetrieveMatch
+	if cfg.OnCMove != nil {
+		matches = cfg.OnCMove(ctx, MoveRequest{
+			QueryModel:      rq.AffectedSOPClassUID,
+			MoveDestination: rq.MoveDestination,
+			Identifier:      ds,
+			IdentifierData:  ident,
+			Priority:        rq.Priority,
+		})
+	} else {
+		matches = []RetrieveMatch{{Status: dimse.StatusSuccess}}
+	}
+	if len(matches) == 0 {
+		matches = []RetrieveMatch{{Status: dimse.StatusSuccess}}
+	}
+	return writeRetrieveResponses(conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, matches)
+}
+
+func scpHandleGet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CGetRQ, ds []byte) error {
+	ac, ok := accepted[pcid]
+	if !ok || ac.AbstractSyntax != rq.AffectedSOPClassUID {
+		rsp, err := (&dimse.CGetRSP{
+			MessageIDBeingRespondedTo: rq.MessageID,
+			AffectedSOPClassUID:       rq.AffectedSOPClassUID,
+			Status:                    0x0122,
+		}).Encode()
+		if err != nil {
+			return err
+		}
+		return writeMessage(conn, pcid, rsp, nil, peerMax)
+	}
+
+	var ident *godicom.Dataset
+	if len(ds) > 0 {
+		decoded, err := godicom.DecodeDataset(ds, ac.TransferSyntax)
+		if err != nil {
+			return fmt.Errorf("ae: decode C-GET identifier: %w", err)
+		}
+		ident = decoded
+	}
+
+	var plan GetPlan
+	if cfg.OnCGet != nil {
+		plan = cfg.OnCGet(ctx, GetRequest{
+			QueryModel:     rq.AffectedSOPClassUID,
+			Identifier:     ds,
+			IdentifierData: ident,
+			Priority:       rq.Priority,
+		})
+	}
+	if len(plan.Responses) == 0 {
+		plan.Responses = []RetrieveMatch{{Status: dimse.StatusSuccess}}
+	}
+
+	var storeMsgID uint16 = 1
+	for _, store := range plan.Stores {
+		storePCID, storeTS, ok := contextByAbstractAccepted(accepted, store.AffectedSOPClassUID)
+		if !ok {
+			return fmt.Errorf("ae: C-GET store missing presentation context for %s", store.AffectedSOPClassUID)
+		}
+		payload := store.Dataset
+		if store.Data != nil {
+			encoded, err := store.Data.Encode(storeTS)
+			if err != nil {
+				return fmt.Errorf("ae: encode C-GET store dataset: %w", err)
+			}
+			payload = encoded
+		}
+		priority := store.Priority
+		if priority == 0 {
+			priority = dimse.PriorityLow
+		}
+		cmd, err := (&dimse.CStoreRQ{
+			MessageID:                            storeMsgID,
+			Priority:                             priority,
+			AffectedSOPClassUID:                  store.AffectedSOPClassUID,
+			AffectedSOPInstanceUID:               store.AffectedSOPInstanceUID,
+			MoveOriginatorApplicationEntityTitle: store.MoveOriginatorApplicationEntityTitle,
+			MoveOriginatorMessageID:              store.MoveOriginatorMessageID,
+			HasMoveOriginator:                    store.MoveOriginatorApplicationEntityTitle != "",
+		}).Encode()
+		if err != nil {
+			return err
+		}
+		storeMsgID++
+		if err := writeMessage(conn, storePCID, cmd, payload, peerMax); err != nil {
+			return err
+		}
+		rspCmd, _, err := readMessage(conn)
+		if err != nil {
+			return err
+		}
+		if _, err := dimse.DecodeCStoreRSP(rspCmd); err != nil {
+			return fmt.Errorf("ae: decode C-STORE-RSP during C-GET: %w", err)
+		}
+	}
+
+	return writeRetrieveResponses(conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false, plan.Responses)
+}
+
+func writeRetrieveResponses(conn net.Conn, pcid byte, peerMax uint32, transferSyntax string, msgID uint16, sopClass string, isMove bool, matches []RetrieveMatch) error {
+	for _, m := range matches {
+		hasDS := m.Identifier != nil
+		var (
+			rsp []byte
+			err error
+		)
+		if isMove {
+			rsp, err = (&dimse.CMoveRSP{
+				MessageIDBeingRespondedTo: msgID,
+				AffectedSOPClassUID:       sopClass,
+				Status:                    m.Status,
+				HasDataset:                hasDS,
+				SubOperations:             m.SubOperations,
+			}).Encode()
+		} else {
+			rsp, err = (&dimse.CGetRSP{
+				MessageIDBeingRespondedTo: msgID,
+				AffectedSOPClassUID:       sopClass,
+				Status:                    m.Status,
+				HasDataset:                hasDS,
+				SubOperations:             m.SubOperations,
+			}).Encode()
+		}
+		if err != nil {
+			return err
+		}
+		var payload []byte
+		if hasDS {
+			payload, err = m.Identifier.Encode(transferSyntax)
+			if err != nil {
+				return fmt.Errorf("ae: encode retrieve identifier: %w", err)
+			}
+		}
+		if err := writeMessage(conn, pcid, rsp, payload, peerMax); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func contextByAbstractAccepted(accepted map[byte]acceptedContext, uid string) (byte, string, bool) {
+	for id, ac := range accepted {
+		if ac.AbstractSyntax == uid {
+			return id, ac.TransferSyntax, true
+		}
+	}
+	return 0, "", false
+}
+
+func readMessage(conn net.Conn) (command, dataset []byte, err error) {
+	var (
+		cmdBuf  []byte
+		dsBuf   []byte
+		cmdDone bool
+		dsDone  bool
+	)
+	for {
+		raw, err := pdu.Read(conn)
+		if err != nil {
+			return nil, nil, err
+		}
+		p, ok := raw.(*pdu.PDataTF)
+		if !ok {
+			return nil, nil, fmt.Errorf("ae: unexpected PDU %T while reading message", raw)
+		}
+		for _, pdv := range p.PDVs {
+			if pdv.IsCommand() {
+				cmdBuf = append(cmdBuf, pdv.Fragment()...)
+				if pdv.IsLast() {
+					cmdDone = true
+					hasDS, err := dimse.CommandHasDataset(cmdBuf)
+					if err != nil {
+						return nil, nil, err
+					}
+					if !hasDS {
+						dsDone = true
+					}
+				}
+			} else {
+				dsBuf = append(dsBuf, pdv.Fragment()...)
+				if pdv.IsLast() {
+					dsDone = true
+				}
+			}
+		}
+		if cmdDone && dsDone {
+			return cmdBuf, dsBuf, nil
+		}
+	}
 }
 
 func writeMessage(conn net.Conn, pcid byte, command, dataset []byte, maxPDU uint32) error {
