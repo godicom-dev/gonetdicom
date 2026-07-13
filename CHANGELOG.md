@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-13
+
 ### Added
 - C-MOVE parallel destination stores via `MoveDestination.MaxAssociations` (fan-out across Storage associations)
 - Storage Commitment async N-EVENT-REPORT on a new association via `EventReportRequest.AsyncDestination`

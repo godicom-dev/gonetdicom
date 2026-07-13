@@ -7,6 +7,8 @@
 - Do not re-implement Dataset/pixel logic here — call godicom.
 - When godicom is blocking, fix godicom first.
 - API shape: Go-idiomatic; no Python dynamic Association monkey-patching.
+- **Behaviour + tests**: overall design and unit/golden tests strictly follow pynetdicom (and PS3.x), not reinvent protocol semantics.
+- **Performance**: where behaviour is equivalent, exploit Go — goroutines, fan-out associations, streaming I/O, bounded worker pools — instead of mirroring Python's single-threaded pace.
 
 ## Near term
 
@@ -31,6 +33,7 @@
 19. ~~Remaining DIMSE-N (N-GET/SET/CREATE/DELETE)~~ ✅
 20. ~~v0.7.0 release~~ ✅
 21. ~~Async new-association event report + parallel C-MOVE stores~~ ✅
+22. ~~v0.8.0 release~~ ✅
 
 ## Explicitly later
 
