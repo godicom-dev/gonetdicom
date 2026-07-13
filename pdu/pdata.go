@@ -99,3 +99,79 @@ func NewCommandPDV(contextID byte, commandSet []byte) PDV {
 	copy(value[1:], commandSet)
 	return PDV{ContextID: contextID, Value: value}
 }
+
+// NewDataPDV builds a single last-fragment dataset PDV.
+func NewDataPDV(contextID byte, dataset []byte) PDV {
+	value := make([]byte, 1+len(dataset))
+	value[0] = MCHLastFragment // data + last
+	copy(value[1:], dataset)
+	return PDV{ContextID: contextID, Value: value}
+}
+
+// FragmentMessage builds P-DATA-TF PDUs for a command set and optional dataset.
+//
+// maxPDULength is the peer's Maximum Length Received (0 = unlimited). Each
+// P-DATA-TF PDV list is kept within that limit (PS3.8 Annex D), matching
+// pynetdicom's encode_msg fragmentation.
+func FragmentMessage(contextID byte, command, dataset []byte, maxPDULength uint32) ([]*PDataTF, error) {
+	if len(command) == 0 {
+		return nil, fmt.Errorf("pdu: empty command set")
+	}
+	var out []*PDataTF
+	cmdPDUs, err := fragmentPart(contextID, command, true, maxPDULength)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, cmdPDUs...)
+	if len(dataset) > 0 {
+		dsPDUs, err := fragmentPart(contextID, dataset, false, maxPDULength)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, dsPDUs...)
+	}
+	return out, nil
+}
+
+func fragmentPart(contextID byte, data []byte, isCommand bool, maxPDULength uint32) ([]*PDataTF, error) {
+	// PDV item overhead: 4 (item length) + 1 (context ID) + 1 (MCH) = 6
+	// Maximum Length Received limits the PDV list size in the PDU body.
+	maxFrag := 0
+	if maxPDULength > 0 {
+		if maxPDULength < 8 {
+			return nil, fmt.Errorf("pdu: max PDU length %d too small", maxPDULength)
+		}
+		maxFrag = int(maxPDULength) - 6
+	}
+
+	var frags [][]byte
+	if maxFrag == 0 || len(data) <= maxFrag {
+		frags = [][]byte{data}
+	} else {
+		for off := 0; off < len(data); {
+			end := off + maxFrag
+			if end > len(data) {
+				end = len(data)
+			}
+			frags = append(frags, data[off:end])
+			off = end
+		}
+	}
+
+	out := make([]*PDataTF, 0, len(frags))
+	for i, frag := range frags {
+		last := i == len(frags)-1
+		var mch byte
+		if isCommand {
+			mch = MCHCommand
+		}
+		if last {
+			mch |= MCHLastFragment
+		}
+		value := make([]byte, 1+len(frag))
+		value[0] = mch
+		copy(value[1:], frag)
+		out = append(out, &PDataTF{PDVs: []PDV{{ContextID: contextID, Value: value}}})
+	}
+	return out, nil
+}

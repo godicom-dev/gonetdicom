@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Phase 2 C-STORE: `dimse` C-STORE-RQ/RSP, PDV fragmentation, `ae.CStore` SCU, `ae.Serve` SCP with `OnCStore`
+- Multi presentation-context association negotiation on SCU `Config`
+- Golden fixture roundtrips for C-STORE command sets (pynetdicom test bytes)
+
+### Added (Phase 1)
 - Phase 1 DIMSE foundation: `pdu` (A-ASSOCIATE / P-DATA-TF / A-RELEASE / A-ABORT), `dimse` C-ECHO command sets, `ae` Association SCU + `CEcho`
 - Golden fixture roundtrips from pynetdicom test bytes; mock SCP C-ECHO integration tests
 - GitHub Actions CI (`go test -race`, `go vet`)

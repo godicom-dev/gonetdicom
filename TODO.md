@@ -10,9 +10,10 @@
 ## Near term
 
 1. ~~PDU / Association types + C-ECHO SCU roundtrip (local or mock)~~ ✅ Phase 1
-2. C-STORE SCU (use godicom for dataset encode under negotiated TS)
-3. Minimal SCP acceptor for Verification / C-STORE
-4. Expand CI (coverage, golangci-lint) as packages grow
+2. ~~C-STORE SCU/SCP (wire path with encoded dataset bytes)~~ ✅
+3. godicom `EncodeDataset` (or equivalent) + wire into `ae.CStore`
+4. C-FIND SCU (Patient/Study root)
+5. Expand CI (coverage, golangci-lint) as packages grow
 
 ## Explicitly later
 

@@ -190,3 +190,17 @@ func trimUID(b []byte) string {
 	}
 	return string(b)
 }
+
+// CommandHasDataset reports whether Command Data Set Type indicates a dataset follows.
+func CommandHasDataset(cmd []byte) (bool, error) {
+	els, err := decodeElements(cmd)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range els {
+		if e.tag == 0x00000800 {
+			return asUS(e.value) != CommandDataSetTypeNone, nil
+		}
+	}
+	return false, nil
+}
