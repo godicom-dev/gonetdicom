@@ -12,14 +12,50 @@ import (
 )
 
 // SearchStudies performs QIDO-RS Search for Studies.
-// query keys are DICOM attribute keywords or tag numbers as used by the origin server
-// (e.g. PatientID, StudyInstanceUID).
 func (c *Client) SearchStudies(ctx context.Context, query url.Values) ([]*godicom.Dataset, error) {
-	base, err := c.resolve("studies")
+	path, err := c.resolve("studies")
 	if err != nil {
 		return nil, err
 	}
-	u, err := url.Parse(base)
+	return c.search(ctx, path, query)
+}
+
+// SearchSeries performs QIDO-RS Search for Series under a study.
+func (c *Client) SearchSeries(ctx context.Context, studyUID string, query url.Values) ([]*godicom.Dataset, error) {
+	if studyUID == "" {
+		return nil, fmt.Errorf("dicomweb: study UID required")
+	}
+	path, err := c.resolve("studies", studyUID, "series")
+	if err != nil {
+		return nil, err
+	}
+	return c.search(ctx, path, query)
+}
+
+// SearchInstances performs QIDO-RS Search for Instances under a study/series.
+// seriesUID may be empty to search all instances in the study
+// (GET /studies/{study}/instances).
+func (c *Client) SearchInstances(ctx context.Context, studyUID, seriesUID string, query url.Values) ([]*godicom.Dataset, error) {
+	if studyUID == "" {
+		return nil, fmt.Errorf("dicomweb: study UID required")
+	}
+	var (
+		path string
+		err  error
+	)
+	if seriesUID == "" {
+		path, err = c.resolve("studies", studyUID, "instances")
+	} else {
+		path, err = c.resolve("studies", studyUID, "series", seriesUID, "instances")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return c.search(ctx, path, query)
+}
+
+func (c *Client) search(ctx context.Context, path string, query url.Values) ([]*godicom.Dataset, error) {
+	u, err := url.Parse(path)
 	if err != nil {
 		return nil, err
 	}

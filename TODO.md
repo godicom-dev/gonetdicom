@@ -23,5 +23,5 @@
 - Full SCP framework parity with pynetdicom
 - TLS / DICOM WebSockets
 - HTJ2K / JPEG encode for Accept renegotiation (blocked upstream on JPEG)
-- Richer QIDO (series/instance levels, fuzzy matching) / WADO rendered / bulk data
+- Richer QIDO fuzzy matching / WADO rendered / bulk data
 - Production origin-server auth, persistence backends

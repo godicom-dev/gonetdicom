@@ -1,9 +1,9 @@
 // Package dicomweb implements a DICOMweb (PS3.18) client and origin-server MVP.
 //
 // Supported transactions:
-//   - WADO-RS Retrieve Instance (application/dicom) and Instance Metadata (dicom+json)
+//   - WADO-RS Retrieve Study / Series / Instance (+ metadata)
 //   - STOW-RS Store Instances (multipart/related; type="application/dicom")
-//   - QIDO-RS Search for Studies (application/dicom+json)
+//   - QIDO-RS Search for Studies / Series / Instances
 package dicomweb
 
 import (
