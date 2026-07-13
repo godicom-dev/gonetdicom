@@ -3,9 +3,11 @@ package ae
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"time"
 
@@ -42,6 +44,14 @@ type Config struct {
 	ImplementationClassUID    string
 	ImplementationVersionName string
 	DialTimeout               time.Duration
+	// IdleTimeout bounds each PDU read/write when the context has no deadline.
+	// Zero means no extra idle deadline (context-only).
+	IdleTimeout time.Duration
+	// TLS, when non-nil, dials with TLS (DICOM over TLS). ServerName should be set
+	// when verifying certificates.
+	TLS *tls.Config
+	// Logger receives optional association lifecycle events. Nil disables logging.
+	Logger *slog.Logger
 	// PresentationContexts to propose. If empty, Verification only is proposed.
 	PresentationContexts []PresentationContext
 }
@@ -72,6 +82,10 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
+func (c Config) log() *slog.Logger {
+	return c.Logger
+}
+
 // AcceptedContext is a presentation context accepted by the peer.
 type AcceptedContext struct {
 	ID             byte
@@ -90,14 +104,27 @@ type Association struct {
 }
 
 // Dial associates with addr (host:port) as an SCU.
+// When cfg.TLS is set, the connection is established with TLS.
 func Dial(ctx context.Context, cfg Config, addr, calledAE string) (*Association, error) {
 	cfg = cfg.withDefaults()
 	if calledAE == "" {
 		return nil, fmt.Errorf("ae: empty called AE title")
 	}
 
-	d := net.Dialer{Timeout: cfg.DialTimeout}
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	var (
+		conn net.Conn
+		err  error
+	)
+	if cfg.TLS != nil {
+		d := &tls.Dialer{
+			NetDialer: &net.Dialer{Timeout: cfg.DialTimeout},
+			Config:    cfg.TLS,
+		}
+		conn, err = d.DialContext(ctx, "tcp", addr)
+	} else {
+		d := net.Dialer{Timeout: cfg.DialTimeout}
+		conn, err = d.DialContext(ctx, "tcp", addr)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("ae: dial %s: %w", addr, err)
 	}
@@ -111,6 +138,15 @@ func Dial(ctx context.Context, cfg Config, addr, calledAE string) (*Association,
 	if err := assoc.negotiate(ctx); err != nil {
 		_ = conn.Close()
 		return nil, err
+	}
+	if log := cfg.log(); log != nil {
+		log.Info("ae: association established",
+			"calling", cfg.AETitle,
+			"called", calledAE,
+			"addr", addr,
+			"tls", cfg.TLS != nil,
+			"contexts", len(assoc.contexts),
+		)
 	}
 	return assoc, nil
 }
@@ -341,6 +377,9 @@ func (a *Association) Release(ctx context.Context) error {
 	}
 	switch raw.(type) {
 	case *pdu.AReleaseRP:
+		if log := a.cfg.log(); log != nil {
+			log.Info("ae: association released", "calling", a.cfg.AETitle, "called", a.called)
+		}
 		return nil
 	case *pdu.AAbort:
 		return ErrAborted
@@ -356,6 +395,9 @@ func (a *Association) Abort() error {
 	}
 	defer func() { _ = a.closeConn() }()
 	_ = pdu.Write(a.conn, &pdu.AAbort{Source: 0x00, ReasonDiagnostic: 0x00})
+	if log := a.cfg.log(); log != nil {
+		log.Warn("ae: association aborted", "calling", a.cfg.AETitle, "called", a.called)
+	}
 	return nil
 }
 
@@ -377,7 +419,8 @@ func (a *Association) writePDU(ctx context.Context, p pdu.PDU) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if deadline, ok := ctx.Deadline(); ok {
+	deadline, ok := a.pduDeadline(ctx)
+	if ok {
 		_ = a.conn.SetWriteDeadline(deadline)
 		defer func() { _ = a.conn.SetWriteDeadline(time.Time{}) }()
 	}
@@ -391,7 +434,8 @@ func (a *Association) readPDU(ctx context.Context) (pdu.PDU, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if deadline, ok := ctx.Deadline(); ok {
+	deadline, ok := a.pduDeadline(ctx)
+	if ok {
 		_ = a.conn.SetReadDeadline(deadline)
 		defer func() { _ = a.conn.SetReadDeadline(time.Time{}) }()
 	}
@@ -403,4 +447,14 @@ func (a *Association) readPDU(ctx context.Context) (pdu.PDU, error) {
 		return nil, fmt.Errorf("ae: read PDU: %w", err)
 	}
 	return p, nil
+}
+
+func (a *Association) pduDeadline(ctx context.Context) (time.Time, bool) {
+	if deadline, ok := ctx.Deadline(); ok {
+		return deadline, true
+	}
+	if a.cfg.IdleTimeout > 0 {
+		return time.Now().Add(a.cfg.IdleTimeout), true
+	}
+	return time.Time{}, false
 }

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Phase 4 harden: DIMSE TLS (`Config.TLS` / `ListenAndServeTLS`), `IdleTimeout`, optional `slog` on AE + DICOMweb
+- `dicomweb.NewClient` options (`WithTLSConfig`, `WithTimeout`, `WithLogger`, `WithHTTPClient`)
+- Optional real-PACS soak: `go test -tags=integration ./ae -run TestIntegrationCEchoPACS`
+
+### Added (prior)
 - CI: `golangci-lint` job + `.golangci.yml`
 
 ## [0.1.0] - 2026-07-13
