@@ -22,8 +22,7 @@ gonetdicom
 
 ## Status
 
-**Bootstrap** — module + submodule + dependency on godicom `v0.20.0`.  
-No DIMSE/DICOMweb APIs yet; see roadmap below.
+**Phase 1** — PDU encode/decode, Association SCU, C-ECHO SCU.
 
 ## Install
 
@@ -37,6 +36,46 @@ Clone with submodule:
 git clone --recurse-submodules https://github.com/godicom-dev/gonetdicom.git
 ```
 
+## Quick start (C-ECHO SCU)
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/godicom-dev/gonetdicom/ae"
+)
+
+func main() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	assoc, err := ae.Dial(ctx, ae.Config{AETitle: "MYSCU"}, "pacs.example:11112", "ANY-SCP")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer assoc.Abort()
+
+	if err := assoc.CEcho(ctx); err != nil {
+		log.Fatal(err)
+	}
+	if err := assoc.Release(ctx); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+## Packages
+
+| Package | Role |
+|---------|------|
+| `pdu` | A-ASSOCIATE / P-DATA-TF / A-RELEASE / A-ABORT |
+| `dimse` | C-ECHO command sets (Implicit VR LE) |
+| `ae` | Association SCU + `CEcho` |
+
 ## Roadmap (working plan)
 
 ### Phase 0 — Bootstrap ✅
@@ -44,10 +83,10 @@ git clone --recurse-submodules https://github.com/godicom-dev/gonetdicom.git
 - [x] `pynetdicom` submodule
 - [x] depend on `godicom`
 
-### Phase 1 — DIMSE foundation (pynetdicom-aligned)
-- Association / AE title / presentation contexts
-- PDU encode/decode
-- C-ECHO SCU (smoke path)
+### Phase 1 — DIMSE foundation (pynetdicom-aligned) ✅
+- [x] Association / AE title / presentation contexts
+- [x] PDU encode/decode
+- [x] C-ECHO SCU (smoke path)
 
 ### Phase 2 — Core DIMSE services
 - C-STORE SCU/SCP
@@ -67,15 +106,14 @@ git clone --recurse-submodules https://github.com/godicom-dev/gonetdicom.git
 
 ```
 gonetdicom/
-├── gonetdicom.go      # package docs
+├── ae/                # Association SCU
+├── dimse/             # DIMSE command sets
+├── pdu/               # Upper Layer PDUs
 ├── pynetdicom/        # submodule → pydicom/pynetdicom
 ├── go.mod
 └── README.md
 ```
 
-Packages will grow as Phase 1 lands (`ae`, `pdu`, `dimse`, later `dicomweb`).
-
 ## License
 
-MIT — see [LICENSE](LICENSE).  
-`pynetdicom/` retains its upstream license.
+MIT — see [LICENSE](LICENSE).
