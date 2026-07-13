@@ -16,7 +16,8 @@
 4. ~~C-FIND SCU/SCP~~ ✅
 5. ~~C-MOVE / C-GET SCU/SCP~~ ✅
 6. ~~DICOMweb MVP (WADO/STOW/QIDO)~~ ✅
-7. Expand CI (coverage, golangci-lint) as packages grow
+7. ~~Expand CI (golangci-lint)~~ ✅
+8. Phase 4 harden (TLS helpers, structured logging, real-PACS soak)
 
 ## Explicitly later
 

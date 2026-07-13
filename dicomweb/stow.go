@@ -44,7 +44,7 @@ func (c *Client) StoreInstances(ctx context.Context, studyUID string, instances 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err

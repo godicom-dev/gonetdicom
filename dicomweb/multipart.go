@@ -2,6 +2,7 @@ package dicomweb
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -55,7 +56,7 @@ func readDICOMParts(body io.Reader, contentType string) ([][]byte, error) {
 		var parts [][]byte
 		for {
 			p, err := mr.NextPart()
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			if err != nil {

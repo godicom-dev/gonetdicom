@@ -1,5 +1,7 @@
 package dimse
 
+import "testing"
+
 // Golden DIMSE bytes from pynetdicom/pynetdicom/tests/encoded_dimse_msg.py.
 // Each starts with Message Control Header 0x03 (command + last fragment).
 
@@ -140,3 +142,17 @@ var goldenCGetRSPPDV = []byte{
 	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x23, 0x10, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00,
 }
 
+func TestGoldenDatasetPDVsPresent(t *testing.T) {
+	// Keep Identifier/dataset PDV fixtures for future payload roundtrips.
+	fixtures := [][]byte{
+		goldenCFindRQDSPDV,
+		goldenCFindRSPDSPDV,
+		goldenCMoveRQDSPDV,
+		goldenCGetRQDSPDV,
+	}
+	for i, f := range fixtures {
+		if len(f) < 2 {
+			t.Fatalf("fixture[%d] too short", i)
+		}
+	}
+}

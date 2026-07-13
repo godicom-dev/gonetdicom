@@ -8,25 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- DICOMweb: QIDO-RS Search for Series/Instances; WADO-RS Retrieve Study/Series (+ metadata)
-- Phase 3 DICOMweb MVP: `dicomweb` client (WADO-RS instance/metadata, STOW-RS, QIDO-RS studies) + `Handler`/`MemoryStore` origin-server
-- Depend on godicom `v0.23.0` (`EncodeFile` / `ReadBytes` / `dicomjson.ParseDatasets`)
-- Phase 2 C-MOVE / C-GET: `dimse` command sets + sub-operation counts, `ae.CMove` / `ae.CGet` SCU (C-GET demuxes interleaved C-STORE), `ae.Serve` `OnCMove` / `OnCGet` SCP
-- Phase 2 C-FIND: `dimse` C-FIND-RQ/RSP, `ae.CFind` SCU, `ae.Serve` `OnCFind` SCP (Patient/Study root models)
-- Depend on godicom `v0.22.1` (`DecodeDataset` + encode race fix)
+- CI: `golangci-lint` job + `.golangci.yml`
 
-### Added (prior)
-- Depend on godicom `v0.21.0`; `StoreRequest.Data` encodes via `Dataset.Encode` under the negotiated transfer syntax
+## [0.1.0] - 2026-07-13
 
-### Added (Phase 2 C-STORE)
-- Phase 2 C-STORE: `dimse` C-STORE-RQ/RSP, PDV fragmentation, `ae.CStore` SCU, `ae.Serve` SCP with `OnCStore`
-- Multi presentation-context association negotiation on SCU `Config`
-- Golden fixture roundtrips for C-STORE command sets (pynetdicom test bytes)
+First tagged release — Phase 1–3 foundation.
 
-### Added (Phase 1)
-- Phase 1 DIMSE foundation: `pdu` (A-ASSOCIATE / P-DATA-TF / A-RELEASE / A-ABORT), `dimse` C-ECHO command sets, `ae` Association SCU + `CEcho`
-- Golden fixture roundtrips from pynetdicom test bytes; mock SCP C-ECHO integration tests
-- GitHub Actions CI (`go test -race`, `go vet`)
-
-### Added (bootstrap)
-- Repository bootstrap: Go module (`godicom` v0.20.0), `pynetdicom` submodule, package docs + smoke test
+### Added
+- Phase 1 DIMSE: `pdu`, `dimse` C-ECHO, `ae` Association SCU + `CEcho`
+- Phase 2 DIMSE: C-STORE / C-FIND / C-MOVE / C-GET SCU/SCP (godicom encode/decode)
+- Phase 3 DICOMweb: `dicomweb` WADO-RS (study/series/instance + metadata), STOW-RS, QIDO-RS (studies/series/instances); `Handler` + `MemoryStore`
+- Depend on godicom `v0.23.0`
+- GitHub Actions CI (`go test -race`, `go vet`, `golangci-lint`)

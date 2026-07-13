@@ -71,7 +71,7 @@ func (c *Client) do(ctx context.Context, req *http.Request) (*http.Response, err
 }
 
 func readErrorBody(resp *http.Response) string {
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 	return strings.TrimSpace(string(b))
 }

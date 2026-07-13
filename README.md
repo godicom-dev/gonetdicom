@@ -22,7 +22,7 @@ gonetdicom
 
 ## Status
 
-**Phase 3 (partial)** — DIMSE Phase 2 complete; DICOMweb MVP (`dicomweb`: WADO-RS / STOW-RS / QIDO-RS) via godicom `v0.23.0+`.
+**Status:** `v0.1.0` — Phase 1–3 (DIMSE + DICOMweb MVP); depends on godicom `v0.23.0+`.
 
 ## Install
 

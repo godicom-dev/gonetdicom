@@ -95,7 +95,7 @@ func Serve(ctx context.Context, ln net.Listener, cfg ServerConfig) error {
 }
 
 func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) error {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	raw, err := pdu.Read(conn)
 	if err != nil {
@@ -206,7 +206,7 @@ func scpLoop(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[
 					}
 				}
 			}
-			if !(cmdDone && dsDone) {
+			if !cmdDone || !dsDone {
 				continue
 			}
 			if err := scpHandleMessage(ctx, conn, cfg, accepted, peerMax, pcid, cmdBuf, dsBuf); err != nil {
