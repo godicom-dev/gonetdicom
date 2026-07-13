@@ -22,7 +22,7 @@ gonetdicom
 
 ## Status
 
-**Status:** `v0.6.0` — Phase 1–4 + Role Selection / C-CANCEL / Storage Commitment / C-MOVE Destination C-STORE / User Identity; depends on godicom `v0.23.0+`.
+**Status:** `v0.7.0` — Phase 1–4 + Role Selection / C-CANCEL / Storage Commitment / C-MOVE Destination C-STORE / User Identity / full DIMSE-N; depends on godicom `v0.23.0+`.
 
 ## Install
 
