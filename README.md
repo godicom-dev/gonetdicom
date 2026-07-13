@@ -22,7 +22,7 @@ gonetdicom
 
 ## Status
 
-**Phase 2 (partial)** — C-ECHO + C-STORE + C-FIND SCU/SCP; dataset encode/decode via godicom `v0.22.1+`.
+**Phase 2 (partial)** — C-ECHO + C-STORE + C-FIND + C-MOVE/C-GET SCU/SCP; dataset encode/decode via godicom `v0.22.1+`.
 
 ## Install
 
@@ -114,6 +114,29 @@ matches, err := assoc.CFind(ctx, ae.FindRequest{
 })
 ```
 
+## C-MOVE / C-GET SCU
+
+```go
+// C-MOVE: peer stores to MoveDestination AE; SCU collects status responses.
+matches, err := assoc.CMove(ctx, ae.MoveRequest{
+	QueryModel:      ae.PatientRootQueryRetrieveInformationModelMove,
+	MoveDestination: "STORESCP",
+	IdentifierData:  query,
+})
+
+// C-GET: peer pushes C-STORE on the same association; handle via OnCStore.
+matches, err := assoc.CGet(ctx, ae.GetRequest{
+	QueryModel:     ae.PatientRootQueryRetrieveInformationModelGet,
+	IdentifierData: query,
+	OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
+		// persist req.Dataset
+		return 0x0000
+	},
+})
+```
+
+Propose both the QR Get model and storage SOP Class presentation contexts for C-GET.
+
 ## C-STORE SCP
 
 ```go
@@ -133,8 +156,8 @@ _ = ae.Serve(ctx, ln, ae.ServerConfig{
 | Package | Role |
 |---------|------|
 | `pdu` | A-ASSOCIATE / P-DATA-TF / A-RELEASE / A-ABORT + PDV fragmentation |
-| `dimse` | C-ECHO / C-STORE / C-FIND command sets (Implicit VR LE) |
-| `ae` | Association SCU (`CEcho`, `CStore`, `CFind`) + SCP (`Serve`) |
+| `dimse` | C-ECHO / C-STORE / C-FIND / C-MOVE / C-GET command sets (Implicit VR LE) |
+| `ae` | Association SCU (`CEcho`, `CStore`, `CFind`, `CMove`, `CGet`) + SCP (`Serve`) |
 
 ## Roadmap (working plan)
 
@@ -152,7 +175,7 @@ _ = ae.Serve(ctx, ln, ae.ServerConfig{
 - [x] C-STORE SCU/SCP
 - [x] godicom `EncodeDataset` / `DecodeDataset` integration
 - [x] C-FIND SCU/SCP (Patient/Study root models)
-- [ ] C-MOVE / C-GET as needed
+- [x] C-MOVE / C-GET SCU/SCP (sub-op counts; C-GET interleaved C-STORE)
 
 ### Phase 3 — DICOMweb MVP
 - WADO-RS Retrieve Instance (`application/dicom`) + Metadata (`dicom+json`)

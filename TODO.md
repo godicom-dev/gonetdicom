@@ -14,7 +14,7 @@
 2. ~~C-STORE SCU/SCP~~ ✅
 3. ~~godicom Encode/Decode + StoreRequest.Data~~ ✅
 4. ~~C-FIND SCU/SCP~~ ✅
-5. C-MOVE / C-GET as needed
+5. ~~C-MOVE / C-GET SCU/SCP~~ ✅
 6. Expand CI (coverage, golangci-lint) as packages grow
 
 ## Explicitly later

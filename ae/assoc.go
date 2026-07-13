@@ -269,6 +269,11 @@ func (a *Association) sendMessage(ctx context.Context, pcid byte, command, datas
 }
 
 func (a *Association) recvMessage(ctx context.Context) (command, dataset []byte, err error) {
+	_, command, dataset, err = a.recvMessagePC(ctx)
+	return command, dataset, err
+}
+
+func (a *Association) recvMessagePC(ctx context.Context) (pcid byte, command, dataset []byte, err error) {
 	var (
 		cmdBuf   []byte
 		dsBuf    []byte
@@ -280,11 +285,14 @@ func (a *Association) recvMessage(ctx context.Context) (command, dataset []byte,
 	for {
 		raw, err := a.readPDU(ctx)
 		if err != nil {
-			return nil, nil, err
+			return 0, nil, nil, err
 		}
 		switch p := raw.(type) {
 		case *pdu.PDataTF:
 			for _, pdv := range p.PDVs {
+				if pcid == 0 {
+					pcid = pdv.ContextID
+				}
 				frag := pdv.Fragment()
 				if pdv.IsCommand() {
 					cmdBuf = append(cmdBuf, frag...)
@@ -293,7 +301,7 @@ func (a *Association) recvMessage(ctx context.Context) (command, dataset []byte,
 						cmdDone = true
 						hasDS, err := dimse.CommandHasDataset(cmdBuf)
 						if err != nil {
-							return nil, nil, fmt.Errorf("ae: command set: %w", err)
+							return 0, nil, nil, fmt.Errorf("ae: command set: %w", err)
 						}
 						expectDS = hasDS
 						if !expectDS {
@@ -308,12 +316,12 @@ func (a *Association) recvMessage(ctx context.Context) (command, dataset []byte,
 				}
 			}
 			if gotCmd && cmdDone && dsDone {
-				return cmdBuf, dsBuf, nil
+				return pcid, cmdBuf, dsBuf, nil
 			}
 		case *pdu.AAbort:
-			return nil, nil, fmt.Errorf("%w: source=%d reason=%d", ErrAborted, p.Source, p.ReasonDiagnostic)
+			return 0, nil, nil, fmt.Errorf("%w: source=%d reason=%d", ErrAborted, p.Source, p.ReasonDiagnostic)
 		default:
-			return nil, nil, fmt.Errorf("ae: unexpected PDU %T while receiving message", p)
+			return 0, nil, nil, fmt.Errorf("ae: unexpected PDU %T while receiving message", p)
 		}
 	}
 }
