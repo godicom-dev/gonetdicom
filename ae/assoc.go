@@ -57,6 +57,8 @@ type Config struct {
 	// RoleSelections are SCP/SCU Role Selection items proposed in A-ASSOCIATE-RQ
 	// (pynetdicom build_role). Empty means default roles (requestor=SCU, acceptor=SCP).
 	RoleSelections []pdu.RoleSelection
+	// UserIdentity, when non-nil, is proposed as a User Identity Negotiation RQ item.
+	UserIdentity *pdu.UserIdentityRQ
 }
 
 func (c Config) withDefaults() Config {
@@ -102,12 +104,13 @@ type AcceptedContext struct {
 
 // Association is an established DIMSE association (SCU role).
 type Association struct {
-	conn     net.Conn
-	cfg      Config
-	called   string
-	peerMax  uint32
-	contexts []AcceptedContext
-	nextID   uint16
+	conn                 net.Conn
+	cfg                  Config
+	called               string
+	peerMax              uint32
+	contexts             []AcceptedContext
+	nextID               uint16
+	userIdentityResponse []byte
 }
 
 // Dial associates with addr (host:port) as an SCU.
@@ -206,6 +209,7 @@ func (a *Association) negotiate(ctx context.Context) error {
 			ImplementationClassUID:    a.cfg.ImplementationClassUID,
 			ImplementationVersionName: a.cfg.ImplementationVersionName,
 			RoleSelections:            a.cfg.RoleSelections,
+			UserIdentityRQ:            a.cfg.UserIdentity,
 		},
 	}
 	if err := a.writePDU(ctx, rq); err != nil {
@@ -218,6 +222,9 @@ func (a *Association) negotiate(ctx context.Context) error {
 	switch p := raw.(type) {
 	case *pdu.AAssociateAC:
 		a.peerMax = p.UserInformation.MaxLength
+		if p.UserInformation.UserIdentityAC != nil {
+			a.userIdentityResponse = append([]byte(nil), p.UserInformation.UserIdentityAC.ServerResponse...)
+		}
 		acRoles := roleMap(p.UserInformation.RoleSelections)
 		rqRoles := roleMap(a.cfg.RoleSelections)
 		for _, ac := range p.PresentationContexts {
@@ -264,6 +271,15 @@ func (a *Association) negotiate(ctx context.Context) error {
 // Contexts returns accepted presentation contexts.
 func (a *Association) Contexts() []AcceptedContext {
 	return append([]AcceptedContext(nil), a.contexts...)
+}
+
+// UserIdentityResponse returns the Server Response from a User Identity AC item,
+// if the peer included one. Nil means no response item.
+func (a *Association) UserIdentityResponse() []byte {
+	if a.userIdentityResponse == nil {
+		return nil
+	}
+	return append([]byte(nil), a.userIdentityResponse...)
 }
 
 func (a *Association) contextByAbstract(uid string) (AcceptedContext, bool) {

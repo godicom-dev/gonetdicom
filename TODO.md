@@ -26,12 +26,12 @@
 14. ~~v0.4.0 release~~ ✅
 15. ~~C-MOVE SCP → MoveDestination C-STORE sub-operations~~ ✅
 16. ~~v0.5.0 release~~ ✅
+17. ~~User Identity Negotiation~~ ✅
 
 ## Explicitly later
 
 - Full SCP framework parity with pynetdicom
 - Remaining DIMSE-N (N-GET/SET/CREATE/DELETE); async new-association event report
-- User Identity Negotiation
 - DICOM WebSockets
 - HTJ2K / JPEG encode for Accept renegotiation (blocked upstream on JPEG)
 - Study/series multipart rendered; BulkDataURI in metadata; richer QIDO fuzzy matching
