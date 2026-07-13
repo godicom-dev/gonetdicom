@@ -165,6 +165,13 @@ parts, err := client.RetrieveSeries(ctx, studyUID, seriesUID)
 parts, err = client.RetrieveStudy(ctx, studyUID)
 meta, err := client.RetrieveInstanceMetadata(ctx, studyUID, seriesUID, sopUID)
 
+// WADO-RS rendered (JPEG/PNG) + Pixel Data bulkdata
+mt, img, err := client.RetrieveRenderedInstance(ctx, studyUID, seriesUID, sopUID, dicomweb.RenderOptions{
+	MediaType: dicomweb.MediaTypeJPEG,
+	Quality:   90,
+})
+bulk, err := client.RetrieveBulkData(ctx, studyUID, seriesUID, sopUID)
+
 // QIDO-RS studies / series / instances
 matches, err := client.SearchStudies(ctx, url.Values{"PatientID": {"P001"}})
 series, err := client.SearchSeries(ctx, studyUID, url.Values{"Modality": {"CT"}})
@@ -211,7 +218,7 @@ GONETDICOM_PACS_ADDR=host:11112 GONETDICOM_PACS_AE=ANY-SCP \
 | `pdu` | A-ASSOCIATE / P-DATA-TF / A-RELEASE / A-ABORT + PDV fragmentation |
 | `dimse` | C-ECHO / C-STORE / C-FIND / C-MOVE / C-GET command sets (Implicit VR LE) |
 | `ae` | Association SCU/SCP + TLS / idle timeout / optional slog |
-| `dicomweb` | WADO-RS / STOW-RS / QIDO-RS client + origin-server MVP |
+| `dicomweb` | WADO-RS (incl. rendered/bulkdata) / STOW-RS / QIDO-RS client + origin-server MVP |
 
 ## Roadmap (working plan)
 
@@ -234,6 +241,7 @@ GONETDICOM_PACS_ADDR=host:11112 GONETDICOM_PACS_AE=ANY-SCP \
 ### Phase 3 — DICOMweb MVP
 - [x] WADO-RS Retrieve Instance (`application/dicom`) + Metadata (`dicom+json`)
 - [x] WADO-RS Retrieve Study / Series (+ metadata)
+- [x] WADO-RS Retrieve Rendered (instance JPEG/PNG) + Pixel Data bulkdata
 - [x] STOW-RS Store
 - [x] QIDO-RS Search for Studies / Series / Instances
 

@@ -18,12 +18,13 @@
 6. ~~DICOMweb MVP (WADO/STOW/QIDO)~~ ✅
 7. ~~Expand CI (golangci-lint)~~ ✅
 8. ~~Phase 4 harden (TLS helpers, structured logging, real-PACS soak stub)~~ ✅
+9. ~~WADO-RS rendered (instance JPEG/PNG) + Pixel Data bulkdata~~ ✅
 
 ## Explicitly later
 
 - Full SCP framework parity with pynetdicom
 - DICOM WebSockets
 - HTJ2K / JPEG encode for Accept renegotiation (blocked upstream on JPEG)
-- Richer QIDO fuzzy matching / WADO rendered / bulk data
+- Study/series multipart rendered; BulkDataURI in metadata; richer QIDO fuzzy matching
 - Production origin-server auth, persistence backends
 - Broader multi-PACS soak matrix in CI
