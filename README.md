@@ -249,6 +249,7 @@ GONETDICOM_PACS_ADDR=host:11112 GONETDICOM_PACS_AE=ANY-SCP \
 - [x] C-FIND SCU/SCP (Patient/Study root models)
 - [x] C-MOVE / C-GET SCU/SCP (sub-op counts; C-GET interleaved C-STORE)
 - [x] SCP/SCU Role Selection Negotiation (PDU `0x54`, `ae.BuildRole`)
+- [x] C-CANCEL-RQ (`ae.CCancel`) for outstanding FIND/MOVE/GET
 
 ### Phase 3 — DICOMweb MVP
 - [x] WADO-RS Retrieve Instance (`application/dicom`) + Metadata (`dicom+json`)

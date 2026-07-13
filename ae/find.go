@@ -24,6 +24,8 @@ type FindRequest struct {
 	Identifier     []byte
 	IdentifierData *godicom.Dataset
 	Priority       uint16 // 0 defaults to PriorityLow
+	// MessageID, when non-zero, is used as the C-FIND-RQ Message ID (for C-CANCEL).
+	MessageID uint16
 }
 
 // FindMatch is one C-FIND-RSP (Pending or final).
@@ -58,7 +60,10 @@ func (a *Association) CFind(ctx context.Context, req FindRequest) ([]FindMatch, 
 	if priority == 0 {
 		priority = dimse.PriorityLow
 	}
-	msgID := a.nextMessageID()
+	msgID := req.MessageID
+	if msgID == 0 {
+		msgID = a.nextMessageID()
+	}
 	cmd, err := (&dimse.CFindRQ{
 		MessageID:           msgID,
 		Priority:            priority,

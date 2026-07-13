@@ -21,11 +21,11 @@
 9. ~~WADO-RS rendered (instance JPEG/PNG) + Pixel Data bulkdata~~ ✅
 10. ~~v0.3.0 release~~ ✅
 11. ~~SCP/SCU Role Selection (PDU 0x54, C-GET real-PACS prerequisite)~~ ✅
+12. ~~C-CANCEL (FIND/MOVE/GET)~~ ✅
 
 ## Explicitly later
 
 - Full SCP framework parity with pynetdicom
-- C-CANCEL (FIND/GET/MOVE)
 - N-ACTION / N-EVENT-REPORT (Storage Commitment path)
 - C-MOVE SCP → MoveDestination C-STORE sub-operations
 - User Identity Negotiation
