@@ -121,6 +121,10 @@ func TestCGetSCURoundtrip(t *testing.T) {
 				ae.PatientRootQueryRetrieveInformationModelGet,
 				ctUID,
 			},
+			// Acceptor can act as SCU (send C-STORE) for the storage SOP Class.
+			RoleSelections: []pdu.RoleSelection{
+				ae.BuildRole(ctUID, true, true),
+			},
 			OnCGet: func(_ context.Context, _ ae.GetRequest) ae.GetPlan {
 				ds := godicom.NewDataset()
 				ds.Set(godicom.NewDataElement(godicom.MustTag("SOPClassUID"), godicom.VRUI, ctUID))
@@ -168,9 +172,26 @@ func TestCGetSCURoundtrip(t *testing.T) {
 				TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian},
 			},
 		},
+		// Requestor wants SCP role on storage context (receive C-STORE).
+		RoleSelections: []pdu.RoleSelection{
+			ae.BuildRole(ctUID, false, true),
+		},
 	}, ln.Addr().String(), "GETSCP")
 	if err != nil {
 		t.Fatalf("dial: %v", err)
+	}
+
+	var foundStorage bool
+	for _, c := range assoc.Contexts() {
+		if c.AbstractSyntax == ctUID {
+			foundStorage = true
+			if c.AsSCU || !c.AsSCP {
+				t.Fatalf("storage roles AsSCU=%v AsSCP=%v", c.AsSCU, c.AsSCP)
+			}
+		}
+	}
+	if !foundStorage {
+		t.Fatal("missing storage context")
 	}
 
 	var stored atomic.Int32

@@ -54,6 +54,9 @@ type Config struct {
 	Logger *slog.Logger
 	// PresentationContexts to propose. If empty, Verification only is proposed.
 	PresentationContexts []PresentationContext
+	// RoleSelections are SCP/SCU Role Selection items proposed in A-ASSOCIATE-RQ
+	// (pynetdicom build_role). Empty means default roles (requestor=SCU, acceptor=SCP).
+	RoleSelections []pdu.RoleSelection
 }
 
 func (c Config) withDefaults() Config {
@@ -91,6 +94,10 @@ type AcceptedContext struct {
 	ID             byte
 	AbstractSyntax string
 	TransferSyntax string
+	// AsSCU / AsSCP are the negotiated roles for the local AE (requestor) on this context.
+	// Defaults: AsSCU=true, AsSCP=false when no role selection was negotiated.
+	AsSCU bool
+	AsSCP bool
 }
 
 // Association is an established DIMSE association (SCU role).
@@ -198,6 +205,7 @@ func (a *Association) negotiate(ctx context.Context) error {
 			MaxLength:                 a.cfg.MaxPDULength,
 			ImplementationClassUID:    a.cfg.ImplementationClassUID,
 			ImplementationVersionName: a.cfg.ImplementationVersionName,
+			RoleSelections:            a.cfg.RoleSelections,
 		},
 	}
 	if err := a.writePDU(ctx, rq); err != nil {
@@ -210,6 +218,8 @@ func (a *Association) negotiate(ctx context.Context) error {
 	switch p := raw.(type) {
 	case *pdu.AAssociateAC:
 		a.peerMax = p.UserInformation.MaxLength
+		acRoles := roleMap(p.UserInformation.RoleSelections)
+		rqRoles := roleMap(a.cfg.RoleSelections)
 		for _, ac := range p.PresentationContexts {
 			if ac.Result != 0 {
 				continue
@@ -218,11 +228,25 @@ func (a *Association) negotiate(ctx context.Context) error {
 			if !ok {
 				continue
 			}
-			a.contexts = append(a.contexts, AcceptedContext{
+			ctxAcc := AcceptedContext{
 				ID:             ac.ID,
 				AbstractSyntax: prop.AbstractSyntax,
 				TransferSyntax: ac.TransferSyntax,
-			})
+				AsSCU:          true,
+				AsSCP:          false,
+			}
+			rqRole, rqOK := rqRoles[prop.AbstractSyntax]
+			acRole, acOK := acRoles[prop.AbstractSyntax]
+			if rqOK && acOK {
+				out := negotiateRoles(rqRole.SCURole, rqRole.SCPRole, true, acRole.SCURole, acRole.SCPRole, true)
+				ctxAcc.AsSCU = out.ReqSCU
+				ctxAcc.AsSCP = out.ReqSCP
+			} else if rqOK {
+				// Proposed but acceptor omitted reply → default requestor roles.
+				ctxAcc.AsSCU = true
+				ctxAcc.AsSCP = false
+			}
+			a.contexts = append(a.contexts, ctxAcc)
 		}
 		if len(a.contexts) == 0 {
 			return fmt.Errorf("%w: no presentation context accepted", ErrNoContext)

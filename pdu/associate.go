@@ -19,11 +19,20 @@ type PresentationContextAC struct {
 	TransferSyntax string
 }
 
+// RoleSelection is an SCP/SCU Role Selection Negotiation sub-item (0x54).
+// Aligned with pynetdicom SCP_SCU_RoleSelectionNegotiation.
+type RoleSelection struct {
+	SOPClassUID string
+	SCURole     bool
+	SCPRole     bool
+}
+
 // UserInformation carries association negotiation user items.
 type UserInformation struct {
 	MaxLength                 uint32
 	ImplementationClassUID    string
 	ImplementationVersionName string
+	RoleSelections            []RoleSelection
 }
 
 // AAssociateRQ is an A-ASSOCIATE-RQ PDU.
@@ -306,6 +315,13 @@ func encodeUserInformation(ui UserInformation) ([]byte, error) {
 	if ui.ImplementationVersionName != "" {
 		data = append(data, encodeItem(ItemImplementationVersion, []byte(ui.ImplementationVersionName))...)
 	}
+	for _, role := range ui.RoleSelections {
+		item, err := encodeRoleSelection(role)
+		if err != nil {
+			return nil, err
+		}
+		data = append(data, item...)
+	}
 	return encodeItem(ItemUserInformation, data), nil
 }
 
@@ -326,7 +342,49 @@ func decodeUserInformation(data []byte) (UserInformation, error) {
 			ui.ImplementationClassUID = string(s.Data)
 		case ItemImplementationVersion:
 			ui.ImplementationVersionName = string(s.Data)
+		case ItemRoleSelection:
+			role, err := decodeRoleSelection(s.Data)
+			if err != nil {
+				return ui, err
+			}
+			ui.RoleSelections = append(ui.RoleSelections, role)
 		}
 	}
 	return ui, nil
+}
+
+func encodeRoleSelection(role RoleSelection) ([]byte, error) {
+	if role.SOPClassUID == "" {
+		return nil, fmt.Errorf("pdu: role selection missing SOP Class UID")
+	}
+	if !role.SCURole && !role.SCPRole {
+		return nil, fmt.Errorf("pdu: SCU and SCP roles cannot both be false for %q", role.SOPClassUID)
+	}
+	uid := []byte(role.SOPClassUID)
+	body := make([]byte, 2+len(uid)+2)
+	binary.BigEndian.PutUint16(body[0:2], uint16(len(uid)))
+	copy(body[2:], uid)
+	if role.SCURole {
+		body[2+len(uid)] = 1
+	}
+	if role.SCPRole {
+		body[2+len(uid)+1] = 1
+	}
+	return encodeItem(ItemRoleSelection, body), nil
+}
+
+func decodeRoleSelection(data []byte) (RoleSelection, error) {
+	if len(data) < 4 {
+		return RoleSelection{}, fmt.Errorf("pdu: short role selection item")
+	}
+	uidLen := int(binary.BigEndian.Uint16(data[0:2]))
+	if len(data) < 2+uidLen+2 {
+		return RoleSelection{}, fmt.Errorf("pdu: truncated role selection item")
+	}
+	uid := string(data[2 : 2+uidLen])
+	return RoleSelection{
+		SOPClassUID: uid,
+		SCURole:     data[2+uidLen] != 0,
+		SCPRole:     data[2+uidLen+1] != 0,
+	}, nil
 }

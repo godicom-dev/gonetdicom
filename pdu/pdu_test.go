@@ -151,3 +151,74 @@ func TestReadWriteRoundtrip(t *testing.T) {
 		t.Fatalf("got %T", p)
 	}
 }
+
+func TestDecodeEncodeGoldenRoleSelection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  []byte
+		uid  string
+	}{
+		{name: "odd CT Image Storage", raw: goldenRoleSelectionOdd, uid: "1.2.840.10008.5.1.4.1.1.2"},
+		{name: "even NM Image Storage", raw: goldenRoleSelection, uid: "1.2.840.10008.5.1.4.1.1.21"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			items, err := decodeItems(tt.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(items) != 1 || items[0].Type != ItemRoleSelection {
+				t.Fatalf("items: %+v", items)
+			}
+			role, err := decodeRoleSelection(items[0].Data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if role.SOPClassUID != tt.uid || role.SCURole || !role.SCPRole {
+				t.Fatalf("role: %+v", role)
+			}
+			got, err := encodeRoleSelection(role)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, tt.raw) {
+				t.Fatalf("roundtrip\ngot  %x\nwant %x", got, tt.raw)
+			}
+		})
+	}
+}
+
+func TestUserInformationRoleSelectionRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	ui := UserInformation{
+		MaxLength:                 16384,
+		ImplementationClassUID:    "1.2.826.0.1.3680043.10.541.1",
+		ImplementationVersionName: "GONETDICOM_001",
+		RoleSelections: []RoleSelection{{
+			SOPClassUID: "1.2.840.10008.5.1.4.1.1.2",
+			SCURole:     false,
+			SCPRole:     true,
+		}},
+	}
+	raw, err := encodeUserInformation(ui)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := decodeItems(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Type != ItemUserInformation {
+		t.Fatalf("items: %+v", items)
+	}
+	got, err := decodeUserInformation(items[0].Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.RoleSelections) != 1 || !got.RoleSelections[0].SCPRole || got.RoleSelections[0].SCURole {
+		t.Fatalf("roles: %+v", got.RoleSelections)
+	}
+}
