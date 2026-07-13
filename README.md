@@ -22,7 +22,7 @@ gonetdicom
 
 ## Status
 
-**Status:** `v0.3.0` — Phase 1–4 + WADO rendered/bulkdata; depends on godicom `v0.23.0+`.
+**Status:** `v0.4.0` — Phase 1–4 + Role Selection / C-CANCEL / Storage Commitment; depends on godicom `v0.23.0+`.
 
 ## Install
 

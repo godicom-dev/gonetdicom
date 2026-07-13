@@ -23,6 +23,7 @@
 11. ~~SCP/SCU Role Selection (PDU 0x54, C-GET real-PACS prerequisite)~~ ✅
 12. ~~C-CANCEL (FIND/MOVE/GET)~~ ✅
 13. ~~Storage Commitment Push Model (N-ACTION / N-EVENT-REPORT)~~ ✅
+14. ~~v0.4.0 release~~ ✅
 
 ## Explicitly later
 
