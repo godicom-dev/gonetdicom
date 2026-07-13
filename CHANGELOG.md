@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-13
+
 ### Added
 - SCP/SCU Role Selection Negotiation (PDU `0x54`): `pdu.RoleSelection`, `ae.BuildRole`, `Config`/`ServerConfig.RoleSelections`, negotiated `AcceptedContext.AsSCU`/`AsSCP` (pynetdicom-aligned)
 - C-CANCEL-RQ (`dimse.CCancelRQ`, `ae.Association.CCancel`); SCP peeks for cancel between C-FIND/C-MOVE/C-GET pending responses (status `0xFE00`)
