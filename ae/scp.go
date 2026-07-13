@@ -378,7 +378,18 @@ func scpHandleFind(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 		matches = []FindMatch{{Status: dimse.StatusSuccess}}
 	}
 
-	for _, m := range matches {
+	for i, m := range matches {
+		if i > 0 && peekCancelRQ(conn, rq.MessageID) {
+			rsp, err := (&dimse.CFindRSP{
+				MessageIDBeingRespondedTo: rq.MessageID,
+				AffectedSOPClassUID:       rq.AffectedSOPClassUID,
+				Status:                    dimse.StatusCancel,
+			}).Encode()
+			if err != nil {
+				return err
+			}
+			return writeMessage(conn, pcid, rsp, nil, peerMax)
+		}
 		hasDS := m.Identifier != nil && dimse.IsPending(m.Status)
 		rsp, err := (&dimse.CFindRSP{
 			MessageIDBeingRespondedTo: rq.MessageID,
@@ -398,6 +409,9 @@ func scpHandleFind(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 		}
 		if err := writeMessage(conn, pcid, rsp, payload, peerMax); err != nil {
 			return err
+		}
+		if !dimse.IsPending(m.Status) {
+			return nil
 		}
 	}
 	return nil
@@ -527,7 +541,30 @@ func scpHandleGet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted
 }
 
 func writeRetrieveResponses(conn net.Conn, pcid byte, peerMax uint32, transferSyntax string, msgID uint16, sopClass string, isMove bool, matches []RetrieveMatch) error {
-	for _, m := range matches {
+	for i, m := range matches {
+		if i > 0 && peekCancelRQ(conn, msgID) {
+			var (
+				rsp []byte
+				err error
+			)
+			if isMove {
+				rsp, err = (&dimse.CMoveRSP{
+					MessageIDBeingRespondedTo: msgID,
+					AffectedSOPClassUID:       sopClass,
+					Status:                    dimse.StatusCancel,
+				}).Encode()
+			} else {
+				rsp, err = (&dimse.CGetRSP{
+					MessageIDBeingRespondedTo: msgID,
+					AffectedSOPClassUID:       sopClass,
+					Status:                    dimse.StatusCancel,
+				}).Encode()
+			}
+			if err != nil {
+				return err
+			}
+			return writeMessage(conn, pcid, rsp, nil, peerMax)
+		}
 		hasDS := m.Identifier != nil
 		var (
 			rsp []byte
@@ -562,6 +599,9 @@ func writeRetrieveResponses(conn net.Conn, pcid byte, peerMax uint32, transferSy
 		}
 		if err := writeMessage(conn, pcid, rsp, payload, peerMax); err != nil {
 			return err
+		}
+		if !dimse.IsPending(m.Status) {
+			return nil
 		}
 	}
 	return nil
