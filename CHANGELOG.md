@@ -8,4 +8,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Repository bootstrap: Go module, `pynetdicom` submodule, CI skeleton
+- Repository bootstrap: Go module (`godicom` v0.20.0), `pynetdicom` submodule, package docs + smoke test
