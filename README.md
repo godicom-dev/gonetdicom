@@ -22,7 +22,7 @@ gonetdicom
 
 ## Status
 
-**Status:** `v0.1.0` — Phase 1–3 (DIMSE + DICOMweb MVP); depends on godicom `v0.23.0+`.
+**Status:** `v0.1.0` + main — Phase 1–4 foundation (DIMSE, DICOMweb, TLS/timeouts/slog); depends on godicom `v0.23.0+`.
 
 ## Install
 
@@ -178,13 +178,39 @@ store := dicomweb.NewMemoryStore()
 http.ListenAndServe(":8080", dicomweb.Handler(store, "/dicom-web"))
 ```
 
+## TLS / timeouts / logging (Phase 4)
+
+```go
+// DIMSE over TLS
+assoc, err := ae.Dial(ctx, ae.Config{
+	AETitle:     "MYSCU",
+	IdleTimeout: 30 * time.Second,
+	TLS:         &tls.Config{ServerName: "pacs.example", MinVersion: tls.VersionTLS12},
+	Logger:      slog.Default(),
+}, "pacs.example:2762", "ANY-SCP")
+
+// DICOMweb client with TLS + timeout
+client, err := dicomweb.NewClient("https://pacs.example/dicom-web",
+	dicomweb.WithTimeout(30*time.Second),
+	dicomweb.WithTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12}),
+	dicomweb.WithLogger(slog.Default()),
+)
+```
+
+Optional real-PACS soak (skipped unless env is set):
+
+```bash
+GONETDICOM_PACS_ADDR=host:11112 GONETDICOM_PACS_AE=ANY-SCP \
+  go test -tags=integration ./ae -run TestIntegrationCEchoPACS -v
+```
+
 ## Packages
 
 | Package | Role |
 |---------|------|
 | `pdu` | A-ASSOCIATE / P-DATA-TF / A-RELEASE / A-ABORT + PDV fragmentation |
 | `dimse` | C-ECHO / C-STORE / C-FIND / C-MOVE / C-GET command sets (Implicit VR LE) |
-| `ae` | Association SCU (`CEcho`, `CStore`, `CFind`, `CMove`, `CGet`) + SCP (`Serve`) |
+| `ae` | Association SCU/SCP + TLS / idle timeout / optional slog |
 | `dicomweb` | WADO-RS / STOW-RS / QIDO-RS client + origin-server MVP |
 
 ## Roadmap (working plan)
@@ -212,8 +238,11 @@ http.ListenAndServe(":8080", dicomweb.Handler(store, "/dicom-web"))
 - [x] QIDO-RS Search for Studies / Series / Instances
 
 ### Phase 4 — Harden
-- Tests against pynetdicom fixtures / real PACS
-- Timeouts, TLS, logging
+- [x] Timeouts (`IdleTimeout` / HTTP client timeout)
+- [x] TLS helpers (DIMSE `Config.TLS` / `ListenAndServeTLS`; DICOMweb `WithTLSConfig`)
+- [x] Optional `slog` logging
+- [x] Optional real-PACS C-ECHO soak (`-tags=integration`)
+- [ ] Broader fixture / multi-PACS matrix in CI
 
 ## Layout
 

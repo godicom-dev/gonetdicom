@@ -8,8 +8,10 @@ package dicomweb
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -24,15 +26,29 @@ const (
 
 // Client is a DICOMweb user agent.
 type Client struct {
-	BaseURL    string       // e.g. https://pacs.example/dicom-web
-	HTTPClient *http.Client // optional; defaults to 30s timeout
+	BaseURL    string        // e.g. https://pacs.example/dicom-web
+	HTTPClient *http.Client  // optional; defaults via Timeout / NewClient
+	Timeout    time.Duration // used when HTTPClient is nil
+	TLS        *tls.Config   // used by NewClient for the default transport
+	Logger     *slog.Logger  // optional request logging
 }
 
 func (c *Client) httpClient() *http.Client {
 	if c != nil && c.HTTPClient != nil {
 		return c.HTTPClient
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	timeout := 30 * time.Second
+	if c != nil && c.Timeout > 0 {
+		timeout = c.Timeout
+	}
+	return &http.Client{Timeout: timeout}
+}
+
+func (c *Client) log() *slog.Logger {
+	if c == nil {
+		return nil
+	}
+	return c.Logger
 }
 
 func (c *Client) base() (*url.URL, error) {
@@ -67,7 +83,17 @@ func (c *Client) resolve(parts ...string) (string, error) {
 }
 
 func (c *Client) do(ctx context.Context, req *http.Request) (*http.Response, error) {
-	return c.httpClient().Do(req.WithContext(ctx))
+	if log := c.log(); log != nil {
+		log.Debug("dicomweb: request", "method", req.Method, "url", req.URL.String())
+	}
+	resp, err := c.httpClient().Do(req.WithContext(ctx))
+	if err != nil {
+		return nil, err
+	}
+	if log := c.log(); log != nil {
+		log.Debug("dicomweb: response", "status", resp.StatusCode, "url", req.URL.String())
+	}
+	return resp, nil
 }
 
 func readErrorBody(resp *http.Response) string {

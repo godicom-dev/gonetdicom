@@ -2,7 +2,9 @@ package ae
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 
 	"github.com/godicom-dev/godicom"
@@ -53,6 +55,11 @@ type ServerConfig struct {
 	OnCFind                  FindHandler
 	OnCMove                  MoveHandler
 	OnCGet                   GetHandler
+	// TLS, when non-nil, wraps accepted connections with TLS (use with ServeTLS
+	// or a tls.Listener). Ignored by Serve on a plain listener.
+	TLS *tls.Config
+	// Logger receives optional SCP lifecycle events. Nil disables logging.
+	Logger *slog.Logger
 }
 
 func (c ServerConfig) withDefaults() ServerConfig {
@@ -69,6 +76,10 @@ func (c ServerConfig) withDefaults() ServerConfig {
 		c.ImplementationVersionName = ImplementationVersionName
 	}
 	return c
+}
+
+func (c ServerConfig) log() *slog.Logger {
+	return c.Logger
 }
 
 // Serve accepts associations on ln until ctx is cancelled.
@@ -89,9 +100,28 @@ func Serve(ctx context.Context, ln net.Listener, cfg ServerConfig) error {
 			}
 		}
 		go func(c net.Conn) {
+			if log := cfg.log(); log != nil {
+				log.Info("ae: scp accepted connection", "remote", c.RemoteAddr().String())
+			}
 			_ = handleAssociation(ctx, c, cfg)
 		}(conn)
 	}
+}
+
+// ListenAndServeTLS listens on addr with cfg.TLS and serves associations.
+func ListenAndServeTLS(ctx context.Context, addr string, cfg ServerConfig) error {
+	if cfg.TLS == nil {
+		return fmt.Errorf("ae: ListenAndServeTLS requires ServerConfig.TLS")
+	}
+	ln, err := tls.Listen("tcp", addr, cfg.TLS)
+	if err != nil {
+		return fmt.Errorf("ae: tls listen %s: %w", addr, err)
+	}
+	defer ln.Close()
+	if log := cfg.withDefaults().log(); log != nil {
+		log.Info("ae: scp listening (tls)", "addr", ln.Addr().String())
+	}
+	return Serve(ctx, ln, cfg)
 }
 
 func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) error {
