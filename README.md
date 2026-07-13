@@ -22,7 +22,7 @@ gonetdicom
 
 ## Status
 
-**Phase 2 (partial)** — C-ECHO + C-STORE SCU/SCP with godicom `EncodeDataset` (`v0.21.0`).
+**Phase 2 (partial)** — C-ECHO + C-STORE + C-FIND SCU/SCP; dataset encode/decode via godicom `v0.22.1+`.
 
 ## Install
 
@@ -93,6 +93,27 @@ res, err := assoc.CStore(ctx, ae.StoreRequest{
 })
 ```
 
+## C-FIND SCU
+
+```go
+cfg := ae.Config{
+	AETitle: "FINDSCU",
+	PresentationContexts: []ae.PresentationContext{{
+		ID: 1,
+		AbstractSyntax: ae.PatientRootQueryRetrieveInformationModelFind,
+		TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian},
+	}},
+}
+assoc, err := ae.Dial(ctx, cfg, "pacs.example:11112", "ANY-SCP")
+query := godicom.NewDataset()
+query.Set(godicom.NewDataElement(godicom.MustTag("QueryRetrieveLevel"), godicom.VRCS, "PATIENT"))
+query.Set(godicom.NewDataElement(godicom.MustTag("PatientID"), godicom.VRLO, "*"))
+matches, err := assoc.CFind(ctx, ae.FindRequest{
+	QueryModel:     ae.PatientRootQueryRetrieveInformationModelFind,
+	IdentifierData: query,
+})
+```
+
 ## C-STORE SCP
 
 ```go
@@ -112,8 +133,8 @@ _ = ae.Serve(ctx, ln, ae.ServerConfig{
 | Package | Role |
 |---------|------|
 | `pdu` | A-ASSOCIATE / P-DATA-TF / A-RELEASE / A-ABORT + PDV fragmentation |
-| `dimse` | C-ECHO / C-STORE command sets (Implicit VR LE) |
-| `ae` | Association SCU (`CEcho`, `CStore`) + SCP (`Serve`) |
+| `dimse` | C-ECHO / C-STORE / C-FIND command sets (Implicit VR LE) |
+| `ae` | Association SCU (`CEcho`, `CStore`, `CFind`) + SCP (`Serve`) |
 
 ## Roadmap (working plan)
 
@@ -129,8 +150,8 @@ _ = ae.Serve(ctx, ln, ae.ServerConfig{
 
 ### Phase 2 — Core DIMSE services
 - [x] C-STORE SCU/SCP
-- [x] godicom `EncodeDataset` integration (`StoreRequest.Data`)
-- [ ] C-FIND SCU (Patient/Study root)
+- [x] godicom `EncodeDataset` / `DecodeDataset` integration
+- [x] C-FIND SCU/SCP (Patient/Study root models)
 - [ ] C-MOVE / C-GET as needed
 
 ### Phase 3 — DICOMweb MVP

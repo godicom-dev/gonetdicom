@@ -4,7 +4,7 @@ go 1.26
 
 toolchain go1.26.4
 
-require github.com/godicom-dev/godicom v0.21.0
+require github.com/godicom-dev/godicom v0.22.1
 
 require (
 	github.com/ebitengine/purego v0.10.1 // indirect

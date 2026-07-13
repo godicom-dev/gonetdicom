@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Phase 2 C-FIND: `dimse` C-FIND-RQ/RSP, `ae.CFind` SCU, `ae.Serve` `OnCFind` SCP (Patient/Study root models)
+- Depend on godicom `v0.22.1` (`DecodeDataset` + encode race fix)
+
+### Added (prior)
 - Depend on godicom `v0.21.0`; `StoreRequest.Data` encodes via `Dataset.Encode` under the negotiated transfer syntax
 
 ### Added (Phase 2 C-STORE)
