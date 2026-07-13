@@ -34,12 +34,13 @@
 20. ~~v0.7.0 release~~ ✅
 21. ~~Async new-association event report + parallel C-MOVE stores~~ ✅
 22. ~~v0.8.0 release~~ ✅
+23. ~~Study/series/instance metadata BulkDataURI~~ ✅
 
 ## Explicitly later
 
 - Full SCP framework parity with pynetdicom
 - DICOM WebSockets
 - HTJ2K / JPEG encode for Accept renegotiation (blocked upstream on JPEG)
-- Study/series multipart rendered; BulkDataURI in metadata; richer QIDO fuzzy matching
+- Study/series multipart rendered; richer QIDO fuzzy matching
 - Production origin-server auth, persistence backends
 - Broader multi-PACS soak matrix in CI

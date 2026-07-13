@@ -281,6 +281,7 @@ raw, err := client.RetrieveInstance(ctx, studyUID, seriesUID, sopUID)
 parts, err := client.RetrieveSeries(ctx, studyUID, seriesUID)
 parts, err = client.RetrieveStudy(ctx, studyUID)
 meta, err := client.RetrieveInstanceMetadata(ctx, studyUID, seriesUID, sopUID)
+// Origin-server metadata JSON uses BulkDataURI for Pixel Data (not InlineBinary).
 
 // WADO-RS rendered (JPEG/PNG) + Pixel Data bulkdata
 mt, img, err := client.RetrieveRenderedInstance(ctx, studyUID, seriesUID, sopUID, dicomweb.RenderOptions{

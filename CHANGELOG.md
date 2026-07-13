@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- WADO-RS metadata emits Pixel Data `BulkDataURI` (via godicom `dicomjson`) instead of omitting or inlining pixels
+
 ## [0.8.0] - 2026-07-13
 
 ### Added

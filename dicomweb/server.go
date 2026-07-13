@@ -276,7 +276,7 @@ func Handler(store Store, prefix string) http.Handler {
 			handleWADOMany(w, r, store, parts[0], "")
 		// GET /studies/{study}/metadata
 		case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "metadata":
-			handleWADOManyMetadata(w, r, store, parts[0], "")
+			handleWADOManyMetadata(w, r, store, prefix, parts[0], "")
 		// GET /studies/{study}/series
 		case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "series":
 			matches, err := store.SearchSeries(parts[0], r.URL.Query())
@@ -290,7 +290,7 @@ func Handler(store Store, prefix string) http.Handler {
 			handleWADOMany(w, r, store, parts[0], parts[2])
 		// GET /studies/{study}/series/{series}/metadata
 		case r.Method == http.MethodGet && len(parts) == 4 && parts[1] == "series" && parts[3] == "metadata":
-			handleWADOManyMetadata(w, r, store, parts[0], parts[2])
+			handleWADOManyMetadata(w, r, store, prefix, parts[0], parts[2])
 		// GET /studies/{study}/series/{series}/instances
 		case r.Method == http.MethodGet && len(parts) == 4 && parts[1] == "series" && parts[3] == "instances":
 			matches, err := store.SearchInstances(parts[0], parts[2], r.URL.Query())
@@ -300,7 +300,7 @@ func Handler(store Store, prefix string) http.Handler {
 			handleWADOInstance(w, r, store, parts[0], parts[2], parts[4])
 		// GET .../instances/{instance}/metadata
 		case r.Method == http.MethodGet && len(parts) == 6 && parts[1] == "series" && parts[3] == "instances" && parts[5] == "metadata":
-			handleWADOMetadata(w, r, store, parts[0], parts[2], parts[4])
+			handleWADOMetadata(w, r, store, prefix, parts[0], parts[2], parts[4])
 		// GET .../instances/{instance}/rendered
 		case r.Method == http.MethodGet && len(parts) == 6 && parts[1] == "series" && parts[3] == "instances" && parts[5] == "rendered":
 			handleWADORendered(w, r, store, parts[0], parts[2], parts[4])
@@ -391,7 +391,7 @@ func handleWADOMany(w http.ResponseWriter, r *http.Request, store Store, study, 
 	_ = writeDICOMParts(w, boundary, parts)
 }
 
-func handleWADOManyMetadata(w http.ResponseWriter, r *http.Request, store Store, study, series string) {
+func handleWADOManyMetadata(w http.ResponseWriter, r *http.Request, store Store, prefix, study, series string) {
 	parts, err := store.ListInstances(study, series)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -408,11 +408,9 @@ func handleWADOManyMetadata(w http.ResponseWriter, r *http.Request, store Store,
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		meta := fd.Clone()
-		meta.Delete(godicom.MustTag("PixelData"))
-		metas = append(metas, meta)
+		metas = append(metas, fd.Dataset)
 	}
-	body, err := dicomjson.MarshalDatasets(metas)
+	body, err := marshalManyMetadata(metas, prefix, study, series)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -444,7 +442,7 @@ func handleWADOInstance(w http.ResponseWriter, r *http.Request, store Store, stu
 	_, _ = w.Write(raw)
 }
 
-func handleWADOMetadata(w http.ResponseWriter, r *http.Request, store Store, study, series, instance string) {
+func handleWADOMetadata(w http.ResponseWriter, r *http.Request, store Store, prefix, study, series, instance string) {
 	raw, err := store.GetInstance(study, series, instance)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -459,9 +457,7 @@ func handleWADOMetadata(w http.ResponseWriter, r *http.Request, store Store, stu
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	meta := fd.Clone()
-	meta.Delete(godicom.MustTag("PixelData"))
-	body, err := dicomjson.MarshalDatasets([]*godicom.Dataset{meta})
+	body, err := marshalInstanceMetadata(fd.Dataset, BulkDataURI(prefix, study, series, instance))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
