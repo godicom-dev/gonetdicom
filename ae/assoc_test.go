@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/godicom-dev/godicom"
 	"github.com/godicom-dev/gonetdicom/ae"
 	"github.com/godicom-dev/gonetdicom/dimse"
 	"github.com/godicom-dev/gonetdicom/pdu"
@@ -294,6 +295,53 @@ func goldenStoreDataset() []byte {
 		0x10, 0x00, 0x10, 0x00, 0x0a, 0x00, 0x00, 0x00, 'T', 'u', 'b', 'e', '^', 'H', 'e', 'N', 'e', ' ',
 		0x10, 0x00, 0x20, 0x00, 0x08, 0x00, 0x00, 0x00, 'T', 'e', 's', 't', '1', '1', '0', '1',
 	}
+}
+
+func TestCStoreSCUWithGodicomDataset(t *testing.T) {
+	t.Parallel()
+
+	client, server := net.Pipe()
+	defer client.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		mockSCUPeer(t, server)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cfg := ae.Config{
+		AETitle: "STORESCU",
+		PresentationContexts: []ae.PresentationContext{
+			{ID: 3, AbstractSyntax: secondaryCaptureSOPClass, TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian}},
+		},
+	}
+	assoc, err := ae.AcceptFromConn(ctx, cfg, client, "ANY-SCP")
+	if err != nil {
+		t.Fatalf("associate: %v", err)
+	}
+
+	ds := godicom.NewDataset()
+	ds.Set(godicom.NewDataElement(godicom.MustTag("PatientName"), godicom.VRPN, "Tube^HeNe"))
+	ds.Set(godicom.NewDataElement(godicom.MustTag("PatientID"), godicom.VRLO, "Test1101"))
+
+	res, err := assoc.CStore(ctx, ae.StoreRequest{
+		AffectedSOPClassUID:    secondaryCaptureSOPClass,
+		AffectedSOPInstanceUID: "1.2.3.4.5",
+		Data:                   ds,
+	})
+	if err != nil {
+		t.Fatalf("C-STORE: %v", err)
+	}
+	if res.Status != dimse.StatusSuccess {
+		t.Fatalf("status 0x%04x", res.Status)
+	}
+	if err := assoc.Release(ctx); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	<-done
 }
 
 func TestFragmentMessageSmallMaxPDU(t *testing.T) {
