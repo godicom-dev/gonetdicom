@@ -28,11 +28,12 @@
 16. ~~v0.5.0 release~~ ✅
 17. ~~User Identity Negotiation~~ ✅
 18. ~~v0.6.0 release~~ ✅
+19. ~~Remaining DIMSE-N (N-GET/SET/CREATE/DELETE)~~ ✅
 
 ## Explicitly later
 
 - Full SCP framework parity with pynetdicom
-- Remaining DIMSE-N (N-GET/SET/CREATE/DELETE); async new-association event report
+- Async new-association event report
 - DICOM WebSockets
 - HTJ2K / JPEG encode for Accept renegotiation (blocked upstream on JPEG)
 - Study/series multipart rendered; BulkDataURI in metadata; richer QIDO fuzzy matching
