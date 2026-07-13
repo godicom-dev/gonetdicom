@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- WADO-RS Retrieve Rendered (instance-level JPEG/PNG via godicom pixel pipeline)
+- WADO-RS Pixel Data bulkdata (`application/octet-stream`) client + origin-server routes
+
 ## [0.2.0] - 2026-07-13
 
 ### Added

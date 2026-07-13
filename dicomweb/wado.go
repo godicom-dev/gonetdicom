@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/godicom-dev/godicom"
 	"github.com/godicom-dev/godicom/dicomjson"
@@ -103,6 +104,84 @@ func (c *Client) RetrieveInstanceMetadata(ctx context.Context, studyUID, seriesU
 		return nil, fmt.Errorf("dicomweb: empty metadata")
 	}
 	return datasets[0], nil
+}
+
+// RetrieveRenderedInstance retrieves a rendered representation (image/jpeg or image/png).
+func (c *Client) RetrieveRenderedInstance(ctx context.Context, studyUID, seriesUID, instanceUID string, opts RenderOptions) (mediaType string, body []byte, err error) {
+	if studyUID == "" || seriesUID == "" || instanceUID == "" {
+		return "", nil, fmt.Errorf("dicomweb: study/series/instance UID required")
+	}
+	opts = opts.withDefaults()
+	url, err := c.resolve("studies", studyUID, "series", seriesUID, "instances", instanceUID, "rendered")
+	if err != nil {
+		return "", nil, err
+	}
+	if opts.Frame > 1 || opts.Quality != 90 {
+		q := urlValuesFrameQuality(opts)
+		if q != "" {
+			url += "?" + q
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("Accept", opts.MediaType)
+
+	resp, err := c.do(ctx, req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return "", nil, err
+	}
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return "", nil, err
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = opts.MediaType
+	}
+	return ct, body, nil
+}
+
+// RetrieveBulkData retrieves Pixel Data bulk bytes for an instance.
+func (c *Client) RetrieveBulkData(ctx context.Context, studyUID, seriesUID, instanceUID string) ([]byte, error) {
+	if studyUID == "" || seriesUID == "" || instanceUID == "" {
+		return nil, fmt.Errorf("dicomweb: study/series/instance UID required")
+	}
+	url, err := c.resolve("studies", studyUID, "series", seriesUID, "instances", instanceUID, "bulkdata")
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", MediaTypeOctetStream)
+
+	resp, err := c.do(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func urlValuesFrameQuality(opts RenderOptions) string {
+	var parts []string
+	if opts.Frame > 1 {
+		parts = append(parts, fmt.Sprintf("frame=%d", opts.Frame))
+	}
+	if opts.Quality > 0 && opts.Quality != 90 {
+		parts = append(parts, fmt.Sprintf("quality=%d", opts.Quality))
+	}
+	return strings.Join(parts, "&")
 }
 
 func (c *Client) retrieveMany(ctx context.Context, url string) ([][]byte, error) {

@@ -301,6 +301,12 @@ func Handler(store Store, prefix string) http.Handler {
 		// GET .../instances/{instance}/metadata
 		case r.Method == http.MethodGet && len(parts) == 6 && parts[1] == "series" && parts[3] == "instances" && parts[5] == "metadata":
 			handleWADOMetadata(w, r, store, parts[0], parts[2], parts[4])
+		// GET .../instances/{instance}/rendered
+		case r.Method == http.MethodGet && len(parts) == 6 && parts[1] == "series" && parts[3] == "instances" && parts[5] == "rendered":
+			handleWADORendered(w, r, store, parts[0], parts[2], parts[4])
+		// GET .../instances/{instance}/bulkdata
+		case r.Method == http.MethodGet && len(parts) == 6 && parts[1] == "series" && parts[3] == "instances" && parts[5] == "bulkdata":
+			handleWADOBulkData(w, r, store, parts[0], parts[2], parts[4])
 		default:
 			http.NotFound(w, r)
 		}
@@ -462,4 +468,43 @@ func handleWADOMetadata(w http.ResponseWriter, r *http.Request, store Store, stu
 	}
 	w.Header().Set("Content-Type", MediaTypeDICOMJSON)
 	_, _ = w.Write(body)
+}
+
+func handleWADORendered(w http.ResponseWriter, r *http.Request, store Store, study, series, instance string) {
+	raw, err := store.GetInstance(study, series, instance)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	opts := parseRenderOptions(r.Header.Get("Accept"), r.URL.Query())
+	mediaType, body, err := RenderInstance(raw, opts)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotAcceptable)
+		return
+	}
+	w.Header().Set("Content-Type", mediaType)
+	_, _ = w.Write(body)
+}
+
+func handleWADOBulkData(w http.ResponseWriter, r *http.Request, store Store, study, series, instance string) {
+	raw, err := store.GetInstance(study, series, instance)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	bulk, err := ExtractPixelBulkData(raw)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", MediaTypeOctetStream)
+	_, _ = w.Write(bulk)
 }
