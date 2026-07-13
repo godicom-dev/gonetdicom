@@ -15,10 +15,13 @@
 3. ~~godicom Encode/Decode + StoreRequest.Data~~ ✅
 4. ~~C-FIND SCU/SCP~~ ✅
 5. ~~C-MOVE / C-GET SCU/SCP~~ ✅
-6. Expand CI (coverage, golangci-lint) as packages grow
+6. ~~DICOMweb MVP (WADO/STOW/QIDO)~~ ✅
+7. Expand CI (coverage, golangci-lint) as packages grow
 
 ## Explicitly later
 
 - Full SCP framework parity with pynetdicom
 - TLS / DICOM WebSockets
 - HTJ2K / JPEG encode for Accept renegotiation (blocked upstream on JPEG)
+- Richer QIDO (series/instance levels, fuzzy matching) / WADO rendered / bulk data
+- Production origin-server auth, persistence backends

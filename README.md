@@ -22,7 +22,7 @@ gonetdicom
 
 ## Status
 
-**Phase 2 (partial)** — C-ECHO + C-STORE + C-FIND + C-MOVE/C-GET SCU/SCP; dataset encode/decode via godicom `v0.22.1+`.
+**Phase 3 (partial)** — DIMSE Phase 2 complete; DICOMweb MVP (`dicomweb`: WADO-RS / STOW-RS / QIDO-RS) via godicom `v0.23.0+`.
 
 ## Install
 
@@ -151,6 +151,29 @@ _ = ae.Serve(ctx, ln, ae.ServerConfig{
 })
 ```
 
+## DICOMweb (WADO / STOW / QIDO)
+
+```go
+client := &dicomweb.Client{BaseURL: "https://pacs.example/dicom-web"}
+
+// STOW-RS
+_, err := client.StoreFiles(ctx, "", []*godicom.FileDataset{fd})
+
+// WADO-RS instance + metadata
+raw, err := client.RetrieveInstance(ctx, studyUID, seriesUID, sopUID)
+meta, err := client.RetrieveInstanceMetadata(ctx, studyUID, seriesUID, sopUID)
+
+// QIDO-RS
+matches, err := client.SearchStudies(ctx, url.Values{"PatientID": {"P001"}})
+```
+
+Origin-server MVP for tests/demos:
+
+```go
+store := dicomweb.NewMemoryStore()
+http.ListenAndServe(":8080", dicomweb.Handler(store, "/dicom-web"))
+```
+
 ## Packages
 
 | Package | Role |
@@ -158,6 +181,7 @@ _ = ae.Serve(ctx, ln, ae.ServerConfig{
 | `pdu` | A-ASSOCIATE / P-DATA-TF / A-RELEASE / A-ABORT + PDV fragmentation |
 | `dimse` | C-ECHO / C-STORE / C-FIND / C-MOVE / C-GET command sets (Implicit VR LE) |
 | `ae` | Association SCU (`CEcho`, `CStore`, `CFind`, `CMove`, `CGet`) + SCP (`Serve`) |
+| `dicomweb` | WADO-RS / STOW-RS / QIDO-RS client + origin-server MVP |
 
 ## Roadmap (working plan)
 
@@ -178,9 +202,9 @@ _ = ae.Serve(ctx, ln, ae.ServerConfig{
 - [x] C-MOVE / C-GET SCU/SCP (sub-op counts; C-GET interleaved C-STORE)
 
 ### Phase 3 — DICOMweb MVP
-- WADO-RS Retrieve Instance (`application/dicom`) + Metadata (`dicom+json`)
-- STOW-RS Store
-- Thin QIDO-RS
+- [x] WADO-RS Retrieve Instance (`application/dicom`) + Metadata (`dicom+json`)
+- [x] STOW-RS Store
+- [x] Thin QIDO-RS (Search for Studies)
 
 ### Phase 4 — Harden
 - Tests against pynetdicom fixtures / real PACS
@@ -192,6 +216,7 @@ _ = ae.Serve(ctx, ln, ae.ServerConfig{
 gonetdicom/
 ├── ae/                # Association SCU / SCP
 ├── dimse/             # DIMSE command sets
+├── dicomweb/          # DICOMweb client + origin-server MVP
 ├── pdu/               # Upper Layer PDUs
 ├── pynetdicom/        # submodule → pydicom/pynetdicom
 ├── go.mod
