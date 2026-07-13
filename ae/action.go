@@ -45,6 +45,19 @@ type EventReportRequest struct {
 	EventTypeID            uint16
 	EventInformation       []byte
 	EventInformationData   *godicom.Dataset
+	// AsyncDestination, when non-nil, causes the SCP to dial a new association
+	// after the N-ACTION-RSP and send this event report there (non-blocking for
+	// the requestor association). When nil, the report is pushed on the same
+	// association (legacy Storage Commitment push).
+	AsyncDestination *EventReportDestination
+}
+
+// EventReportDestination is the peer AE that accepts an async N-EVENT-REPORT
+// on a new association (Storage Commitment Push Model variant).
+type EventReportDestination struct {
+	Addr      string // host:port
+	CalledAE  string
+	CallingAE string // if empty, use ServerConfig.AETitle
 }
 
 // EventReportResult is the peer's N-EVENT-REPORT-RSP summary.

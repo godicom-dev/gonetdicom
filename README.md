@@ -150,6 +150,8 @@ cfg := ae.Config{
 
 ## Storage Commitment (N-ACTION / N-EVENT-REPORT)
 
+Same-association push (SCU waits via `OnNEventReport`):
+
 ```go
 res, err := assoc.NAction(ctx, ae.ActionRequest{
 	RequestedSOPClassUID:    ae.StorageCommitmentPushModelSOPClass,
@@ -161,6 +163,22 @@ res, err := assoc.NAction(ctx, ae.ActionRequest{
 		return 0x0000
 	},
 })
+```
+
+Async new-association push (SCP dials the SCU AE after N-ACTION-RSP — non-blocking for the requestor association):
+
+```go
+OnNAction: func(_ context.Context, req ae.ActionRequest) (ae.ActionResult, *ae.EventReportRequest) {
+	return ae.ActionResult{Status: 0x0000, /* ... */}, &ae.EventReportRequest{
+		AffectedSOPClassUID:    req.RequestedSOPClassUID,
+		AffectedSOPInstanceUID: req.RequestedSOPInstanceUID,
+		EventTypeID:            dimse.StorageCommitmentEventTypeSuccess,
+		EventInformationData:   req.ActionInformationData,
+		AsyncDestination: &ae.EventReportDestination{
+			Addr: "127.0.0.1:11113", CalledAE: "COMMITSCU",
+		},
+	}
+},
 ```
 
 ## C-STORE SCP
@@ -188,7 +206,7 @@ _ = ae.Serve(ctx, moveLn, ae.ServerConfig{
 		ae.PatientRootQueryRetrieveInformationModelMove,
 	},
 	MoveDestinations: map[string]ae.MoveDestination{
-		"STORESCP": {Addr: "127.0.0.1:11112"},
+		"STORESCP": {Addr: "127.0.0.1:11112", MaxAssociations: 4}, // >1 fans out C-STORE associations
 	},
 	OnCMove: func(_ context.Context, req ae.MoveRequest) ae.MovePlan {
 		return ae.MovePlan{
