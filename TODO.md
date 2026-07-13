@@ -19,6 +19,7 @@
 7. ~~Expand CI (golangci-lint)~~ ✅
 8. ~~Phase 4 harden (TLS helpers, structured logging, real-PACS soak stub)~~ ✅
 9. ~~WADO-RS rendered (instance JPEG/PNG) + Pixel Data bulkdata~~ ✅
+10. ~~v0.3.0 release~~ ✅
 
 ## Explicitly later
 
