@@ -3,6 +3,7 @@ package ae_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -71,7 +72,7 @@ func mockSCUPeer(t *testing.T, conn net.Conn) {
 	for {
 		raw, err := pdu.Read(conn)
 		if err != nil {
-			if err != io.EOF {
+			if !errors.Is(err, io.EOF) {
 				t.Errorf("scp read: %v", err)
 			}
 			return
@@ -100,7 +101,7 @@ func mockSCUPeer(t *testing.T, conn net.Conn) {
 					}
 				}
 			}
-			if !(cmdDone && dsDone) {
+			if !cmdDone || !dsDone {
 				continue
 			}
 
@@ -264,9 +265,6 @@ func TestCStoreSCURoundtrip(t *testing.T) {
 	dataset := []byte{
 		0x10, 0x00, 0x10, 0x00, 0x0a, 0x00, 0x00, 0x00, 'T', 'u', 'b', 'e', '^', 'H', 'e', 'N', 'e', ' ',
 		0x10, 0x00, 0x20, 0x00, 0x08, 0x00, 0x00, 0x00, 'T', 'e', 's', 't', '1', '1', '0', '1',
-	}
-	if !bytes.Equal(dataset, goldenStoreDataset()) {
-		// keep local copy independent of dimse fixtures
 	}
 
 	res, err := assoc.CStore(ctx, ae.StoreRequest{

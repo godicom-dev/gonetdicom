@@ -1,0 +1,57 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - unused
+    - errcheck
+    - errorlint
+    - ineffassign
+    - misspell
+    - bodyclose
+    - noctx
+    - bidichk
+    - revive
+  settings:
+    errcheck:
+      exclude-functions:
+        - io.Closer.Close
+        - (*net.Conn).Close
+        - (*net.TCPConn).Close
+        - (*net.Listener).Close
+        - (*os.File).Close
+        - (*net.TCPConn).SetReadDeadline
+        - (*net.TCPConn).SetWriteDeadline
+        - (net.Conn).SetReadDeadline
+        - (net.Conn).SetWriteDeadline
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+  exclusions:
+    presets:
+      - comments
+      - common-false-positives
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - noctx
+          - errcheck
+      - path: pynetdicom/
+        linters:
+          - ".*"
+    paths:
+      - pynetdicom
+      - third_party
+      - builtin
+      - examples
+
+formatters:
+  enable:
+    - gofmt

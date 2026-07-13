@@ -116,7 +116,7 @@ func (c *Client) retrieveMany(ctx context.Context, url string) ([][]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if err := checkStatus(resp, http.StatusOK); err != nil {
 		return nil, err
 	}
@@ -134,7 +134,7 @@ func (c *Client) retrieveMetadata(ctx context.Context, url string) ([]*godicom.D
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if err := checkStatus(resp, http.StatusOK); err != nil {
 		return nil, err
 	}

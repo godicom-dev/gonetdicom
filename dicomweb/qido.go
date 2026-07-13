@@ -71,7 +71,7 @@ func (c *Client) search(ctx context.Context, path string, query url.Values) ([]*
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if err := checkStatus(resp, http.StatusOK, http.StatusNoContent); err != nil {
 		return nil, err
 	}

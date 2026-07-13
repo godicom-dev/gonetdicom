@@ -1,6 +1,7 @@
 package dicomweb
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -372,7 +373,7 @@ func handleSTOW(w http.ResponseWriter, r *http.Request, store Store, studyUID st
 func handleWADOMany(w http.ResponseWriter, r *http.Request, store Store, study, series string) {
 	parts, err := store.ListInstances(study, series)
 	if err != nil {
-		if err == ErrNotFound {
+		if errors.Is(err, ErrNotFound) {
 			http.NotFound(w, r)
 			return
 		}
@@ -387,7 +388,7 @@ func handleWADOMany(w http.ResponseWriter, r *http.Request, store Store, study, 
 func handleWADOManyMetadata(w http.ResponseWriter, r *http.Request, store Store, study, series string) {
 	parts, err := store.ListInstances(study, series)
 	if err != nil {
-		if err == ErrNotFound {
+		if errors.Is(err, ErrNotFound) {
 			http.NotFound(w, r)
 			return
 		}
@@ -401,7 +402,7 @@ func handleWADOManyMetadata(w http.ResponseWriter, r *http.Request, store Store,
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		meta := fd.Dataset.Clone()
+		meta := fd.Clone()
 		meta.Delete(godicom.MustTag("PixelData"))
 		metas = append(metas, meta)
 	}
@@ -417,7 +418,7 @@ func handleWADOManyMetadata(w http.ResponseWriter, r *http.Request, store Store,
 func handleWADOInstance(w http.ResponseWriter, r *http.Request, store Store, study, series, instance string) {
 	raw, err := store.GetInstance(study, series, instance)
 	if err != nil {
-		if err == ErrNotFound {
+		if errors.Is(err, ErrNotFound) {
 			http.NotFound(w, r)
 			return
 		}
@@ -440,7 +441,7 @@ func handleWADOInstance(w http.ResponseWriter, r *http.Request, store Store, stu
 func handleWADOMetadata(w http.ResponseWriter, r *http.Request, store Store, study, series, instance string) {
 	raw, err := store.GetInstance(study, series, instance)
 	if err != nil {
-		if err == ErrNotFound {
+		if errors.Is(err, ErrNotFound) {
 			http.NotFound(w, r)
 			return
 		}
@@ -452,7 +453,7 @@ func handleWADOMetadata(w http.ResponseWriter, r *http.Request, store Store, stu
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	meta := fd.Dataset.Clone()
+	meta := fd.Clone()
 	meta.Delete(godicom.MustTag("PixelData"))
 	body, err := dicomjson.MarshalDatasets([]*godicom.Dataset{meta})
 	if err != nil {

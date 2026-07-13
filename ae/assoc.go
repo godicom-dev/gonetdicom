@@ -331,7 +331,7 @@ func (a *Association) Release(ctx context.Context) error {
 	if a.conn == nil {
 		return nil
 	}
-	defer a.closeConn()
+	defer func() { _ = a.closeConn() }()
 	if err := a.writePDU(ctx, &pdu.AReleaseRQ{}); err != nil {
 		return err
 	}
@@ -354,7 +354,7 @@ func (a *Association) Abort() error {
 	if a.conn == nil {
 		return nil
 	}
-	defer a.closeConn()
+	defer func() { _ = a.closeConn() }()
 	_ = pdu.Write(a.conn, &pdu.AAbort{Source: 0x00, ReasonDiagnostic: 0x00})
 	return nil
 }
@@ -379,7 +379,7 @@ func (a *Association) writePDU(ctx context.Context, p pdu.PDU) error {
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = a.conn.SetWriteDeadline(deadline)
-		defer a.conn.SetWriteDeadline(time.Time{})
+		defer func() { _ = a.conn.SetWriteDeadline(time.Time{}) }()
 	}
 	if err := pdu.Write(a.conn, p); err != nil {
 		return fmt.Errorf("ae: write PDU: %w", err)
@@ -393,7 +393,7 @@ func (a *Association) readPDU(ctx context.Context) (pdu.PDU, error) {
 	}
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = a.conn.SetReadDeadline(deadline)
-		defer a.conn.SetReadDeadline(time.Time{})
+		defer func() { _ = a.conn.SetReadDeadline(time.Time{}) }()
 	}
 	p, err := pdu.Read(a.conn)
 	if err != nil {
