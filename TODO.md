@@ -25,6 +25,7 @@
 13. ~~Storage Commitment Push Model (N-ACTION / N-EVENT-REPORT)~~ ✅
 14. ~~v0.4.0 release~~ ✅
 15. ~~C-MOVE SCP → MoveDestination C-STORE sub-operations~~ ✅
+16. ~~v0.5.0 release~~ ✅
 
 ## Explicitly later
 
