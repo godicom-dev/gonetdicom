@@ -76,6 +76,10 @@ type ServerConfig struct {
 	OnCGet                   GetHandler
 	OnNAction                NActionHandler
 	OnNEventReport           EventReportHandler
+	OnNGet                   NGetHandler
+	OnNSet                   NSetHandler
+	OnNCreate                NCreateHandler
+	OnNDelete                NDeleteHandler
 	// MoveDestinations maps Move Destination AE Title → Storage SCP endpoint.
 	// Required to perform real C-STORE sub-operations during C-MOVE.
 	MoveDestinations map[string]MoveDestination
@@ -360,6 +364,22 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 
 	if erRQ, err := dimse.DecodeNEventReportRQ(cmd); err == nil {
 		return scpHandleNEventReport(ctx, conn, cfg, accepted, peerMax, pcid, erRQ, ds)
+	}
+
+	if nGetRQ, err := dimse.DecodeNGetRQ(cmd); err == nil {
+		return scpHandleNGet(ctx, conn, cfg, accepted, peerMax, pcid, nGetRQ)
+	}
+
+	if nSetRQ, err := dimse.DecodeNSetRQ(cmd); err == nil {
+		return scpHandleNSet(ctx, conn, cfg, accepted, peerMax, pcid, nSetRQ, ds)
+	}
+
+	if nCreateRQ, err := dimse.DecodeNCreateRQ(cmd); err == nil {
+		return scpHandleNCreate(ctx, conn, cfg, accepted, peerMax, pcid, nCreateRQ, ds)
+	}
+
+	if nDeleteRQ, err := dimse.DecodeNDeleteRQ(cmd); err == nil {
+		return scpHandleNDelete(ctx, conn, cfg, accepted, peerMax, pcid, nDeleteRQ)
 	}
 
 	rq, err := dimse.DecodeCStoreRQ(cmd)
@@ -976,4 +996,198 @@ func scpSendEventReport(conn net.Conn, accepted map[byte]acceptedContext, peerMa
 		return fmt.Errorf("ae: decode N-EVENT-REPORT-RSP: %w", err)
 	}
 	return nil
+}
+
+func scpHandleNGet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NGetRQ) error {
+	ac, ok := accepted[pcid]
+	result := NGetResult{
+		Status:                 0x0122,
+		AffectedSOPClassUID:    rq.RequestedSOPClassUID,
+		AffectedSOPInstanceUID: rq.RequestedSOPInstanceUID,
+	}
+	if ok && ac.AbstractSyntax == rq.RequestedSOPClassUID {
+		if cfg.OnNGet != nil {
+			result = cfg.OnNGet(ctx, NGetRequest{
+				RequestedSOPClassUID:    rq.RequestedSOPClassUID,
+				RequestedSOPInstanceUID: rq.RequestedSOPInstanceUID,
+				AttributeIdentifierList: rq.AttributeIdentifierList,
+			})
+		} else {
+			result.Status = StatusProcessingFailure
+		}
+		if result.AffectedSOPClassUID == "" {
+			result.AffectedSOPClassUID = rq.RequestedSOPClassUID
+		}
+		if result.AffectedSOPInstanceUID == "" {
+			result.AffectedSOPInstanceUID = rq.RequestedSOPInstanceUID
+		}
+	}
+	return writeNAttributeRSP(conn, peerMax, pcid, ok, ac, rq.MessageID, result.Status,
+		result.AffectedSOPClassUID, result.AffectedSOPInstanceUID,
+		result.AttributeList, result.AttributeListData, encodeNGetRSP)
+}
+
+func scpHandleNSet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NSetRQ, ds []byte) error {
+	ac, ok := accepted[pcid]
+	result := SetResult{
+		Status:                 0x0122,
+		AffectedSOPClassUID:    rq.RequestedSOPClassUID,
+		AffectedSOPInstanceUID: rq.RequestedSOPInstanceUID,
+	}
+	if ok && ac.AbstractSyntax == rq.RequestedSOPClassUID {
+		var mod *godicom.Dataset
+		if len(ds) > 0 {
+			decoded, err := godicom.DecodeDataset(ds, ac.TransferSyntax)
+			if err != nil {
+				return fmt.Errorf("ae: decode modification list: %w", err)
+			}
+			mod = decoded
+		}
+		if cfg.OnNSet != nil {
+			result = cfg.OnNSet(ctx, SetRequest{
+				RequestedSOPClassUID:    rq.RequestedSOPClassUID,
+				RequestedSOPInstanceUID: rq.RequestedSOPInstanceUID,
+				ModificationList:        ds,
+				ModificationListData:    mod,
+			})
+		} else {
+			result.Status = StatusProcessingFailure
+		}
+		if result.AffectedSOPClassUID == "" {
+			result.AffectedSOPClassUID = rq.RequestedSOPClassUID
+		}
+		if result.AffectedSOPInstanceUID == "" {
+			result.AffectedSOPInstanceUID = rq.RequestedSOPInstanceUID
+		}
+	}
+	return writeNAttributeRSP(conn, peerMax, pcid, ok, ac, rq.MessageID, result.Status,
+		result.AffectedSOPClassUID, result.AffectedSOPInstanceUID,
+		result.AttributeList, result.AttributeListData, encodeNSetRSP)
+}
+
+func scpHandleNCreate(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NCreateRQ, ds []byte) error {
+	ac, ok := accepted[pcid]
+	result := CreateResult{
+		Status:                 0x0122,
+		AffectedSOPClassUID:    rq.AffectedSOPClassUID,
+		AffectedSOPInstanceUID: rq.AffectedSOPInstanceUID,
+	}
+	if ok && ac.AbstractSyntax == rq.AffectedSOPClassUID {
+		var attrs *godicom.Dataset
+		if len(ds) > 0 {
+			decoded, err := godicom.DecodeDataset(ds, ac.TransferSyntax)
+			if err != nil {
+				return fmt.Errorf("ae: decode N-CREATE attribute list: %w", err)
+			}
+			attrs = decoded
+		}
+		if cfg.OnNCreate != nil {
+			result = cfg.OnNCreate(ctx, CreateRequest{
+				AffectedSOPClassUID:    rq.AffectedSOPClassUID,
+				AffectedSOPInstanceUID: rq.AffectedSOPInstanceUID,
+				AttributeList:          ds,
+				AttributeListData:      attrs,
+			})
+		} else {
+			result.Status = StatusProcessingFailure
+		}
+		if result.AffectedSOPClassUID == "" {
+			result.AffectedSOPClassUID = rq.AffectedSOPClassUID
+		}
+		if result.AffectedSOPInstanceUID == "" {
+			result.AffectedSOPInstanceUID = rq.AffectedSOPInstanceUID
+		}
+	}
+	if result.AffectedSOPInstanceUID == "" {
+		return fmt.Errorf("ae: N-CREATE-RSP missing Affected SOP Instance UID")
+	}
+	return writeNAttributeRSP(conn, peerMax, pcid, ok, ac, rq.MessageID, result.Status,
+		result.AffectedSOPClassUID, result.AffectedSOPInstanceUID,
+		result.AttributeList, result.AttributeListData, encodeNCreateRSP)
+}
+
+func scpHandleNDelete(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NDeleteRQ) error {
+	ac, ok := accepted[pcid]
+	result := DeleteResult{
+		Status:                 0x0122,
+		AffectedSOPClassUID:    rq.RequestedSOPClassUID,
+		AffectedSOPInstanceUID: rq.RequestedSOPInstanceUID,
+	}
+	if ok && ac.AbstractSyntax == rq.RequestedSOPClassUID {
+		if cfg.OnNDelete != nil {
+			result = cfg.OnNDelete(ctx, DeleteRequest{
+				RequestedSOPClassUID:    rq.RequestedSOPClassUID,
+				RequestedSOPInstanceUID: rq.RequestedSOPInstanceUID,
+			})
+		} else {
+			result.Status = StatusProcessingFailure
+		}
+		if result.AffectedSOPClassUID == "" {
+			result.AffectedSOPClassUID = rq.RequestedSOPClassUID
+		}
+		if result.AffectedSOPInstanceUID == "" {
+			result.AffectedSOPInstanceUID = rq.RequestedSOPInstanceUID
+		}
+	}
+	rsp, err := (&dimse.NDeleteRSP{
+		MessageIDBeingRespondedTo: rq.MessageID,
+		AffectedSOPClassUID:       result.AffectedSOPClassUID,
+		AffectedSOPInstanceUID:    result.AffectedSOPInstanceUID,
+		Status:                    result.Status,
+	}).Encode()
+	if err != nil {
+		return err
+	}
+	return writeMessage(conn, pcid, rsp, nil, peerMax)
+}
+
+type nAttrEncoder func(msgID uint16, status uint16, classUID, instanceUID string, hasDS bool) ([]byte, error)
+
+func encodeNGetRSP(msgID uint16, status uint16, classUID, instanceUID string, hasDS bool) ([]byte, error) {
+	return (&dimse.NGetRSP{
+		MessageIDBeingRespondedTo: msgID,
+		AffectedSOPClassUID:       classUID,
+		AffectedSOPInstanceUID:    instanceUID,
+		Status:                    status,
+		HasDataset:                hasDS,
+	}).Encode()
+}
+
+func encodeNSetRSP(msgID uint16, status uint16, classUID, instanceUID string, hasDS bool) ([]byte, error) {
+	return (&dimse.NSetRSP{
+		MessageIDBeingRespondedTo: msgID,
+		AffectedSOPClassUID:       classUID,
+		AffectedSOPInstanceUID:    instanceUID,
+		Status:                    status,
+		HasDataset:                hasDS,
+	}).Encode()
+}
+
+func encodeNCreateRSP(msgID uint16, status uint16, classUID, instanceUID string, hasDS bool) ([]byte, error) {
+	return (&dimse.NCreateRSP{
+		MessageIDBeingRespondedTo: msgID,
+		AffectedSOPClassUID:       classUID,
+		AffectedSOPInstanceUID:    instanceUID,
+		Status:                    status,
+		HasDataset:                hasDS,
+	}).Encode()
+}
+
+func writeNAttributeRSP(conn net.Conn, peerMax uint32, pcid byte, ok bool, ac acceptedContext, msgID uint16, status uint16, classUID, instanceUID string, list []byte, listData *godicom.Dataset, enc nAttrEncoder) error {
+	payload := list
+	if listData != nil {
+		if !ok {
+			return fmt.Errorf("ae: cannot encode attribute list without accepted context")
+		}
+		encoded, err := listData.Encode(ac.TransferSyntax)
+		if err != nil {
+			return fmt.Errorf("ae: encode attribute list: %w", err)
+		}
+		payload = encoded
+	}
+	rsp, err := enc(msgID, status, classUID, instanceUID, len(payload) > 0)
+	if err != nil {
+		return err
+	}
+	return writeMessage(conn, pcid, rsp, payload, peerMax)
 }

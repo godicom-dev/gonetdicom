@@ -224,6 +224,32 @@ _ = ae.Serve(ctx, ln, ae.ServerConfig{
 
 Nil `OnUserIdentity` accepts the association and omits any AC response item.
 
+## DIMSE-N (N-GET / N-SET / N-CREATE / N-DELETE)
+
+```go
+res, err := assoc.NGet(ctx, ae.NGetRequest{
+	RequestedSOPClassUID:    sopClass,
+	RequestedSOPInstanceUID: sopInstance,
+	AttributeIdentifierList: []dimse.Tag{0x00100010},
+})
+res, err = assoc.NSet(ctx, ae.SetRequest{
+	RequestedSOPClassUID:    sopClass,
+	RequestedSOPInstanceUID: sopInstance,
+	ModificationListData:    mods,
+})
+res, err = assoc.NCreate(ctx, ae.CreateRequest{
+	AffectedSOPClassUID:    sopClass,
+	AffectedSOPInstanceUID: sopInstance,
+	AttributeListData:      attrs,
+})
+res, err = assoc.NDelete(ctx, ae.DeleteRequest{
+	RequestedSOPClassUID:    sopClass,
+	RequestedSOPInstanceUID: sopInstance,
+})
+```
+
+SCP handlers: `OnNGet`, `OnNSet`, `OnNCreate`, `OnNDelete` (nil → status `0x0110` Processing Failure).
+
 ## DICOMweb (WADO / STOW / QIDO)
 
 ```go

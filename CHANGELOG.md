@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- DIMSE-N N-GET / N-SET / N-CREATE / N-DELETE encode/decode + `ae.NGet` / `NSet` / `NCreate` / `NDelete` with SCP handlers `OnNGet` / `OnNSet` / `OnNCreate` / `OnNDelete` (pynetdicom golden fixtures)
+
 ## [0.6.0] - 2026-07-13
 
 ### Added
