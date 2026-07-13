@@ -9,9 +9,10 @@
 
 ## Near term
 
-1. PDU / Association types + C-ECHO SCU roundtrip (local or mock)
-2. Minimal AE config (`AETitle`, peer host/port, contexts)
-3. CI: `go test ./...` + submodule checkout
+1. ~~PDU / Association types + C-ECHO SCU roundtrip (local or mock)~~ ✅ Phase 1
+2. C-STORE SCU (use godicom for dataset encode under negotiated TS)
+3. Minimal SCP acceptor for Verification / C-STORE
+4. Expand CI (coverage, golangci-lint) as packages grow
 
 ## Explicitly later
 

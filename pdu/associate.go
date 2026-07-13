@@ -1,0 +1,332 @@
+package pdu
+
+import (
+	"encoding/binary"
+	"fmt"
+)
+
+// PresentationContextRQ is a proposed presentation context in A-ASSOCIATE-RQ.
+type PresentationContextRQ struct {
+	ID               byte
+	AbstractSyntax   string
+	TransferSyntaxes []string
+}
+
+// PresentationContextAC is an accepted/rejected context in A-ASSOCIATE-AC.
+type PresentationContextAC struct {
+	ID             byte
+	Result         byte // 0 = acceptance
+	TransferSyntax string
+}
+
+// UserInformation carries association negotiation user items.
+type UserInformation struct {
+	MaxLength                 uint32
+	ImplementationClassUID    string
+	ImplementationVersionName string
+}
+
+// AAssociateRQ is an A-ASSOCIATE-RQ PDU.
+type AAssociateRQ struct {
+	ProtocolVersion        uint16
+	CalledAETitle          string
+	CallingAETitle         string
+	ApplicationContextName string
+	PresentationContexts   []PresentationContextRQ
+	UserInformation        UserInformation
+}
+
+func (p *AAssociateRQ) Type() byte { return TypeAAssociateRQ }
+
+// Encode serializes the PDU.
+func (p *AAssociateRQ) Encode() ([]byte, error) {
+	called, err := PadAETitle(p.CalledAETitle)
+	if err != nil {
+		return nil, fmt.Errorf("called AE: %w", err)
+	}
+	calling, err := PadAETitle(p.CallingAETitle)
+	if err != nil {
+		return nil, fmt.Errorf("calling AE: %w", err)
+	}
+	appCtx := p.ApplicationContextName
+	if appCtx == "" {
+		appCtx = ApplicationContextName
+	}
+
+	var varItems []byte
+	varItems = append(varItems, encodeItem(ItemApplicationContext, []byte(appCtx))...)
+
+	for _, pc := range p.PresentationContexts {
+		data := make([]byte, 4)
+		data[0] = pc.ID
+		data = append(data, encodeItem(ItemAbstractSyntax, []byte(pc.AbstractSyntax))...)
+		for _, ts := range pc.TransferSyntaxes {
+			data = append(data, encodeItem(ItemTransferSyntax, []byte(ts))...)
+		}
+		varItems = append(varItems, encodeItem(ItemPresentationContextRQ, data)...)
+	}
+
+	ui, err := encodeUserInformation(p.UserInformation)
+	if err != nil {
+		return nil, err
+	}
+	varItems = append(varItems, ui...)
+
+	body := make([]byte, 68+len(varItems))
+	ver := p.ProtocolVersion
+	if ver == 0 {
+		ver = 1
+	}
+	binary.BigEndian.PutUint16(body[0:2], ver)
+	copy(body[4:20], called[:])
+	copy(body[20:36], calling[:])
+	copy(body[68:], varItems)
+	return encodeHeader(TypeAAssociateRQ, body), nil
+}
+
+// DecodeAAssociateRQ parses an A-ASSOCIATE-RQ PDU.
+func DecodeAAssociateRQ(raw []byte) (*AAssociateRQ, error) {
+	if len(raw) < 74 {
+		return nil, fmt.Errorf("pdu: A-ASSOCIATE-RQ too short: %d", len(raw))
+	}
+	if raw[0] != TypeAAssociateRQ {
+		return nil, fmt.Errorf("%w: got 0x%02x want A-ASSOCIATE-RQ", ErrUnexpectedType, raw[0])
+	}
+	length := binary.BigEndian.Uint32(raw[2:6])
+	if int(6+length) != len(raw) {
+		return nil, fmt.Errorf("pdu: A-ASSOCIATE-RQ length mismatch")
+	}
+	p := &AAssociateRQ{
+		ProtocolVersion:        binary.BigEndian.Uint16(raw[6:8]),
+		CalledAETitle:          TrimAETitle(raw[10:26]),
+		CallingAETitle:         TrimAETitle(raw[26:42]),
+		ApplicationContextName: ApplicationContextName,
+	}
+	items, err := decodeItems(raw[74:])
+	if err != nil {
+		return nil, err
+	}
+	for _, it := range items {
+		switch it.Type {
+		case ItemApplicationContext:
+			p.ApplicationContextName = string(it.Data)
+		case ItemPresentationContextRQ:
+			pc, err := decodePresentationContextRQ(it.Data)
+			if err != nil {
+				return nil, err
+			}
+			p.PresentationContexts = append(p.PresentationContexts, pc)
+		case ItemUserInformation:
+			ui, err := decodeUserInformation(it.Data)
+			if err != nil {
+				return nil, err
+			}
+			p.UserInformation = ui
+		}
+	}
+	return p, nil
+}
+
+// AAssociateAC is an A-ASSOCIATE-AC PDU.
+type AAssociateAC struct {
+	ProtocolVersion        uint16
+	CalledAETitle          string
+	CallingAETitle         string
+	ApplicationContextName string
+	PresentationContexts   []PresentationContextAC
+	UserInformation        UserInformation
+}
+
+func (p *AAssociateAC) Type() byte { return TypeAAssociateAC }
+
+// Encode serializes the PDU.
+func (p *AAssociateAC) Encode() ([]byte, error) {
+	called, err := PadAETitle(p.CalledAETitle)
+	if err != nil {
+		return nil, fmt.Errorf("called AE: %w", err)
+	}
+	calling, err := PadAETitle(p.CallingAETitle)
+	if err != nil {
+		return nil, fmt.Errorf("calling AE: %w", err)
+	}
+	appCtx := p.ApplicationContextName
+	if appCtx == "" {
+		appCtx = ApplicationContextName
+	}
+
+	var varItems []byte
+	varItems = append(varItems, encodeItem(ItemApplicationContext, []byte(appCtx))...)
+	for _, pc := range p.PresentationContexts {
+		data := make([]byte, 4)
+		data[0] = pc.ID
+		data[2] = pc.Result
+		if pc.TransferSyntax != "" {
+			data = append(data, encodeItem(ItemTransferSyntax, []byte(pc.TransferSyntax))...)
+		}
+		varItems = append(varItems, encodeItem(ItemPresentationContextAC, data)...)
+	}
+	ui, err := encodeUserInformation(p.UserInformation)
+	if err != nil {
+		return nil, err
+	}
+	varItems = append(varItems, ui...)
+
+	body := make([]byte, 68+len(varItems))
+	ver := p.ProtocolVersion
+	if ver == 0 {
+		ver = 1
+	}
+	binary.BigEndian.PutUint16(body[0:2], ver)
+	copy(body[4:20], called[:])
+	copy(body[20:36], calling[:])
+	copy(body[68:], varItems)
+	return encodeHeader(TypeAAssociateAC, body), nil
+}
+
+// DecodeAAssociateAC parses an A-ASSOCIATE-AC PDU.
+func DecodeAAssociateAC(raw []byte) (*AAssociateAC, error) {
+	if len(raw) < 74 {
+		return nil, fmt.Errorf("pdu: A-ASSOCIATE-AC too short: %d", len(raw))
+	}
+	if raw[0] != TypeAAssociateAC {
+		return nil, fmt.Errorf("%w: got 0x%02x want A-ASSOCIATE-AC", ErrUnexpectedType, raw[0])
+	}
+	length := binary.BigEndian.Uint32(raw[2:6])
+	if int(6+length) != len(raw) {
+		return nil, fmt.Errorf("pdu: A-ASSOCIATE-AC length mismatch")
+	}
+	p := &AAssociateAC{
+		ProtocolVersion:        binary.BigEndian.Uint16(raw[6:8]),
+		CalledAETitle:          TrimAETitle(raw[10:26]),
+		CallingAETitle:         TrimAETitle(raw[26:42]),
+		ApplicationContextName: ApplicationContextName,
+	}
+	items, err := decodeItems(raw[74:])
+	if err != nil {
+		return nil, err
+	}
+	for _, it := range items {
+		switch it.Type {
+		case ItemApplicationContext:
+			p.ApplicationContextName = string(it.Data)
+		case ItemPresentationContextAC:
+			pc, err := decodePresentationContextAC(it.Data)
+			if err != nil {
+				return nil, err
+			}
+			p.PresentationContexts = append(p.PresentationContexts, pc)
+		case ItemUserInformation:
+			ui, err := decodeUserInformation(it.Data)
+			if err != nil {
+				return nil, err
+			}
+			p.UserInformation = ui
+		}
+	}
+	return p, nil
+}
+
+// AAssociateRJ is an A-ASSOCIATE-RJ PDU.
+type AAssociateRJ struct {
+	Result           byte
+	Source           byte
+	ReasonDiagnostic byte
+}
+
+func (p *AAssociateRJ) Type() byte { return TypeAAssociateRJ }
+
+// Encode serializes the PDU.
+func (p *AAssociateRJ) Encode() ([]byte, error) {
+	body := []byte{0x00, p.Result, p.Source, p.ReasonDiagnostic}
+	return encodeHeader(TypeAAssociateRJ, body), nil
+}
+
+// DecodeAAssociateRJ parses an A-ASSOCIATE-RJ PDU.
+func DecodeAAssociateRJ(raw []byte) (*AAssociateRJ, error) {
+	if len(raw) != 10 {
+		return nil, fmt.Errorf("pdu: A-ASSOCIATE-RJ length %d", len(raw))
+	}
+	if raw[0] != TypeAAssociateRJ {
+		return nil, fmt.Errorf("%w: got 0x%02x want A-ASSOCIATE-RJ", ErrUnexpectedType, raw[0])
+	}
+	return &AAssociateRJ{
+		Result:           raw[7],
+		Source:           raw[8],
+		ReasonDiagnostic: raw[9],
+	}, nil
+}
+
+func decodePresentationContextRQ(data []byte) (PresentationContextRQ, error) {
+	if len(data) < 4 {
+		return PresentationContextRQ{}, fmt.Errorf("pdu: short presentation context RQ")
+	}
+	pc := PresentationContextRQ{ID: data[0]}
+	subs, err := decodeItems(data[4:])
+	if err != nil {
+		return PresentationContextRQ{}, err
+	}
+	for _, s := range subs {
+		switch s.Type {
+		case ItemAbstractSyntax:
+			pc.AbstractSyntax = string(s.Data)
+		case ItemTransferSyntax:
+			pc.TransferSyntaxes = append(pc.TransferSyntaxes, string(s.Data))
+		}
+	}
+	return pc, nil
+}
+
+func decodePresentationContextAC(data []byte) (PresentationContextAC, error) {
+	if len(data) < 4 {
+		return PresentationContextAC{}, fmt.Errorf("pdu: short presentation context AC")
+	}
+	pc := PresentationContextAC{ID: data[0], Result: data[2]}
+	subs, err := decodeItems(data[4:])
+	if err != nil {
+		return PresentationContextAC{}, err
+	}
+	for _, s := range subs {
+		if s.Type == ItemTransferSyntax {
+			pc.TransferSyntax = string(s.Data)
+			break
+		}
+	}
+	return pc, nil
+}
+
+func encodeUserInformation(ui UserInformation) ([]byte, error) {
+	if ui.ImplementationClassUID == "" {
+		return nil, fmt.Errorf("pdu: missing implementation class UID")
+	}
+	maxLen := make([]byte, 4)
+	binary.BigEndian.PutUint32(maxLen, ui.MaxLength)
+	var data []byte
+	data = append(data, encodeItem(ItemMaxLength, maxLen)...)
+	data = append(data, encodeItem(ItemImplementationClassUID, []byte(ui.ImplementationClassUID))...)
+	if ui.ImplementationVersionName != "" {
+		data = append(data, encodeItem(ItemImplementationVersion, []byte(ui.ImplementationVersionName))...)
+	}
+	return encodeItem(ItemUserInformation, data), nil
+}
+
+func decodeUserInformation(data []byte) (UserInformation, error) {
+	var ui UserInformation
+	subs, err := decodeItems(data)
+	if err != nil {
+		return ui, err
+	}
+	for _, s := range subs {
+		switch s.Type {
+		case ItemMaxLength:
+			if len(s.Data) != 4 {
+				return ui, fmt.Errorf("pdu: bad max length item")
+			}
+			ui.MaxLength = binary.BigEndian.Uint32(s.Data)
+		case ItemImplementationClassUID:
+			ui.ImplementationClassUID = string(s.Data)
+		case ItemImplementationVersion:
+			ui.ImplementationVersionName = string(s.Data)
+		}
+	}
+	return ui, nil
+}
