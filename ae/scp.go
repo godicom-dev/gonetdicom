@@ -76,7 +76,10 @@ type ServerConfig struct {
 	ImplementationClassUID    string
 	ImplementationVersionName string
 	// AcceptedAbstractSyntaxes lists SOP Class UIDs the SCP will accept
-	// (plus Verification is always accepted for C-ECHO).
+	// (plus Verification is always accepted for C-ECHO). Prefer
+	// AllStorageSOPClasses for a generic Storage SCP (pynetdicom
+	// AllStoragePresentationContexts). Include "*" only when you intentionally
+	// accept any peer-proposed abstract syntax (including private UIDs).
 	AcceptedAbstractSyntaxes []string
 	OnCStore                 StoreHandler
 	OnCFind                  FindHandler
@@ -202,7 +205,12 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 	allowed := map[string]struct{}{
 		pdu.VerificationSOPClass: {},
 	}
+	acceptAll := false
 	for _, uid := range cfg.AcceptedAbstractSyntaxes {
+		if uid == "*" {
+			acceptAll = true
+			continue
+		}
 		allowed[uid] = struct{}{}
 	}
 
@@ -214,6 +222,9 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 
 	for _, pc := range rq.PresentationContexts {
 		_, ok := allowed[pc.AbstractSyntax]
+		if acceptAll {
+			ok = true
+		}
 		if !ok || len(pc.TransferSyntaxes) == 0 {
 			acContexts = append(acContexts, pdu.PresentationContextAC{
 				ID:     pc.ID,
