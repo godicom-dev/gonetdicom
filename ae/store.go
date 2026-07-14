@@ -14,18 +14,22 @@ import (
 // Dataset to encode with the negotiated transfer syntax). Data takes
 // precedence when both are set.
 //
-// SCP inbound (OnCStore): Dataset is always the raw PDV bytes; Data is the
-// decoded godicom Dataset when TransferSyntax is known. File is a Part 10
-// FileDataset with File Meta TransferSyntaxUID set from the association
-// (pynetdicom event.dataset + file_meta). Prefer req.SaveAs / req.File.SaveAs
-// — bare req.Data.SaveAs omits File Meta and breaks compressed / multi-frame
-// Pixel Data (snow / “one frame”).
+// SCP inbound (OnCStore) mirrors pynetdicom evt.EVT_C_STORE:
+//
+//	Data     ≈ event.dataset
+//	FileMeta ≈ event.file_meta
+//	Dataset  = raw PDV bytes (event.request.DataSet)
+//
+// Save like the pynetdicom storescp example:
+//
+//	fd := &godicom.FileDataset{Dataset: req.Data, FileMeta: req.FileMeta}
+//	_ = fd.SaveAs(req.AffectedSOPInstanceUID+".dcm", &godicom.WriteOptions{EnforceFileFormat: true})
 type StoreRequest struct {
 	AffectedSOPClassUID                  string
 	AffectedSOPInstanceUID               string
 	Dataset                              []byte
 	Data                                 *godicom.Dataset
-	File                                 *godicom.FileDataset
+	FileMeta                             *godicom.FileMetaDataset
 	TransferSyntax                       string
 	Priority                             uint16 // 0 defaults to PriorityLow
 	MoveOriginatorApplicationEntityTitle string
@@ -37,22 +41,6 @@ type StoreResult struct {
 	Status                 uint16
 	AffectedSOPClassUID    string
 	AffectedSOPInstanceUID string
-}
-
-// SaveAs writes the inbound instance as a Part 10 DICOM file with correct
-// File Meta Transfer Syntax (required for compressed / multi-frame Pixel Data).
-func (r StoreRequest) SaveAs(filename string) error {
-	fd := r.File
-	if fd == nil {
-		if r.Data == nil {
-			return fmt.Errorf("ae: SaveAs requires File or Data")
-		}
-		if r.TransferSyntax == "" {
-			return fmt.Errorf("ae: SaveAs requires TransferSyntax when File is nil")
-		}
-		fd = newStoreFileDataset(r.Data, r.TransferSyntax)
-	}
-	return fd.SaveAs(filename, &godicom.WriteOptions{EnforceFileFormat: true})
 }
 
 // CStore sends a C-STORE-RQ and waits for the C-STORE-RSP.
@@ -118,8 +106,8 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 	}, nil
 }
 
-// newInboundStoreRequest builds an OnCStore payload from a received C-STORE-RQ.
-// Dataset is always the raw PDV bytes; Data/File are decoded when transferSyntax is set.
+// newInboundStoreRequest builds an OnCStore payload from a received C-STORE-RQ
+// (pynetdicom Event.dataset + Event.file_meta).
 func newInboundStoreRequest(rq *dimse.CStoreRQ, dataset []byte, transferSyntax string) StoreRequest {
 	req := StoreRequest{
 		AffectedSOPClassUID:                  rq.AffectedSOPClassUID,
@@ -129,6 +117,11 @@ func newInboundStoreRequest(rq *dimse.CStoreRQ, dataset []byte, transferSyntax s
 		Priority:                             rq.Priority,
 		MoveOriginatorApplicationEntityTitle: rq.MoveOriginatorApplicationEntityTitle,
 		MoveOriginatorMessageID:              rq.MoveOriginatorMessageID,
+		FileMeta: createFileMeta(
+			rq.AffectedSOPClassUID,
+			rq.AffectedSOPInstanceUID,
+			transferSyntax,
+		),
 	}
 	if len(dataset) == 0 || transferSyntax == "" {
 		return req
@@ -138,20 +131,24 @@ func newInboundStoreRequest(rq *dimse.CStoreRQ, dataset []byte, transferSyntax s
 		return req
 	}
 	req.Data = ds
-	req.File = newStoreFileDataset(ds, transferSyntax)
 	return req
 }
 
-func newStoreFileDataset(ds *godicom.Dataset, transferSyntax string) *godicom.FileDataset {
+// createFileMeta mirrors pynetdicom.dsutils.create_file_meta / Event.file_meta.
+func createFileMeta(sopClassUID, sopInstanceUID, transferSyntax string) *godicom.FileMetaDataset {
 	meta := godicom.NewFileMetaDataset()
+	meta.Set(godicom.NewDataElement(godicom.MustTag("FileMetaInformationGroupLength"), godicom.VRUL, uint32(0)))
+	meta.Set(godicom.NewDataElement(godicom.MustTag("FileMetaInformationVersion"), godicom.VROB, []byte{0x00, 0x01}))
+	if sopClassUID != "" {
+		meta.Set(godicom.NewDataElement(godicom.MustTag("MediaStorageSOPClassUID"), godicom.VRUI, sopClassUID))
+	}
+	if sopInstanceUID != "" {
+		meta.Set(godicom.NewDataElement(godicom.MustTag("MediaStorageSOPInstanceUID"), godicom.VRUI, sopInstanceUID))
+	}
 	if transferSyntax != "" {
 		meta.Set(godicom.NewDataElement(godicom.MustTag("TransferSyntaxUID"), godicom.VRUI, transferSyntax))
 	}
-	if sopClass, ok := ds.GetString(godicom.MustTag("SOPClassUID")); ok && sopClass != "" {
-		meta.Set(godicom.NewDataElement(godicom.MustTag("MediaStorageSOPClassUID"), godicom.VRUI, sopClass))
-	}
-	if sopInstance, ok := ds.GetString(godicom.MustTag("SOPInstanceUID")); ok && sopInstance != "" {
-		meta.Set(godicom.NewDataElement(godicom.MustTag("MediaStorageSOPInstanceUID"), godicom.VRUI, sopInstance))
-	}
-	return &godicom.FileDataset{Dataset: ds, FileMeta: meta}
+	meta.Set(godicom.NewDataElement(godicom.MustTag("ImplementationClassUID"), godicom.VRUI, ImplementationClassUID))
+	meta.Set(godicom.NewDataElement(godicom.MustTag("ImplementationVersionName"), godicom.VRSH, ImplementationVersionName))
+	return meta
 }

@@ -10,7 +10,7 @@ import (
 	"github.com/godicom-dev/gonetdicom/pdu"
 )
 
-func TestStoreRequestSaveAsWritesFileMetaTransferSyntax(t *testing.T) {
+func TestInboundStoreRequestFileMetaMatchesPynetdicom(t *testing.T) {
 	t.Parallel()
 
 	const scUID = "1.2.840.10008.5.1.4.1.1.7"
@@ -28,29 +28,35 @@ func TestStoreRequestSaveAsWritesFileMetaTransferSyntax(t *testing.T) {
 		AffectedSOPClassUID:    scUID,
 		AffectedSOPInstanceUID: "1.2.3.4.5",
 	}, raw, pdu.ImplicitVRLittleEndian)
-	if req.Data == nil || req.File == nil {
-		t.Fatalf("expected Data and File, got Data=%v File=%v", req.Data != nil, req.File != nil)
+	if req.Data == nil || req.FileMeta == nil {
+		t.Fatalf("expected Data and FileMeta, got Data=%v FileMeta=%v", req.Data != nil, req.FileMeta != nil)
 	}
 
+	// pynetdicom: ds = event.dataset; ds.file_meta = event.file_meta; ds.save_as(..., enforce_file_format=True)
+	fd := &godicom.FileDataset{Dataset: req.Data, FileMeta: req.FileMeta}
 	out := filepath.Join(t.TempDir(), "out.dcm")
-	if err := req.SaveAs(out); err != nil {
+	if err := fd.SaveAs(out, &godicom.WriteOptions{EnforceFileFormat: true}); err != nil {
 		t.Fatalf("SaveAs: %v", err)
 	}
-	fd, err := godicom.ReadFile(out, nil)
+	got, err := godicom.ReadFile(out, nil)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	ts, ok := fd.FileMeta.GetString(godicom.MustTag("TransferSyntaxUID"))
+	ts, ok := got.FileMeta.GetString(godicom.MustTag("TransferSyntaxUID"))
 	if !ok || ts != pdu.ImplicitVRLittleEndian {
 		t.Fatalf("TransferSyntaxUID=%q", ts)
 	}
-	nf, _ := fd.GetString(godicom.MustTag("NumberOfFrames"))
+	nf, _ := got.GetString(godicom.MustTag("NumberOfFrames"))
 	if nf != "2" {
 		t.Fatalf("NumberOfFrames=%q", nf)
 	}
+	msc, _ := got.FileMeta.GetString(godicom.MustTag("MediaStorageSOPClassUID"))
+	if msc != scUID {
+		t.Fatalf("MediaStorageSOPClassUID=%q", msc)
+	}
 }
 
-func TestStoreRequestSaveAsPreservesRLEMultiFrame(t *testing.T) {
+func TestInboundStoreRequestPreservesRLEMultiFrame(t *testing.T) {
 	t.Parallel()
 
 	src := filepath.Join("..", "godicom", "pydicom", "src", "pydicom", "data", "test_files", "SC_rgb_rle_2frame.dcm")
@@ -75,8 +81,9 @@ func TestStoreRequestSaveAsPreservesRLEMultiFrame(t *testing.T) {
 		AffectedSOPInstanceUID: sopInst,
 	}, raw, ts)
 
+	fd := &godicom.FileDataset{Dataset: req.Data, FileMeta: req.FileMeta}
 	out := filepath.Join(t.TempDir(), "rle.dcm")
-	if err := req.SaveAs(out); err != nil {
+	if err := fd.SaveAs(out, &godicom.WriteOptions{EnforceFileFormat: true}); err != nil {
 		t.Fatalf("SaveAs: %v", err)
 	}
 	got, err := godicom.ReadFile(out, nil)

@@ -200,8 +200,12 @@ err = ae.Serve(ctx, ln, ae.ServerConfig{
 	AETitle:                  "STORESCP",
 	AcceptedAbstractSyntaxes: ae.AllStorageSOPClasses, // pynetdicom AllStoragePresentationContexts
 	OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-		// Part 10 + TransferSyntaxUID (do not use req.Data.SaveAs alone)
-		if err := req.SaveAs("received.dcm"); err != nil {
+		// pynetdicom: ds = event.dataset; ds.file_meta = event.file_meta; ds.save_as(...)
+		if req.Data == nil || req.FileMeta == nil {
+			return status.ProcessingFailure
+		}
+		fd := &godicom.FileDataset{Dataset: req.Data, FileMeta: req.FileMeta}
+		if err := fd.SaveAs(req.AffectedSOPInstanceUID+".dcm", &godicom.WriteOptions{EnforceFileFormat: true}); err != nil {
 			return status.ProcessingFailure
 		}
 		return status.Success
