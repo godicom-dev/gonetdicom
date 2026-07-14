@@ -37,6 +37,7 @@
 22. ~~v0.8.0 release~~ ✅
 23. ~~Study/series/instance metadata BulkDataURI~~ ✅
 24. ~~DIMSE status named constants (`status` package, dcm4che-style)~~ ✅
+25. ~~v0.9.0 release~~ ✅
 
 ## Explicitly later
 

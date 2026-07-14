@@ -23,7 +23,7 @@ gonetdicom
 
 ## Status
 
-**Status:** `v0.8.0` — Phase 1–4 + full DIMSE-N / User Identity / parallel C-MOVE / async Storage Commitment; depends on godicom `v0.23.0+`.
+**Status:** `v0.9.0` — Phase 1–4 + full DIMSE-N / User Identity / parallel C-MOVE / async Storage Commitment / `status` package; depends on godicom `v0.23.0+`.
 
 ## Install
 
