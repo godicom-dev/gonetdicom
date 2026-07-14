@@ -13,7 +13,8 @@
 | **gonetdicom** | Network layer — DIMSE (+ DICOMweb); **not** part of the pydicom port |
 
 Behavioural reference for DIMSE: [pynetdicom](https://github.com/pydicom/pynetdicom) (git submodule `pynetdicom/`).  
-DICOMweb follows DICOM PS3.18 (WADO-RS / QIDO-RS / STOW-RS).
+DICOMweb follows DICOM PS3.18 (WADO-RS / QIDO-RS / STOW-RS).  
+DIMSE status codes live in package [`status`](./status) (dcm4che-style named constants; Go has no Python-like dynamic lookup).
 
 ```
 gonetdicom

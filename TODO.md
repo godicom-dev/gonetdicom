@@ -7,6 +7,7 @@
 - Do not re-implement Dataset/pixel logic here — call godicom.
 - When godicom is blocking, fix godicom first.
 - API shape: Go-idiomatic; no Python dynamic Association monkey-patching.
+- **Magic values**: Go cannot do Python-style dynamic status/tag lookup — declare named constants (dcm4che-style). Prefer `status` package (and godicom tags) over bare hex like `0x0000` / `0x0122`.
 - **Behaviour + tests**: overall design and unit/golden tests strictly follow pynetdicom (and PS3.x), not reinvent protocol semantics.
 - **Performance**: where behaviour is equivalent, exploit Go — goroutines, fan-out associations, streaming I/O, bounded worker pools — instead of mirroring Python's single-threaded pace.
 
@@ -35,6 +36,7 @@
 21. ~~Async new-association event report + parallel C-MOVE stores~~ ✅
 22. ~~v0.8.0 release~~ ✅
 23. ~~Study/series/instance metadata BulkDataURI~~ ✅
+24. ~~DIMSE status named constants (`status` package, dcm4che-style)~~ ✅
 
 ## Explicitly later
 

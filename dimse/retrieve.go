@@ -10,9 +10,6 @@ const (
 	CommandCMoveRSP uint16 = 0x8021
 )
 
-// StatusWarning is sub-operations complete with one or more failures (0xB000).
-const StatusWarning uint16 = 0xB000
-
 // SubOperations counts optional C-GET/C-MOVE response fields.
 type SubOperations struct {
 	Remaining uint16

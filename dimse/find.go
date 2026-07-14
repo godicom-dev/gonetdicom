@@ -8,13 +8,6 @@ const (
 	CommandCFindRSP uint16 = 0x8020
 )
 
-// C-FIND / Q/R status values (PS3.4 / PS3.7).
-const (
-	StatusPending        uint16 = 0xFF00
-	StatusPendingWarning uint16 = 0xFF01
-	StatusCancel         uint16 = 0xFE00
-)
-
 // CFindRQ is a C-FIND-RQ command.
 type CFindRQ struct {
 	MessageID           uint16
@@ -112,9 +105,4 @@ func DecodeCFindRSP(b []byte) (*CFindRSP, error) {
 		}
 	}
 	return m, nil
-}
-
-// IsPending reports whether status is a C-FIND Pending category.
-func IsPending(status uint16) bool {
-	return status == StatusPending || status == StatusPendingWarning
 }

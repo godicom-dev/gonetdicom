@@ -6,10 +6,11 @@ import (
 
 	"github.com/godicom-dev/godicom"
 	"github.com/godicom-dev/gonetdicom/dimse"
+	dcmstatus "github.com/godicom-dev/gonetdicom/status"
 )
 
 // StatusProcessingFailure is DIMSE status 0x0110 (pynetdicom default when no N-* handler).
-const StatusProcessingFailure uint16 = 0x0110
+const StatusProcessingFailure = dcmstatus.ProcessingFailure
 
 // NGetRequest is an N-GET-RQ payload.
 type NGetRequest struct {
