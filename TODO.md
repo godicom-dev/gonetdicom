@@ -40,6 +40,8 @@
 25. ~~v0.9.0 release~~ ✅
 26. ~~AllStorageSOPClasses (+ optional `"*"` abstract syntax)~~ ✅
 27. ~~v0.10.0 release~~ ✅
+28. ~~C-STORE SCP decode into StoreRequest.Data~~ ✅
+29. ~~v0.11.0 release~~ ✅
 
 ## Explicitly later
 
