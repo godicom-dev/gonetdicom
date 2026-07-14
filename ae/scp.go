@@ -408,14 +408,7 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 	status := dcmstatus.SOPClassNotSupported
 	if abs, ok := accepted[pcid]; ok && abs.AbstractSyntax == rq.AffectedSOPClassUID {
 		if cfg.OnCStore != nil {
-			status = cfg.OnCStore(ctx, StoreRequest{
-				AffectedSOPClassUID:                  rq.AffectedSOPClassUID,
-				AffectedSOPInstanceUID:               rq.AffectedSOPInstanceUID,
-				Dataset:                              ds,
-				Priority:                             rq.Priority,
-				MoveOriginatorApplicationEntityTitle: rq.MoveOriginatorApplicationEntityTitle,
-				MoveOriginatorMessageID:              rq.MoveOriginatorMessageID,
-			})
+			status = cfg.OnCStore(ctx, newInboundStoreRequest(rq, ds, abs.TransferSyntax))
 		} else {
 			status = dimse.StatusSuccess
 		}

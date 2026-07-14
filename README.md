@@ -130,8 +130,9 @@ matches, err := assoc.CGet(ctx, ae.GetRequest{
 	QueryModel:     ae.PatientRootQueryRetrieveInformationModelGet,
 	IdentifierData: query,
 	OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-		// persist req.Dataset
-		return 0x0000
+		// req.Data is decoded like pynetdicom event.dataset
+		_ = req.Data
+		return status.Success
 	},
 })
 ```
@@ -199,8 +200,14 @@ err = ae.Serve(ctx, ln, ae.ServerConfig{
 	AETitle:                  "STORESCP",
 	AcceptedAbstractSyntaxes: ae.AllStorageSOPClasses, // pynetdicom AllStoragePresentationContexts
 	OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-		// persist req.Dataset
-		return status.Success // not 0x0000
+		// persist like pynetdicom: event.dataset.save_as(...)
+		if req.Data == nil {
+			return status.ProcessingFailure
+		}
+		if err := req.Data.SaveAs("received.dcm", nil); err != nil {
+			return status.ProcessingFailure
+		}
+		return status.Success
 	},
 })
 if err != nil {

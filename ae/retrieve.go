@@ -198,14 +198,14 @@ func (a *Association) collectRetrieve(ctx context.Context, transferSyntax string
 func (a *Association) handleInboundStore(ctx context.Context, pcid byte, rq *dimse.CStoreRQ, dataset []byte, onStore StoreHandler) error {
 	status := dimse.StatusSuccess
 	if onStore != nil {
-		status = onStore(ctx, StoreRequest{
-			AffectedSOPClassUID:                  rq.AffectedSOPClassUID,
-			AffectedSOPInstanceUID:               rq.AffectedSOPInstanceUID,
-			Dataset:                              dataset,
-			Priority:                             rq.Priority,
-			MoveOriginatorApplicationEntityTitle: rq.MoveOriginatorApplicationEntityTitle,
-			MoveOriginatorMessageID:              rq.MoveOriginatorMessageID,
-		})
+		ts := ""
+		for _, c := range a.contexts {
+			if c.ID == pcid {
+				ts = c.TransferSyntax
+				break
+			}
+		}
+		status = onStore(ctx, newInboundStoreRequest(rq, dataset, ts))
 	}
 	rsp, err := (&dimse.CStoreRSP{
 		MessageIDBeingRespondedTo: rq.MessageID,

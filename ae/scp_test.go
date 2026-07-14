@@ -31,7 +31,7 @@ func TestServeCStoreSCP(t *testing.T) {
 			AETitle:                  "STORESCP",
 			AcceptedAbstractSyntaxes: []string{secondaryCaptureSOPClass},
 			OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-				if req.AffectedSOPInstanceUID == "1.2.3.4.5" && len(req.Dataset) > 0 {
+				if req.AffectedSOPInstanceUID == "1.2.3.4.5" && len(req.Dataset) > 0 && req.Data != nil {
 					got.Add(1)
 				}
 				return dimse.StatusSuccess
@@ -93,7 +93,8 @@ func TestServeCStoreSCPAcceptAllStorage(t *testing.T) {
 			AETitle:                  "STORESCP",
 			AcceptedAbstractSyntaxes: ae.AllStorageSOPClasses,
 			OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-				if req.AffectedSOPClassUID == ctSOPClass && len(req.Dataset) > 0 {
+				if req.AffectedSOPClassUID == ctSOPClass && len(req.Dataset) > 0 && req.Data != nil &&
+					req.TransferSyntax == pdu.ImplicitVRLittleEndian {
 					got.Add(1)
 				}
 				return dimse.StatusSuccess
