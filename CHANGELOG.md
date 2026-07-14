@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-14
+
 ### Added
 - WADO-RS metadata emits Pixel Data `BulkDataURI` (via godicom `dicomjson`) instead of omitting or inlining pixels
 - `status` package: dcm4che-aligned DIMSE status constants (`status.Success`, `status.SOPClassNotSupported`, …); `dimse.Status*` aliases remain for compatibility
