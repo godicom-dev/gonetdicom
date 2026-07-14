@@ -15,28 +15,28 @@ const (
 
 // Common failure / warning codes used across C-* and N-* services.
 const (
-	NoSuchAttribute           uint16 = 0x0105
-	InvalidAttributeValue     uint16 = 0x0106
-	AttributeListError        uint16 = 0x0107
-	ProcessingFailure         uint16 = 0x0110
-	DuplicateSOPInstance      uint16 = 0x0111
-	NoSuchObjectInstance      uint16 = 0x0112
-	NoSuchEventType           uint16 = 0x0113
-	NoSuchArgument            uint16 = 0x0114
-	InvalidArgumentValue      uint16 = 0x0115
-	AttributeValueOutOfRange  uint16 = 0x0116
-	InvalidObjectInstance     uint16 = 0x0117
-	NoSuchSOPClass            uint16 = 0x0118
-	ClassInstanceConflict     uint16 = 0x0119
-	MissingAttribute          uint16 = 0x0120
-	MissingAttributeValue     uint16 = 0x0121
-	SOPClassNotSupported      uint16 = 0x0122
-	NoSuchActionType          uint16 = 0x0123
-	NotAuthorized             uint16 = 0x0124
-	DuplicateInvocation       uint16 = 0x0210
-	UnrecognizedOperation     uint16 = 0x0211
-	MistypedArgument          uint16 = 0x0212
-	ResourceLimitation        uint16 = 0x0213
+	NoSuchAttribute          uint16 = 0x0105
+	InvalidAttributeValue    uint16 = 0x0106
+	AttributeListError       uint16 = 0x0107
+	ProcessingFailure        uint16 = 0x0110
+	DuplicateSOPInstance     uint16 = 0x0111
+	NoSuchObjectInstance     uint16 = 0x0112
+	NoSuchEventType          uint16 = 0x0113
+	NoSuchArgument           uint16 = 0x0114
+	InvalidArgumentValue     uint16 = 0x0115
+	AttributeValueOutOfRange uint16 = 0x0116
+	InvalidObjectInstance    uint16 = 0x0117
+	NoSuchSOPClass           uint16 = 0x0118
+	ClassInstanceConflict    uint16 = 0x0119
+	MissingAttribute         uint16 = 0x0120
+	MissingAttributeValue    uint16 = 0x0121
+	SOPClassNotSupported     uint16 = 0x0122
+	NoSuchActionType         uint16 = 0x0123
+	NotAuthorized            uint16 = 0x0124
+	DuplicateInvocation      uint16 = 0x0210
+	UnrecognizedOperation    uint16 = 0x0211
+	MistypedArgument         uint16 = 0x0212
+	ResourceLimitation       uint16 = 0x0213
 )
 
 // Query/Retrieve and Storage class statuses (PS3.4).
@@ -59,25 +59,25 @@ const (
 
 // Unified Procedure Step (UPS) statuses (PS3.4).
 const (
-	UPSCreatedWithModifications            uint16 = 0xB300
-	UPSDeletionLockNotGranted              uint16 = 0xB301
-	UPSAlreadyInRequestedStateOfCanceled   uint16 = 0xB304
-	UPSCoercedInvalidValuesToValidValues   uint16 = 0xB305
-	UPSAlreadyInRequestedStateOfCompleted  uint16 = 0xB306
-	UPSMayNoLongerBeUpdated                uint16 = 0xC300
-	UPSTransactionUIDNotCorrect            uint16 = 0xC301
-	UPSAlreadyInProgress                   uint16 = 0xC302
-	UPSStateMayNotChangedToScheduled       uint16 = 0xC303
-	UPSNotMetFinalStateRequirements        uint16 = 0xC304
-	UPSDoesNotExist                        uint16 = 0xC307
-	UPSUnknownReceivingAET                 uint16 = 0xC308
-	UPSNotScheduled                        uint16 = 0xC309
-	UPSNotYetInProgress                    uint16 = 0xC310
-	UPSAlreadyCompleted                    uint16 = 0xC311
-	UPSPerformerCannotBeContacted          uint16 = 0xC312
-	UPSPerformerChoosesNotToCancel         uint16 = 0xC313
-	UPSActionNotAppropriate                uint16 = 0xC314
-	UPSDoesNotSupportEventReports          uint16 = 0xC315
+	UPSCreatedWithModifications           uint16 = 0xB300
+	UPSDeletionLockNotGranted             uint16 = 0xB301
+	UPSAlreadyInRequestedStateOfCanceled  uint16 = 0xB304
+	UPSCoercedInvalidValuesToValidValues  uint16 = 0xB305
+	UPSAlreadyInRequestedStateOfCompleted uint16 = 0xB306
+	UPSMayNoLongerBeUpdated               uint16 = 0xC300
+	UPSTransactionUIDNotCorrect           uint16 = 0xC301
+	UPSAlreadyInProgress                  uint16 = 0xC302
+	UPSStateMayNotChangedToScheduled      uint16 = 0xC303
+	UPSNotMetFinalStateRequirements       uint16 = 0xC304
+	UPSDoesNotExist                       uint16 = 0xC307
+	UPSUnknownReceivingAET                uint16 = 0xC308
+	UPSNotScheduled                       uint16 = 0xC309
+	UPSNotYetInProgress                   uint16 = 0xC310
+	UPSAlreadyCompleted                   uint16 = 0xC311
+	UPSPerformerCannotBeContacted         uint16 = 0xC312
+	UPSPerformerChoosesNotToCancel        uint16 = 0xC313
+	UPSActionNotAppropriate               uint16 = 0xC314
+	UPSDoesNotSupportEventReports         uint16 = 0xC315
 )
 
 // IsPending reports whether code is a Pending / Pending Warning status
