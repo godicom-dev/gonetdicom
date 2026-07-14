@@ -44,7 +44,7 @@ func TestStoreRequestSaveAsWritesFileMetaTransferSyntax(t *testing.T) {
 	if !ok || ts != pdu.ImplicitVRLittleEndian {
 		t.Fatalf("TransferSyntaxUID=%q", ts)
 	}
-	nf, _ := fd.Dataset.GetString(godicom.MustTag("NumberOfFrames"))
+	nf, _ := fd.GetString(godicom.MustTag("NumberOfFrames"))
 	if nf != "2" {
 		t.Fatalf("NumberOfFrames=%q", nf)
 	}
@@ -62,12 +62,12 @@ func TestStoreRequestSaveAsPreservesRLEMultiFrame(t *testing.T) {
 	if !ok || ts == "" {
 		t.Fatal("missing TS")
 	}
-	raw, err := orig.Dataset.Encode(ts)
+	raw, err := orig.Encode(ts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sopClass, _ := orig.Dataset.GetString(godicom.MustTag("SOPClassUID"))
-	sopInst, _ := orig.Dataset.GetString(godicom.MustTag("SOPInstanceUID"))
+	sopClass, _ := orig.GetString(godicom.MustTag("SOPClassUID"))
+	sopInst, _ := orig.GetString(godicom.MustTag("SOPInstanceUID"))
 
 	req := newInboundStoreRequest(&dimse.CStoreRQ{
 		MessageID:              1,
@@ -87,12 +87,12 @@ func TestStoreRequestSaveAsPreservesRLEMultiFrame(t *testing.T) {
 	if gotTS != ts {
 		t.Fatalf("TS %q want %q", gotTS, ts)
 	}
-	nf, _ := got.Dataset.GetString(godicom.MustTag("NumberOfFrames"))
+	nf, _ := got.GetString(godicom.MustTag("NumberOfFrames"))
 	if nf != "2" {
 		t.Fatalf("frames=%q", nf)
 	}
-	pdOrig, _ := orig.Dataset.Get(godicom.MustTag("PixelData"))
-	pdGot, _ := got.Dataset.Get(godicom.MustTag("PixelData"))
+	pdOrig, _ := orig.Get(godicom.MustTag("PixelData"))
+	pdGot, _ := got.Get(godicom.MustTag("PixelData"))
 	bo, _ := pdOrig.Value.([]byte)
 	bg, _ := pdGot.Value.([]byte)
 	if len(bo) != len(bg) || !bytes.Equal(bo, bg) || !pdGot.IsUndefinedLength {
