@@ -197,7 +197,7 @@ if err != nil {
 log.Printf("STORESCP listening on %s", ln.Addr())
 err = ae.Serve(ctx, ln, ae.ServerConfig{
 	AETitle:                  "STORESCP",
-	AcceptedAbstractSyntaxes: []string{"*"}, // accept any proposed SOP Class (CT/MR/…)
+	AcceptedAbstractSyntaxes: ae.AllStorageSOPClasses, // pynetdicom AllStoragePresentationContexts
 	OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
 		// persist req.Dataset
 		return status.Success // not 0x0000

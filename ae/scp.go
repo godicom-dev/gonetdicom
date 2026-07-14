@@ -76,9 +76,10 @@ type ServerConfig struct {
 	ImplementationClassUID    string
 	ImplementationVersionName string
 	// AcceptedAbstractSyntaxes lists SOP Class UIDs the SCP will accept
-	// (plus Verification is always accepted for C-ECHO).
-	// Include "*" to accept any abstract syntax the peer proposes
-	// (generic Storage SCP; mirrors pynetdicom AllStoragePresentationContexts usage).
+	// (plus Verification is always accepted for C-ECHO). Prefer
+	// AllStorageSOPClasses for a generic Storage SCP (pynetdicom
+	// AllStoragePresentationContexts). Include "*" only when you intentionally
+	// accept any peer-proposed abstract syntax (including private UIDs).
 	AcceptedAbstractSyntaxes []string
 	OnCStore                 StoreHandler
 	OnCFind                  FindHandler

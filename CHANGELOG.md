@@ -8,7 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `AcceptedAbstractSyntaxes: []string{"*"}` accepts any peer-proposed Abstract Syntax (generic Storage SCP)
+- `ae.AllStorageSOPClasses`: pynetdicom `_STORAGE_CLASSES` catalog for Storage SCP abstract syntaxes
+- `AcceptedAbstractSyntaxes` may include `"*"` to accept any peer-proposed Abstract Syntax (opt-in escape hatch)
 
 ## [0.9.0] - 2026-07-14
 
