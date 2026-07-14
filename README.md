@@ -23,7 +23,7 @@ gonetdicom
 
 ## Status
 
-**Status:** `v0.11.0` — Phase 1–4 + full DIMSE-N / User Identity / parallel C-MOVE / async Storage Commitment / `status` / `AllStorageSOPClasses` / inbound `StoreRequest.Data`; depends on godicom `v0.23.0+`.
+**Status:** `v0.12.0` — Phase 1–4 + full DIMSE-N / User Identity / parallel C-MOVE / async Storage Commitment / `status` / `AllStorageSOPClasses` / inbound `Data`+`FileMeta`; depends on godicom `v0.23.0+`.
 
 ## Install
 
