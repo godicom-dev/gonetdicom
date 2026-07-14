@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Align inbound C-STORE with pynetdicom `event.dataset` + `event.file_meta`: expose `StoreRequest.FileMeta`, remove convenience `SaveAs`/`File`
+
 ### Fixed
-- Inbound C-STORE: prefer `req.SaveAs` / `req.File` with File Meta TransferSyntaxUID — `req.Data.SaveAs` omitted File Meta and corrupted compressed/multi-frame Pixel Data
+- Document Part 10 save path so compressed/multi-frame Pixel Data keep TransferSyntaxUID (avoid snow / “one frame”)
 
 ## [0.11.0] - 2026-07-14
 
