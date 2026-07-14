@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- C-STORE SCP `OnCStore` now fills `StoreRequest.Data` (decoded godicom Dataset) and `TransferSyntax`, matching pynetdicom `event.dataset` / `save_as`
+
 ## [0.10.0] - 2026-07-14
 
 ### Added

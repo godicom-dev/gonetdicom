@@ -10,13 +10,20 @@ import (
 
 // StoreRequest is a C-STORE-RQ payload.
 //
-// Provide either Dataset (already encoded) or Data (godicom Dataset to encode
-// with the negotiated transfer syntax). Data takes precedence when both are set.
+// SCU outbound: provide either Dataset (already encoded) or Data (godicom
+// Dataset to encode with the negotiated transfer syntax). Data takes
+// precedence when both are set.
+//
+// SCP inbound (OnCStore): Dataset is always the raw PDV bytes; Data is the
+// decoded godicom Dataset (pynetdicom event.dataset) when TransferSyntax is
+// known — use Data.SaveAs like pydicom save_as. TransferSyntax is the
+// accepted presentation context transfer syntax.
 type StoreRequest struct {
 	AffectedSOPClassUID                  string
 	AffectedSOPInstanceUID               string
 	Dataset                              []byte
 	Data                                 *godicom.Dataset
+	TransferSyntax                       string
 	Priority                             uint16 // 0 defaults to PriorityLow
 	MoveOriginatorApplicationEntityTitle string
 	MoveOriginatorMessageID              uint16
@@ -90,4 +97,27 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 		AffectedSOPClassUID:    rsp.AffectedSOPClassUID,
 		AffectedSOPInstanceUID: rsp.AffectedSOPInstanceUID,
 	}, nil
+}
+
+// newInboundStoreRequest builds an OnCStore payload from a received C-STORE-RQ.
+// Dataset is always the raw PDV bytes; Data is decoded when transferSyntax is set.
+func newInboundStoreRequest(rq *dimse.CStoreRQ, dataset []byte, transferSyntax string) StoreRequest {
+	req := StoreRequest{
+		AffectedSOPClassUID:                  rq.AffectedSOPClassUID,
+		AffectedSOPInstanceUID:               rq.AffectedSOPInstanceUID,
+		Dataset:                              dataset,
+		TransferSyntax:                       transferSyntax,
+		Priority:                             rq.Priority,
+		MoveOriginatorApplicationEntityTitle: rq.MoveOriginatorApplicationEntityTitle,
+		MoveOriginatorMessageID:              rq.MoveOriginatorMessageID,
+	}
+	if len(dataset) == 0 || transferSyntax == "" {
+		return req
+	}
+	ds, err := godicom.DecodeDataset(dataset, transferSyntax)
+	if err != nil {
+		return req
+	}
+	req.Data = ds
+	return req
 }
