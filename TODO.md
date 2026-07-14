@@ -42,6 +42,8 @@
 27. ~~v0.10.0 release~~ ✅
 28. ~~C-STORE SCP decode into StoreRequest.Data~~ ✅
 29. ~~v0.11.0 release~~ ✅
+30. ~~C-STORE FileMeta (pynetdicom event.file_meta)~~ ✅
+31. ~~v0.12.0 release~~ ✅
 
 ## Explicitly later
 
