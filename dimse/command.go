@@ -18,9 +18,6 @@ const CommandDataSetTypeNone uint16 = 0x0101
 // VerificationSOPClass is the Verification SOP Class UID.
 const VerificationSOPClass = "1.2.840.10008.1.1"
 
-// StatusSuccess is DIMSE status 0x0000.
-const StatusSuccess uint16 = 0x0000
-
 // CEchoRQ is a C-ECHO-RQ command.
 type CEchoRQ struct {
 	MessageID           uint16

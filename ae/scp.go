@@ -12,10 +12,11 @@ import (
 	"github.com/godicom-dev/godicom"
 	"github.com/godicom-dev/gonetdicom/dimse"
 	"github.com/godicom-dev/gonetdicom/pdu"
+	dcmstatus "github.com/godicom-dev/gonetdicom/status"
 )
 
 // StoreHandler handles an incoming C-STORE-RQ on an SCP association.
-// Return a DIMSE status (0x0000 = success).
+// Return a DIMSE status (dcmstatus.Success / dimse.StatusSuccess on success).
 type StoreHandler func(ctx context.Context, req StoreRequest) uint16
 
 // FindHandler handles an incoming C-FIND-RQ. Return Pending matches followed by
@@ -393,7 +394,7 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 	if err != nil {
 		return fmt.Errorf("ae: unsupported DIMSE command: %w", err)
 	}
-	status := uint16(0x0122) // SOP class not supported
+	status := dcmstatus.SOPClassNotSupported
 	if abs, ok := accepted[pcid]; ok && abs.AbstractSyntax == rq.AffectedSOPClassUID {
 		if cfg.OnCStore != nil {
 			status = cfg.OnCStore(ctx, StoreRequest{
@@ -426,7 +427,7 @@ func scpHandleFind(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 		rsp, err := (&dimse.CFindRSP{
 			MessageIDBeingRespondedTo: rq.MessageID,
 			AffectedSOPClassUID:       rq.AffectedSOPClassUID,
-			Status:                    0x0122,
+			Status:                    dcmstatus.SOPClassNotSupported,
 		}).Encode()
 		if err != nil {
 			return err
@@ -503,7 +504,7 @@ func scpHandleMove(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 		rsp, err := (&dimse.CMoveRSP{
 			MessageIDBeingRespondedTo: rq.MessageID,
 			AffectedSOPClassUID:       rq.AffectedSOPClassUID,
-			Status:                    0x0122,
+			Status:                    dcmstatus.SOPClassNotSupported,
 		}).Encode()
 		if err != nil {
 			return err
@@ -533,7 +534,7 @@ func scpHandleMove(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 	if len(plan.Stores) > 0 {
 		if err := scpPerformMoveStores(ctx, conn, cfg, peerMax, pcid, ac.TransferSyntax, rq, callingAE, plan.Stores); err != nil {
 			fail := []RetrieveMatch{{
-				Status: 0xA801,
+				Status: dcmstatus.MoveDestinationUnknown,
 				SubOperations: dimse.SubOperations{
 					Failed: uint16(len(plan.Stores)), Present: true,
 				},
@@ -704,7 +705,7 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, cfg ServerConfig, 
 	if f > 0 && c > 0 {
 		final = dimse.StatusWarning
 	} else if f > 0 {
-		final = 0xA702
+		final = dcmstatus.UnableToPerformSubOperations
 	}
 	return writeRetrieveResponses(conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
 		Status: final,
@@ -720,7 +721,7 @@ func scpHandleGet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted
 		rsp, err := (&dimse.CGetRSP{
 			MessageIDBeingRespondedTo: rq.MessageID,
 			AffectedSOPClassUID:       rq.AffectedSOPClassUID,
-			Status:                    0x0122,
+			Status:                    dcmstatus.SOPClassNotSupported,
 		}).Encode()
 		if err != nil {
 			return err
@@ -929,7 +930,7 @@ func writeMessage(conn net.Conn, pcid byte, command, dataset []byte, maxPDU uint
 
 func scpHandleNAction(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NActionRQ, ds []byte) error {
 	ac, ok := accepted[pcid]
-	status := uint16(0x0122)
+	status := dcmstatus.SOPClassNotSupported
 	result := ActionResult{
 		Status:                 status,
 		ActionTypeID:           rq.ActionTypeID,
@@ -1008,7 +1009,7 @@ func scpHandleNAction(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 
 func scpHandleNEventReport(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NEventReportRQ, ds []byte) error {
 	ac, ok := accepted[pcid]
-	status := uint16(0x0122)
+	status := dcmstatus.SOPClassNotSupported
 	if ok && ac.AbstractSyntax == rq.AffectedSOPClassUID {
 		var info *godicom.Dataset
 		if len(ds) > 0 {
@@ -1129,7 +1130,7 @@ func scpSendEventReportNewAssoc(cfg ServerConfig, dest EventReportDestination, r
 func scpHandleNGet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NGetRQ) error {
 	ac, ok := accepted[pcid]
 	result := NGetResult{
-		Status:                 0x0122,
+		Status:                 dcmstatus.SOPClassNotSupported,
 		AffectedSOPClassUID:    rq.RequestedSOPClassUID,
 		AffectedSOPInstanceUID: rq.RequestedSOPInstanceUID,
 	}
@@ -1158,7 +1159,7 @@ func scpHandleNGet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 func scpHandleNSet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NSetRQ, ds []byte) error {
 	ac, ok := accepted[pcid]
 	result := SetResult{
-		Status:                 0x0122,
+		Status:                 dcmstatus.SOPClassNotSupported,
 		AffectedSOPClassUID:    rq.RequestedSOPClassUID,
 		AffectedSOPInstanceUID: rq.RequestedSOPInstanceUID,
 	}
@@ -1196,7 +1197,7 @@ func scpHandleNSet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 func scpHandleNCreate(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NCreateRQ, ds []byte) error {
 	ac, ok := accepted[pcid]
 	result := CreateResult{
-		Status:                 0x0122,
+		Status:                 dcmstatus.SOPClassNotSupported,
 		AffectedSOPClassUID:    rq.AffectedSOPClassUID,
 		AffectedSOPInstanceUID: rq.AffectedSOPInstanceUID,
 	}
@@ -1237,7 +1238,7 @@ func scpHandleNCreate(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 func scpHandleNDelete(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NDeleteRQ) error {
 	ac, ok := accepted[pcid]
 	result := DeleteResult{
-		Status:                 0x0122,
+		Status:                 dcmstatus.SOPClassNotSupported,
 		AffectedSOPClassUID:    rq.RequestedSOPClassUID,
 		AffectedSOPInstanceUID: rq.RequestedSOPInstanceUID,
 	}

@@ -13,7 +13,8 @@
 | **gonetdicom** | Network layer — DIMSE (+ DICOMweb); **not** part of the pydicom port |
 
 Behavioural reference for DIMSE: [pynetdicom](https://github.com/pydicom/pynetdicom) (git submodule `pynetdicom/`).  
-DICOMweb follows DICOM PS3.18 (WADO-RS / QIDO-RS / STOW-RS).
+DICOMweb follows DICOM PS3.18 (WADO-RS / QIDO-RS / STOW-RS).  
+DIMSE status codes live in package [`status`](./status) (dcm4che-style named constants; Go has no Python-like dynamic lookup).
 
 ```
 gonetdicom
@@ -183,16 +184,28 @@ OnNAction: func(_ context.Context, req ae.ActionRequest) (ae.ActionResult, *ae.E
 
 ## C-STORE SCP
 
+`Serve` blocks until `ctx` is cancelled (or the listener fails). Do **not** reuse the short `WithTimeout` from the C-ECHO SCU snippet — that would shut the SCP down after a few seconds.
+
 ```go
-ln, _ := net.Listen("tcp", ":11112")
-_ = ae.Serve(ctx, ln, ae.ServerConfig{
+ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+defer stop()
+
+ln, err := net.Listen("tcp", ":11112")
+if err != nil {
+	log.Fatal(err)
+}
+log.Printf("STORESCP listening on %s", ln.Addr())
+err = ae.Serve(ctx, ln, ae.ServerConfig{
 	AETitle:                  "STORESCP",
 	AcceptedAbstractSyntaxes: []string{"1.2.840.10008.5.1.4.1.1.7"},
 	OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
 		// persist req.Dataset
-		return 0x0000
+		return status.Success // not 0x0000
 	},
 })
+if err != nil {
+	log.Fatal(err)
+}
 ```
 
 ## C-MOVE SCP (Move Destination C-STORE)
