@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Inbound C-STORE: prefer `req.SaveAs` / `req.File` with File Meta TransferSyntaxUID — `req.Data.SaveAs` omitted File Meta and corrupted compressed/multi-frame Pixel Data
+
 ## [0.11.0] - 2026-07-14
 
 ### Added

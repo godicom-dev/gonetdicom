@@ -200,11 +200,8 @@ err = ae.Serve(ctx, ln, ae.ServerConfig{
 	AETitle:                  "STORESCP",
 	AcceptedAbstractSyntaxes: ae.AllStorageSOPClasses, // pynetdicom AllStoragePresentationContexts
 	OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-		// persist like pynetdicom: event.dataset.save_as(...)
-		if req.Data == nil {
-			return status.ProcessingFailure
-		}
-		if err := req.Data.SaveAs("received.dcm", nil); err != nil {
+		// Part 10 + TransferSyntaxUID (do not use req.Data.SaveAs alone)
+		if err := req.SaveAs("received.dcm"); err != nil {
 			return status.ProcessingFailure
 		}
 		return status.Success

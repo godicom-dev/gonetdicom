@@ -31,7 +31,7 @@ func TestServeCStoreSCP(t *testing.T) {
 			AETitle:                  "STORESCP",
 			AcceptedAbstractSyntaxes: []string{secondaryCaptureSOPClass},
 			OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-				if req.AffectedSOPInstanceUID == "1.2.3.4.5" && len(req.Dataset) > 0 && req.Data != nil {
+				if req.AffectedSOPInstanceUID == "1.2.3.4.5" && len(req.Dataset) > 0 && req.Data != nil && req.File != nil {
 					got.Add(1)
 				}
 				return dimse.StatusSuccess

@@ -15,14 +15,17 @@ import (
 // precedence when both are set.
 //
 // SCP inbound (OnCStore): Dataset is always the raw PDV bytes; Data is the
-// decoded godicom Dataset (pynetdicom event.dataset) when TransferSyntax is
-// known — use Data.SaveAs like pydicom save_as. TransferSyntax is the
-// accepted presentation context transfer syntax.
+// decoded godicom Dataset when TransferSyntax is known. File is a Part 10
+// FileDataset with File Meta TransferSyntaxUID set from the association
+// (pynetdicom event.dataset + file_meta). Prefer req.SaveAs / req.File.SaveAs
+// — bare req.Data.SaveAs omits File Meta and breaks compressed / multi-frame
+// Pixel Data (snow / “one frame”).
 type StoreRequest struct {
 	AffectedSOPClassUID                  string
 	AffectedSOPInstanceUID               string
 	Dataset                              []byte
 	Data                                 *godicom.Dataset
+	File                                 *godicom.FileDataset
 	TransferSyntax                       string
 	Priority                             uint16 // 0 defaults to PriorityLow
 	MoveOriginatorApplicationEntityTitle string
@@ -34,6 +37,22 @@ type StoreResult struct {
 	Status                 uint16
 	AffectedSOPClassUID    string
 	AffectedSOPInstanceUID string
+}
+
+// SaveAs writes the inbound instance as a Part 10 DICOM file with correct
+// File Meta Transfer Syntax (required for compressed / multi-frame Pixel Data).
+func (r StoreRequest) SaveAs(filename string) error {
+	fd := r.File
+	if fd == nil {
+		if r.Data == nil {
+			return fmt.Errorf("ae: SaveAs requires File or Data")
+		}
+		if r.TransferSyntax == "" {
+			return fmt.Errorf("ae: SaveAs requires TransferSyntax when File is nil")
+		}
+		fd = newStoreFileDataset(r.Data, r.TransferSyntax)
+	}
+	return fd.SaveAs(filename, &godicom.WriteOptions{EnforceFileFormat: true})
 }
 
 // CStore sends a C-STORE-RQ and waits for the C-STORE-RSP.
@@ -100,7 +119,7 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 }
 
 // newInboundStoreRequest builds an OnCStore payload from a received C-STORE-RQ.
-// Dataset is always the raw PDV bytes; Data is decoded when transferSyntax is set.
+// Dataset is always the raw PDV bytes; Data/File are decoded when transferSyntax is set.
 func newInboundStoreRequest(rq *dimse.CStoreRQ, dataset []byte, transferSyntax string) StoreRequest {
 	req := StoreRequest{
 		AffectedSOPClassUID:                  rq.AffectedSOPClassUID,
@@ -119,5 +138,20 @@ func newInboundStoreRequest(rq *dimse.CStoreRQ, dataset []byte, transferSyntax s
 		return req
 	}
 	req.Data = ds
+	req.File = newStoreFileDataset(ds, transferSyntax)
 	return req
+}
+
+func newStoreFileDataset(ds *godicom.Dataset, transferSyntax string) *godicom.FileDataset {
+	meta := godicom.NewFileMetaDataset()
+	if transferSyntax != "" {
+		meta.Set(godicom.NewDataElement(godicom.MustTag("TransferSyntaxUID"), godicom.VRUI, transferSyntax))
+	}
+	if sopClass, ok := ds.GetString(godicom.MustTag("SOPClassUID")); ok && sopClass != "" {
+		meta.Set(godicom.NewDataElement(godicom.MustTag("MediaStorageSOPClassUID"), godicom.VRUI, sopClass))
+	}
+	if sopInstance, ok := ds.GetString(godicom.MustTag("SOPInstanceUID")); ok && sopInstance != "" {
+		meta.Set(godicom.NewDataElement(godicom.MustTag("MediaStorageSOPInstanceUID"), godicom.VRUI, sopInstance))
+	}
+	return &godicom.FileDataset{Dataset: ds, FileMeta: meta}
 }
