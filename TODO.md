@@ -38,6 +38,8 @@
 23. ~~Study/series/instance metadata BulkDataURI~~ ✅
 24. ~~DIMSE status named constants (`status` package, dcm4che-style)~~ ✅
 25. ~~v0.9.0 release~~ ✅
+26. ~~AllStorageSOPClasses (+ optional `"*"` abstract syntax)~~ ✅
+27. ~~v0.10.0 release~~ ✅
 
 ## Explicitly later
 
