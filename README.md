@@ -76,9 +76,10 @@ assoc, err := ae.Dial(ctx, cfg, "pacs.example:11112", "ANY-SCP")
 // ...
 res, err := assoc.CStore(ctx, ae.StoreRequest{
 	AffectedSOPClassUID:    "1.2.840.10008.5.1.4.1.1.7",
-	AffectedSOPInstanceUID: "1.2.3.4.5",
+	AffectedSOPInstanceUID: "1.2.3.4.5", // optional: omit to use Data.SOPInstanceUID or ae.NewInstanceUID()
 	Data:                   ds,
 })
+
 ```
 
 ## C-FIND / C-MOVE / C-GET
