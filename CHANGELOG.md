@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Depend on [godicom](https://github.com/godicom-dev/godicom) `v0.24.0`
+
+### Added
+- `ae.NewInstanceUID` — mint SOP Instance / Transaction UIDs via `uid.GenerateUID`
+- C-STORE SCU: empty `AffectedSOPInstanceUID` is taken from `Data.SOPInstanceUID`, otherwise auto-minted
+- N-CREATE SCP: success responses with no instance UID mint one (Part 7 requires the field)
+
 ## [0.12.0] - 2026-07-14
 
 ### Changed

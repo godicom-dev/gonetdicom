@@ -48,8 +48,16 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 	if req.AffectedSOPClassUID == "" {
 		return nil, fmt.Errorf("ae: C-STORE missing Affected SOP Class UID")
 	}
+	if req.AffectedSOPInstanceUID == "" && req.Data != nil {
+		if v, ok := req.Data.GetString(godicom.MustTag("SOPInstanceUID")); ok && v != "" {
+			req.AffectedSOPInstanceUID = v
+		}
+	}
 	if req.AffectedSOPInstanceUID == "" {
-		return nil, fmt.Errorf("ae: C-STORE missing Affected SOP Instance UID")
+		req.AffectedSOPInstanceUID = NewInstanceUID()
+		if req.Data != nil && !req.Data.Has(godicom.MustTag("SOPInstanceUID")) {
+			req.Data.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, req.AffectedSOPInstanceUID))
+		}
 	}
 	pc, ok := a.contextByAbstract(req.AffectedSOPClassUID)
 	if !ok {

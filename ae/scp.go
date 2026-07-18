@@ -1230,6 +1230,16 @@ func scpHandleNCreate(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 		if result.AffectedSOPInstanceUID == "" {
 			result.AffectedSOPInstanceUID = rq.AffectedSOPInstanceUID
 		}
+		if result.AffectedSOPInstanceUID == "" && result.AttributeListData != nil {
+			if v, ok := result.AttributeListData.GetString(godicom.MustTag("SOPInstanceUID")); ok && v != "" {
+				result.AffectedSOPInstanceUID = v
+			}
+		}
+		// Success/Warning responses require an Affected SOP Instance UID (Part 7).
+		// If the handler left it empty, mint one (Go convenience vs failing the association).
+		if result.AffectedSOPInstanceUID == "" && (result.Status == dcmstatus.Success || result.Status == dimse.StatusSuccess) {
+			result.AffectedSOPInstanceUID = NewInstanceUID()
+		}
 	}
 	if result.AffectedSOPInstanceUID == "" {
 		return fmt.Errorf("ae: N-CREATE-RSP missing Affected SOP Instance UID")
