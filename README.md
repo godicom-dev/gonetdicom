@@ -1,37 +1,26 @@
 # gonetdicom
 
-**Go DICOM networking library** — depends on [godicom](https://github.com/godicom-dev/godicom).
+*gonetdicom* is a Go library for [DICOM](https://www.dicomstandard.org/) networking.
+It provides DIMSE association services and a DICOMweb (WADO-RS / QIDO-RS / STOW-RS)
+client and origin-server MVP. Dataset and pixel I/O come from
+[godicom](https://github.com/godicom-dev/godicom).
 
 [![Go Version](https://img.shields.io/badge/Go-%3E%3D%201.26-%23007d9c)](https://go.dev/)
+[![GoDoc](https://pkg.go.dev/badge/github.com/godicom-dev/gonetdicom)](https://pkg.go.dev/github.com/godicom-dev/gonetdicom)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-
-## Scope
-
-| Library | Role |
-|---------|------|
-| **godicom** | pydicom port — files, Dataset, pixels, JSON |
-| **gonetdicom** | Network layer — DIMSE (+ DICOMweb); **not** part of the pydicom port |
-
-Behavioural reference for DIMSE: [pynetdicom](https://github.com/pydicom/pynetdicom) (git submodule `pynetdicom/`).  
-DICOMweb follows DICOM PS3.18 (WADO-RS / QIDO-RS / STOW-RS).  
-DIMSE status codes live in package [`status`](./status) (dcm4che-style named constants; Go has no Python-like dynamic lookup).
 
 ```
 gonetdicom
  └── github.com/godicom-dev/godicom
 ```
 
-## Status
-
-**Status:** `v0.12.0` — Phase 1–4 + full DIMSE-N / User Identity / parallel C-MOVE / async Storage Commitment / `status` / `AllStorageSOPClasses` / inbound `Data`+`FileMeta`; depends on godicom `v0.23.0+`.
-
-## Install
+## Installation
 
 ```bash
 go get github.com/godicom-dev/gonetdicom@latest
 ```
 
-Clone with submodule:
+Clone with the optional reference submodule (DIMSE fixtures):
 
 ```bash
 git clone --recurse-submodules https://github.com/godicom-dev/gonetdicom.git
@@ -71,121 +60,70 @@ func main() {
 
 ## C-STORE SCU
 
-Propose a storage presentation context, then send a godicom Dataset (or pre-encoded bytes):
+Propose a storage presentation context, then send a godicom Dataset (or
+pre-encoded bytes):
 
 ```go
 cfg := ae.Config{
 	AETitle: "STORESCU",
 	PresentationContexts: []ae.PresentationContext{{
-		ID: 1,
+		ID:             1,
 		AbstractSyntax: "1.2.840.10008.5.1.4.1.1.7", // Secondary Capture
 		TransferSyntaxes: []string{"1.2.840.10008.1.2"},
 	}},
 }
 assoc, err := ae.Dial(ctx, cfg, "pacs.example:11112", "ANY-SCP")
 // ...
-ds := godicom.NewDataset()
-ds.Set(godicom.NewDataElement(godicom.MustTag("SOPClassUID"), godicom.VRUI, "..."))
-// ...
 res, err := assoc.CStore(ctx, ae.StoreRequest{
 	AffectedSOPClassUID:    "1.2.840.10008.5.1.4.1.1.7",
 	AffectedSOPInstanceUID: "1.2.3.4.5",
-	Data:                   ds, // encoded via godicom with negotiated TS
+	Data:                   ds,
 })
 ```
 
-## C-FIND SCU
+## C-FIND / C-MOVE / C-GET
 
 ```go
-cfg := ae.Config{
-	AETitle: "FINDSCU",
-	PresentationContexts: []ae.PresentationContext{{
-		ID: 1,
-		AbstractSyntax: ae.PatientRootQueryRetrieveInformationModelFind,
-		TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian},
-	}},
-}
-assoc, err := ae.Dial(ctx, cfg, "pacs.example:11112", "ANY-SCP")
-query := godicom.NewDataset()
-query.Set(godicom.NewDataElement(godicom.MustTag("QueryRetrieveLevel"), godicom.VRCS, "PATIENT"))
-query.Set(godicom.NewDataElement(godicom.MustTag("PatientID"), godicom.VRLO, "*"))
 matches, err := assoc.CFind(ctx, ae.FindRequest{
 	QueryModel:     ae.PatientRootQueryRetrieveInformationModelFind,
 	IdentifierData: query,
 })
-```
 
-## C-MOVE / C-GET SCU
-
-```go
-// C-MOVE: peer stores to MoveDestination AE; SCU collects status responses.
-matches, err := assoc.CMove(ctx, ae.MoveRequest{
+matches, err = assoc.CMove(ctx, ae.MoveRequest{
 	QueryModel:      ae.PatientRootQueryRetrieveInformationModelMove,
 	MoveDestination: "STORESCP",
 	IdentifierData:  query,
 })
 
-// C-GET: peer pushes C-STORE on the same association; handle via OnCStore.
-matches, err := assoc.CGet(ctx, ae.GetRequest{
+matches, err = assoc.CGet(ctx, ae.GetRequest{
 	QueryModel:     ae.PatientRootQueryRetrieveInformationModelGet,
 	IdentifierData: query,
 	OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-		// req.Data is decoded like pynetdicom event.dataset
-		_ = req.Data
+		_ = req.Data // decoded Dataset
 		return status.Success
 	},
 })
 ```
 
-Propose both the QR Get model and storage SOP Class presentation contexts for C-GET.
-For real PACS, also propose SCP/SCU Role Selection so the SCU can receive C-STORE:
+For C-GET against real PACS, also propose SCP/SCU Role Selection so the SCU can
+receive C-STORE:
 
 ```go
 cfg := ae.Config{
 	AETitle: "GETSCU",
-	PresentationContexts: []ae.PresentationContext{ /* Get model + CT Image Storage */ },
+	PresentationContexts: []ae.PresentationContext{ /* Get model + storage SOP Class */ },
 	RoleSelections: []pdu.RoleSelection{
 		ae.BuildRole(string(uid.CTImageStorage), false, true), // requestor as SCP
 	},
 }
 ```
 
-## Storage Commitment (N-ACTION / N-EVENT-REPORT)
-
-Same-association push (SCU waits via `OnNEventReport`):
-
-```go
-res, err := assoc.NAction(ctx, ae.ActionRequest{
-	RequestedSOPClassUID:    ae.StorageCommitmentPushModelSOPClass,
-	RequestedSOPInstanceUID: ae.StorageCommitmentPushModelSOPInstance,
-	ActionTypeID:            dimse.StorageCommitmentActionTypeRequest,
-	ActionInformationData:   info, // TransactionUID + ReferencedSOPSequence
-	OnNEventReport: func(_ context.Context, req ae.EventReportRequest) uint16 {
-		// handle commitment result (EventTypeID 1=success / 2=failures)
-		return 0x0000
-	},
-})
-```
-
-Async new-association push (SCP dials the SCU AE after N-ACTION-RSP — non-blocking for the requestor association):
-
-```go
-OnNAction: func(_ context.Context, req ae.ActionRequest) (ae.ActionResult, *ae.EventReportRequest) {
-	return ae.ActionResult{Status: 0x0000, /* ... */}, &ae.EventReportRequest{
-		AffectedSOPClassUID:    req.RequestedSOPClassUID,
-		AffectedSOPInstanceUID: req.RequestedSOPInstanceUID,
-		EventTypeID:            dimse.StorageCommitmentEventTypeSuccess,
-		EventInformationData:   req.ActionInformationData,
-		AsyncDestination: &ae.EventReportDestination{
-			Addr: "127.0.0.1:11113", CalledAE: "COMMITSCU",
-		},
-	}
-},
-```
+Cancel an outstanding FIND / MOVE / GET with `assoc.CCancel(ctx, msgID)`.
 
 ## C-STORE SCP
 
-`Serve` blocks until `ctx` is cancelled (or the listener fails). Do **not** reuse the short `WithTimeout` from the C-ECHO SCU snippet — that would shut the SCP down after a few seconds.
+`Serve` blocks until `ctx` is cancelled. Do not reuse a short `WithTimeout` from
+the C-ECHO snippet — that would shut the SCP down after a few seconds.
 
 ```go
 ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -195,12 +133,10 @@ ln, err := net.Listen("tcp", ":11112")
 if err != nil {
 	log.Fatal(err)
 }
-log.Printf("STORESCP listening on %s", ln.Addr())
 err = ae.Serve(ctx, ln, ae.ServerConfig{
 	AETitle:                  "STORESCP",
-	AcceptedAbstractSyntaxes: ae.AllStorageSOPClasses, // pynetdicom AllStoragePresentationContexts
+	AcceptedAbstractSyntaxes: ae.AllStorageSOPClasses,
 	OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-		// pynetdicom: ds = event.dataset; ds.file_meta = event.file_meta; ds.save_as(...)
 		if req.Data == nil || req.FileMeta == nil {
 			return status.ProcessingFailure
 		}
@@ -211,14 +147,17 @@ err = ae.Serve(ctx, ln, ae.ServerConfig{
 		return status.Success
 	},
 })
-if err != nil {
-	log.Fatal(err)
-}
 ```
 
-## C-MOVE SCP (Move Destination C-STORE)
+`AcceptedAbstractSyntaxes` may include `"*"` to accept any peer-proposed abstract
+syntax. Named DIMSE status constants live in package
+[`status`](https://pkg.go.dev/github.com/godicom-dev/gonetdicom/status).
 
-Configure `MoveDestinations` and return `MovePlan.Stores` from `OnCMove`. The SCP dials the destination AE and performs C-STORE sub-operations (pending/final C-MOVE-RSP derived from store outcomes):
+## C-MOVE SCP (Move Destination)
+
+Configure `MoveDestinations` and return `MovePlan.Stores` from `OnCMove`. The SCP
+dials the destination AE and runs C-STORE sub-operations (`MaxAssociations` > 1
+fans out associations):
 
 ```go
 _ = ae.Serve(ctx, moveLn, ae.ServerConfig{
@@ -227,25 +166,38 @@ _ = ae.Serve(ctx, moveLn, ae.ServerConfig{
 		ae.PatientRootQueryRetrieveInformationModelMove,
 	},
 	MoveDestinations: map[string]ae.MoveDestination{
-		"STORESCP": {Addr: "127.0.0.1:11112", MaxAssociations: 4}, // >1 fans out C-STORE associations
+		"STORESCP": {Addr: "127.0.0.1:11112", MaxAssociations: 4},
 	},
 	OnCMove: func(_ context.Context, req ae.MoveRequest) ae.MovePlan {
-		return ae.MovePlan{
-			Stores: []ae.StoreRequest{{
-				AffectedSOPClassUID:    ctUID,
-				AffectedSOPInstanceUID: sopUID,
-				Data:                   ds,
-			}},
-		}
+		return ae.MovePlan{Stores: []ae.StoreRequest{{ /* ... */ }}}
 	},
 })
 ```
 
-Status-only handlers can still return `MovePlan{Responses: ...}` without `Stores`.
+## Storage Commitment & DIMSE-N
+
+```go
+res, err := assoc.NAction(ctx, ae.ActionRequest{
+	RequestedSOPClassUID:    ae.StorageCommitmentPushModelSOPClass,
+	RequestedSOPInstanceUID: ae.StorageCommitmentPushModelSOPInstance,
+	ActionTypeID:            dimse.StorageCommitmentActionTypeRequest,
+	ActionInformationData:   info,
+	OnNEventReport: func(_ context.Context, req ae.EventReportRequest) uint16 {
+		return status.Success
+	},
+})
+
+res, err = assoc.NGet(ctx, ae.NGetRequest{ /* ... */ })
+res, err = assoc.NSet(ctx, ae.SetRequest{ /* ... */ })
+res, err = assoc.NCreate(ctx, ae.CreateRequest{ /* ... */ })
+res, err = assoc.NDelete(ctx, ae.DeleteRequest{ /* ... */ })
+```
+
+Async N-EVENT-REPORT on a new association is available via
+`EventReportRequest.AsyncDestination`. SCP handlers: `OnNAction`,
+`OnNEventReport`, `OnNGet`, `OnNSet`, `OnNCreate`, `OnNDelete`.
 
 ## User Identity Negotiation
-
-Propose identity on the SCU; verify (or ignore) on the SCP. Rejection uses A-ASSOCIATE-RJ `(result=2, source=2, reason=1)` like pynetdicom. Kerberos/SAML/JWT may return a server response AC item when requested:
 
 ```go
 assoc, err := ae.Dial(ctx, ae.Config{
@@ -263,71 +215,36 @@ _ = ae.Serve(ctx, ln, ae.ServerConfig{
 
 Nil `OnUserIdentity` accepts the association and omits any AC response item.
 
-## DIMSE-N (N-GET / N-SET / N-CREATE / N-DELETE)
-
-```go
-res, err := assoc.NGet(ctx, ae.NGetRequest{
-	RequestedSOPClassUID:    sopClass,
-	RequestedSOPInstanceUID: sopInstance,
-	AttributeIdentifierList: []dimse.Tag{0x00100010},
-})
-res, err = assoc.NSet(ctx, ae.SetRequest{
-	RequestedSOPClassUID:    sopClass,
-	RequestedSOPInstanceUID: sopInstance,
-	ModificationListData:    mods,
-})
-res, err = assoc.NCreate(ctx, ae.CreateRequest{
-	AffectedSOPClassUID:    sopClass,
-	AffectedSOPInstanceUID: sopInstance,
-	AttributeListData:      attrs,
-})
-res, err = assoc.NDelete(ctx, ae.DeleteRequest{
-	RequestedSOPClassUID:    sopClass,
-	RequestedSOPInstanceUID: sopInstance,
-})
-```
-
-SCP handlers: `OnNGet`, `OnNSet`, `OnNCreate`, `OnNDelete` (nil → status `0x0110` Processing Failure).
-
 ## DICOMweb (WADO / STOW / QIDO)
 
 ```go
 client := &dicomweb.Client{BaseURL: "https://pacs.example/dicom-web"}
 
-// STOW-RS
 _, err := client.StoreFiles(ctx, "", []*godicom.FileDataset{fd})
 
-// WADO-RS instance / series / study + metadata
 raw, err := client.RetrieveInstance(ctx, studyUID, seriesUID, sopUID)
 parts, err := client.RetrieveSeries(ctx, studyUID, seriesUID)
-parts, err = client.RetrieveStudy(ctx, studyUID)
 meta, err := client.RetrieveInstanceMetadata(ctx, studyUID, seriesUID, sopUID)
-// Origin-server metadata JSON uses BulkDataURI for Pixel Data (not InlineBinary).
 
-// WADO-RS rendered (JPEG/PNG) + Pixel Data bulkdata
 mt, img, err := client.RetrieveRenderedInstance(ctx, studyUID, seriesUID, sopUID, dicomweb.RenderOptions{
 	MediaType: dicomweb.MediaTypeJPEG,
 	Quality:   90,
 })
 bulk, err := client.RetrieveBulkData(ctx, studyUID, seriesUID, sopUID)
 
-// QIDO-RS studies / series / instances
 matches, err := client.SearchStudies(ctx, url.Values{"PatientID": {"P001"}})
-series, err := client.SearchSeries(ctx, studyUID, url.Values{"Modality": {"CT"}})
-instances, err := client.SearchInstances(ctx, studyUID, seriesUID, nil)
 ```
 
-Origin-server MVP for tests/demos:
+Origin-server MVP for tests and demos:
 
 ```go
 store := dicomweb.NewMemoryStore()
 http.ListenAndServe(":8080", dicomweb.Handler(store, "/dicom-web"))
 ```
 
-## TLS / timeouts / logging (Phase 4)
+## TLS, timeouts, logging
 
 ```go
-// DIMSE over TLS
 assoc, err := ae.Dial(ctx, ae.Config{
 	AETitle:     "MYSCU",
 	IdleTimeout: 30 * time.Second,
@@ -335,7 +252,6 @@ assoc, err := ae.Dial(ctx, ae.Config{
 	Logger:      slog.Default(),
 }, "pacs.example:2762", "ANY-SCP")
 
-// DICOMweb client with TLS + timeout
 client, err := dicomweb.NewClient("https://pacs.example/dicom-web",
 	dicomweb.WithTimeout(30*time.Second),
 	dicomweb.WithTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12}),
@@ -354,58 +270,17 @@ GONETDICOM_PACS_ADDR=host:11112 GONETDICOM_PACS_AE=ANY-SCP \
 
 | Package | Role |
 |---------|------|
-| `pdu` | A-ASSOCIATE / P-DATA-TF / A-RELEASE / A-ABORT + PDV fragmentation |
-| `dimse` | C-ECHO / C-STORE / C-FIND / C-MOVE / C-GET / C-CANCEL + N-ACTION / N-EVENT-REPORT |
-| `ae` | Association SCU/SCP + TLS / idle timeout / optional slog / role selection |
-| `dicomweb` | WADO-RS (incl. rendered/bulkdata) / STOW-RS / QIDO-RS client + origin-server MVP |
+| [`ae`](https://pkg.go.dev/github.com/godicom-dev/gonetdicom/ae) | Association SCU / SCP, TLS, roles, identity |
+| [`dimse`](https://pkg.go.dev/github.com/godicom-dev/gonetdicom/dimse) | DIMSE command sets (C- and N- services) |
+| [`pdu`](https://pkg.go.dev/github.com/godicom-dev/gonetdicom/pdu) | Upper-layer PDUs and PDV fragmentation |
+| [`dicomweb`](https://pkg.go.dev/github.com/godicom-dev/gonetdicom/dicomweb) | WADO-RS / STOW-RS / QIDO-RS client + origin MVP |
+| [`status`](https://pkg.go.dev/github.com/godicom-dev/gonetdicom/status) | Named DIMSE status constants |
 
-## Roadmap (working plan)
+## Documentation
 
-### Phase 0 — Bootstrap ✅
-- [x] `go.mod` + remote
-- [x] `pynetdicom` submodule
-- [x] depend on `godicom`
-
-### Phase 1 — DIMSE foundation (pynetdicom-aligned) ✅
-- [x] Association / AE title / presentation contexts
-- [x] PDU encode/decode
-- [x] C-ECHO SCU (smoke path)
-
-### Phase 2 — Core DIMSE services
-- [x] C-STORE SCU/SCP
-- [x] godicom `EncodeDataset` / `DecodeDataset` integration
-- [x] C-FIND SCU/SCP (Patient/Study root models)
-- [x] C-MOVE / C-GET SCU/SCP (sub-op counts; C-GET interleaved C-STORE)
-- [x] SCP/SCU Role Selection Negotiation (PDU `0x54`, `ae.BuildRole`)
-- [x] C-CANCEL-RQ (`ae.CCancel`) for outstanding FIND/MOVE/GET
-- [x] Storage Commitment Push Model (`ae.NAction` / `ae.NEventReport`)
-
-### Phase 3 — DICOMweb MVP
-- [x] WADO-RS Retrieve Instance (`application/dicom`) + Metadata (`dicom+json`)
-- [x] WADO-RS Retrieve Study / Series (+ metadata)
-- [x] WADO-RS Retrieve Rendered (instance JPEG/PNG) + Pixel Data bulkdata
-- [x] STOW-RS Store
-- [x] QIDO-RS Search for Studies / Series / Instances
-
-### Phase 4 — Harden
-- [x] Timeouts (`IdleTimeout` / HTTP client timeout)
-- [x] TLS helpers (DIMSE `Config.TLS` / `ListenAndServeTLS`; DICOMweb `WithTLSConfig`)
-- [x] Optional `slog` logging
-- [x] Optional real-PACS C-ECHO soak (`-tags=integration`)
-- [ ] Broader fixture / multi-PACS matrix in CI
-
-## Layout
-
-```
-gonetdicom/
-├── ae/                # Association SCU / SCP
-├── dimse/             # DIMSE command sets
-├── dicomweb/          # DICOMweb client + origin-server MVP
-├── pdu/               # Upper Layer PDUs
-├── pynetdicom/        # submodule → pydicom/pynetdicom
-├── go.mod
-└── README.md
-```
+- [pkg.go.dev API reference](https://pkg.go.dev/github.com/godicom-dev/gonetdicom)
+- [CHANGELOG](CHANGELOG.md)
+- [TODO](TODO.md) — deferred items and known gaps
 
 ## License
 
