@@ -7,7 +7,7 @@ this file tracks deferred work.
 
 DIMSE (association, C-ECHO / C-STORE / C-FIND / C-MOVE / C-GET / C-CANCEL,
 DIMSE-N, role selection, user identity, storage commitment) and a DICOMweb MVP
-(WADO-RS including rendered/bulkdata, STOW-RS, QIDO-RS) ship as of **v0.12.0**,
+(WADO-RS including rendered/bulkdata, STOW-RS, QIDO-RS) ship as of **v0.13.0**,
 on [godicom](https://github.com/godicom-dev/godicom) `v0.24.0+`.
 
 ## Principles
