@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-19
+
 ### Changed
 - Depend on [godicom](https://github.com/godicom-dev/godicom) `v0.24.0`
 
