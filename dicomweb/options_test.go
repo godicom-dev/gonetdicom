@@ -47,7 +47,7 @@ func TestNewClientOptions(t *testing.T) {
 	if _, err := client.StoreFiles(context.Background(), "", []*godicom.FileDataset{fd}); err != nil {
 		t.Fatalf("store: %v", err)
 	}
-	if !bytes.Contains(logBuf.Bytes(), []byte("dicomweb: request")) {
+	if !bytes.Contains(logBuf.Bytes(), []byte("msg=request")) && !bytes.Contains(logBuf.Bytes(), []byte("request")) {
 		t.Fatalf("missing request log: %s", logBuf.String())
 	}
 }

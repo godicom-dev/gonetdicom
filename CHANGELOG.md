@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-13
+
+### Added
+- `log/slog` foundation aligned with godicom: `WithLogger` /
+  `LoggerFromContext` / `SetDefaultLogger`, quiet `DiscardHandler` default,
+  fixed attribute keys
+- AE / SCP / DICOMweb resolve `Config.Logger` / `Client.Logger` over context
+- Debug: PDU send/recv (`pdu_type_name`) and DIMSE command summaries
+  (`command_name`, `pc_id`, `message_id`, `status`)
+
+### Changed
+- Depend on [godicom](https://github.com/godicom-dev/godicom) `v0.26.0`
+  (slog logging, `PixelArray` / `DisplayFrame`, HTJ2K encode)
+- Docs: README aligned with pynetdicom-style layout (description, DIMSE tables,
+  examples)
+
 ## [0.14.0] - 2026-08-07
 
 ### Changed

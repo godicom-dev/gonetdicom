@@ -11,6 +11,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/godicom-dev/gonetdicom"
 	"github.com/godicom-dev/gonetdicom/dimse"
 	"github.com/godicom-dev/gonetdicom/pdu"
 )
@@ -50,7 +51,8 @@ type Config struct {
 	// TLS, when non-nil, dials with TLS (DICOM over TLS). ServerName should be set
 	// when verifying certificates.
 	TLS *tls.Config
-	// Logger receives optional association lifecycle events. Nil disables logging.
+	// Logger receives association lifecycle and debug events.
+	// Nil falls back to context (WithLogger) then DiscardHandler (quiet).
 	Logger *slog.Logger
 	// PresentationContexts to propose. If empty, Verification only is proposed.
 	PresentationContexts []PresentationContext
@@ -87,8 +89,8 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-func (c Config) log() *slog.Logger {
-	return c.Logger
+func (c Config) logger(ctx context.Context) *slog.Logger {
+	return resolveAELogger(ctx, c.Logger)
 }
 
 // AcceptedContext is a presentation context accepted by the peer.
@@ -117,6 +119,7 @@ type Association struct {
 // When cfg.TLS is set, the connection is established with TLS.
 func Dial(ctx context.Context, cfg Config, addr, calledAE string) (*Association, error) {
 	cfg = cfg.withDefaults()
+	ctx = gonetdicom.LoggerContext(ctx, cfg.Logger, gonetdicom.ComponentAE)
 	if calledAE == "" {
 		return nil, fmt.Errorf("ae: empty called AE title")
 	}
@@ -149,21 +152,20 @@ func Dial(ctx context.Context, cfg Config, addr, calledAE string) (*Association,
 		_ = conn.Close()
 		return nil, err
 	}
-	if log := cfg.log(); log != nil {
-		log.Info("ae: association established",
-			"calling", cfg.AETitle,
-			"called", calledAE,
-			"addr", addr,
-			"tls", cfg.TLS != nil,
-			"contexts", len(assoc.contexts),
-		)
-	}
+	cfg.logger(ctx).Info("association established",
+		gonetdicom.AttrCallingAE, cfg.AETitle,
+		gonetdicom.AttrCalledAE, calledAE,
+		gonetdicom.AttrAddr, addr,
+		gonetdicom.AttrTLS, cfg.TLS != nil,
+		gonetdicom.AttrContexts, len(assoc.contexts),
+	)
 	return assoc, nil
 }
 
 // AcceptFromConn completes association as SCU using an already-connected conn.
 func AcceptFromConn(ctx context.Context, cfg Config, conn net.Conn, calledAE string) (*Association, error) {
 	cfg = cfg.withDefaults()
+	ctx = gonetdicom.LoggerContext(ctx, cfg.Logger, gonetdicom.ComponentAE)
 	if calledAE == "" {
 		return nil, fmt.Errorf("ae: empty called AE title")
 	}
@@ -331,7 +333,13 @@ func (a *Association) CEcho(ctx context.Context) error {
 	return nil
 }
 
+func (a *Association) logCtx(ctx context.Context) context.Context {
+	return gonetdicom.LoggerContext(ctx, a.cfg.Logger, gonetdicom.ComponentAE)
+}
+
 func (a *Association) sendMessage(ctx context.Context, pcid byte, command, dataset []byte) error {
+	ctx = a.logCtx(ctx)
+	logDIMSE(ctx, "send", pcid, command)
 	pdus, err := pdu.FragmentMessage(pcid, command, dataset, a.peerMax)
 	if err != nil {
 		return err
@@ -350,6 +358,7 @@ func (a *Association) recvMessage(ctx context.Context) (command, dataset []byte,
 }
 
 func (a *Association) recvMessagePC(ctx context.Context) (pcid byte, command, dataset []byte, err error) {
+	ctx = a.logCtx(ctx)
 	var (
 		cmdBuf   []byte
 		dsBuf    []byte
@@ -392,6 +401,7 @@ func (a *Association) recvMessagePC(ctx context.Context) (pcid byte, command, da
 				}
 			}
 			if gotCmd && cmdDone && dsDone {
+				logDIMSE(ctx, "recv", pcid, cmdBuf)
 				return pcid, cmdBuf, dsBuf, nil
 			}
 		case *pdu.AAbort:
@@ -407,6 +417,7 @@ func (a *Association) Release(ctx context.Context) error {
 	if a.conn == nil {
 		return nil
 	}
+	ctx = a.logCtx(ctx)
 	defer func() { _ = a.closeConn() }()
 	if err := a.writePDU(ctx, &pdu.AReleaseRQ{}); err != nil {
 		return err
@@ -417,9 +428,10 @@ func (a *Association) Release(ctx context.Context) error {
 	}
 	switch raw.(type) {
 	case *pdu.AReleaseRP:
-		if log := a.cfg.log(); log != nil {
-			log.Info("ae: association released", "calling", a.cfg.AETitle, "called", a.called)
-		}
+		a.cfg.logger(ctx).Info("association released",
+			gonetdicom.AttrCallingAE, a.cfg.AETitle,
+			gonetdicom.AttrCalledAE, a.called,
+		)
 		return nil
 	case *pdu.AAbort:
 		return ErrAborted
@@ -435,9 +447,10 @@ func (a *Association) Abort() error {
 	}
 	defer func() { _ = a.closeConn() }()
 	_ = pdu.Write(a.conn, &pdu.AAbort{Source: 0x00, ReasonDiagnostic: 0x00})
-	if log := a.cfg.log(); log != nil {
-		log.Warn("ae: association aborted", "calling", a.cfg.AETitle, "called", a.called)
-	}
+	a.cfg.logger(context.Background()).Warn("association aborted",
+		gonetdicom.AttrCallingAE, a.cfg.AETitle,
+		gonetdicom.AttrCalledAE, a.called,
+	)
 	return nil
 }
 
@@ -459,11 +472,13 @@ func (a *Association) writePDU(ctx context.Context, p pdu.PDU) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	ctx = a.logCtx(ctx)
 	deadline, ok := a.pduDeadline(ctx)
 	if ok {
 		_ = a.conn.SetWriteDeadline(deadline)
 		defer func() { _ = a.conn.SetWriteDeadline(time.Time{}) }()
 	}
+	logPDU(ctx, "send", p)
 	if err := pdu.Write(a.conn, p); err != nil {
 		return fmt.Errorf("ae: write PDU: %w", err)
 	}
@@ -474,6 +489,7 @@ func (a *Association) readPDU(ctx context.Context) (pdu.PDU, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	ctx = a.logCtx(ctx)
 	deadline, ok := a.pduDeadline(ctx)
 	if ok {
 		_ = a.conn.SetReadDeadline(deadline)
@@ -486,6 +502,7 @@ func (a *Association) readPDU(ctx context.Context) (pdu.PDU, error) {
 		}
 		return nil, fmt.Errorf("ae: read PDU: %w", err)
 	}
+	logPDU(ctx, "recv", p)
 	return p, nil
 }
 

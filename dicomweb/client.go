@@ -16,6 +16,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/godicom-dev/gonetdicom"
 )
 
 const (
@@ -30,7 +32,7 @@ type Client struct {
 	HTTPClient *http.Client  // optional; defaults via Timeout / NewClient
 	Timeout    time.Duration // used when HTTPClient is nil
 	TLS        *tls.Config   // used by NewClient for the default transport
-	Logger     *slog.Logger  // optional request logging
+	Logger     *slog.Logger  // optional; nil falls back to context then DiscardHandler
 }
 
 func (c *Client) httpClient() *http.Client {
@@ -44,11 +46,12 @@ func (c *Client) httpClient() *http.Client {
 	return &http.Client{Timeout: timeout}
 }
 
-func (c *Client) log() *slog.Logger {
-	if c == nil {
-		return nil
+func (c *Client) logger(ctx context.Context) *slog.Logger {
+	var opt *slog.Logger
+	if c != nil {
+		opt = c.Logger
 	}
-	return c.Logger
+	return gonetdicom.ResolveLogger(ctx, opt).With(gonetdicom.AttrComponent, gonetdicom.ComponentDICOMweb)
 }
 
 func (c *Client) base() (*url.URL, error) {
@@ -83,15 +86,22 @@ func (c *Client) resolve(parts ...string) (string, error) {
 }
 
 func (c *Client) do(ctx context.Context, req *http.Request) (*http.Response, error) {
-	if log := c.log(); log != nil {
-		log.Debug("dicomweb: request", "method", req.Method, "url", req.URL.String())
+	log := c.logger(ctx)
+	if log.Enabled(ctx, slog.LevelDebug) {
+		log.DebugContext(ctx, "request",
+			gonetdicom.AttrMethod, req.Method,
+			gonetdicom.AttrURL, req.URL.String(),
+		)
 	}
 	resp, err := c.httpClient().Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, err
 	}
-	if log := c.log(); log != nil {
-		log.Debug("dicomweb: response", "status", resp.StatusCode, "url", req.URL.String())
+	if log.Enabled(ctx, slog.LevelDebug) {
+		log.DebugContext(ctx, "response",
+			gonetdicom.AttrHTTPStatus, resp.StatusCode,
+			gonetdicom.AttrURL, req.URL.String(),
+		)
 	}
 	return resp, nil
 }
