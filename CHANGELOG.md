@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `log/slog` foundation aligned with godicom: `WithLogger` / `LoggerFromContext` /
+  `SetDefaultLogger`, quiet `DiscardHandler` default, fixed attribute keys
+- AE / SCP / DICOMweb resolve `Config.Logger` / `Client.Logger` over context
+- Debug: PDU send/recv (`pdu_type_name`) and DIMSE command summaries
+  (`command_name`, `pc_id`, `message_id`, `status`)
+
 ## [0.14.0] - 2026-08-07
 
 ### Changed

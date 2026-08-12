@@ -38,7 +38,8 @@ func WithTLSConfig(cfg *tls.Config) ClientOption {
 	}
 }
 
-// WithLogger sets an optional slog logger for request diagnostics.
+// WithLogger sets the slog logger for request diagnostics.
+// Nil falls back to context (gonetdicom.WithLogger) then DiscardHandler.
 func WithLogger(log *slog.Logger) ClientOption {
 	return func(c *Client) error {
 		c.Logger = log

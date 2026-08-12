@@ -245,20 +245,42 @@ http.ListenAndServe(":8080", dicomweb.Handler(store, "/dicom-web"))
 
 ## TLS, timeouts, logging
 
+gonetdicom uses `log/slog`. By default it is silent (`DiscardHandler`).
+
 ```go
+import (
+	"context"
+	"log/slog"
+	"os"
+
+	"github.com/godicom-dev/gonetdicom"
+	"github.com/godicom-dev/gonetdicom/ae"
+	"github.com/godicom-dev/gonetdicom/dicomweb"
+)
+
+h := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})
+logger := slog.New(h)
+
 assoc, err := ae.Dial(ctx, ae.Config{
 	AETitle:     "MYSCU",
 	IdleTimeout: 30 * time.Second,
 	TLS:         &tls.Config{ServerName: "pacs.example", MinVersion: tls.VersionTLS12},
-	Logger:      slog.Default(),
+	Logger:      logger, // Config / Client wins over context
 }, "pacs.example:2762", "ANY-SCP")
+
+// Or via context (shared with godicom.ReadFileContext etc.)
+ctx = gonetdicom.WithLogger(ctx, logger)
 
 client, err := dicomweb.NewClient("https://pacs.example/dicom-web",
 	dicomweb.WithTimeout(30*time.Second),
 	dicomweb.WithTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12}),
-	dicomweb.WithLogger(slog.Default()),
+	dicomweb.WithLogger(logger),
 )
 ```
+
+Debug records use fixed attribute keys (`component`, `calling_ae`, `called_ae`,
+`pdu_type_name`, `command_name`, `pc_id`, `message_id`, `status`, …). At Debug
+level, AE logs PDU send/recv and DIMSE command summaries (pynetdicom-style).
 
 Optional real-PACS soak (skipped unless env is set):
 

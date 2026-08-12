@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/godicom-dev/godicom"
+	"github.com/godicom-dev/gonetdicom"
 	"github.com/godicom-dev/gonetdicom/dimse"
 	"github.com/godicom-dev/gonetdicom/pdu"
 	dcmstatus "github.com/godicom-dev/gonetdicom/status"
@@ -105,7 +106,8 @@ type ServerConfig struct {
 	// TLS, when non-nil, wraps accepted connections with TLS (use with ServeTLS
 	// or a tls.Listener). Ignored by Serve on a plain listener.
 	TLS *tls.Config
-	// Logger receives optional SCP lifecycle events. Nil disables logging.
+	// Logger receives SCP lifecycle and debug events.
+	// Nil falls back to context (WithLogger) then DiscardHandler (quiet).
 	Logger *slog.Logger
 }
 
@@ -125,13 +127,14 @@ func (c ServerConfig) withDefaults() ServerConfig {
 	return c
 }
 
-func (c ServerConfig) log() *slog.Logger {
-	return c.Logger
+func (c ServerConfig) logger(ctx context.Context) *slog.Logger {
+	return resolveAELogger(ctx, c.Logger)
 }
 
 // Serve accepts associations on ln until ctx is cancelled.
 func Serve(ctx context.Context, ln net.Listener, cfg ServerConfig) error {
 	cfg = cfg.withDefaults()
+	ctx = gonetdicom.LoggerContext(ctx, cfg.Logger, gonetdicom.ComponentSCP)
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
@@ -147,9 +150,9 @@ func Serve(ctx context.Context, ln net.Listener, cfg ServerConfig) error {
 			}
 		}
 		go func(c net.Conn) {
-			if log := cfg.log(); log != nil {
-				log.Info("ae: scp accepted connection", "remote", c.RemoteAddr().String())
-			}
+			cfg.logger(ctx).Info("scp accepted connection",
+				gonetdicom.AttrRemote, c.RemoteAddr().String(),
+			)
 			_ = handleAssociation(ctx, c, cfg)
 		}(conn)
 	}
@@ -165,22 +168,23 @@ func ListenAndServeTLS(ctx context.Context, addr string, cfg ServerConfig) error
 		return fmt.Errorf("ae: tls listen %s: %w", addr, err)
 	}
 	defer ln.Close()
-	if log := cfg.withDefaults().log(); log != nil {
-		log.Info("ae: scp listening (tls)", "addr", ln.Addr().String())
-	}
+	cfg = cfg.withDefaults()
+	ctx = gonetdicom.LoggerContext(ctx, cfg.Logger, gonetdicom.ComponentSCP)
+	cfg.logger(ctx).Info("scp listening (tls)", gonetdicom.AttrAddr, ln.Addr().String())
 	return Serve(ctx, ln, cfg)
 }
 
 func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) error {
 	defer func() { _ = conn.Close() }()
+	ctx = gonetdicom.LoggerContext(ctx, cfg.Logger, gonetdicom.ComponentSCP)
 
-	raw, err := pdu.Read(conn)
+	raw, err := readPDUConn(ctx, conn)
 	if err != nil {
 		return err
 	}
 	rq, ok := raw.(*pdu.AAssociateRQ)
 	if !ok {
-		_ = pdu.Write(conn, &pdu.AAbort{Source: 0x02, ReasonDiagnostic: 0x00})
+		_ = writePDUConn(ctx, conn, &pdu.AAbort{Source: 0x02, ReasonDiagnostic: 0x00})
 		return fmt.Errorf("ae: expected A-ASSOCIATE-RQ, got %T", raw)
 	}
 
@@ -188,7 +192,7 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 	if rq.UserInformation.UserIdentityRQ != nil && cfg.OnUserIdentity != nil {
 		ok, resp := cfg.OnUserIdentity(*rq.UserInformation.UserIdentityRQ)
 		if !ok {
-			_ = pdu.Write(conn, &pdu.AAssociateRJ{
+			_ = writePDUConn(ctx, conn, &pdu.AAssociateRJ{
 				Result:           0x02, // transient
 				Source:           0x02, // ACSE
 				ReasonDiagnostic: 0x01, // no reason given (pynetdicom)
@@ -283,7 +287,7 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 			UserIdentityAC:            userIdentityAC,
 		},
 	}
-	if err := pdu.Write(conn, ac); err != nil {
+	if err := writePDUConn(ctx, conn, ac); err != nil {
 		return err
 	}
 
@@ -306,7 +310,7 @@ func scpLoop(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		raw, err := pdu.Read(conn)
+		raw, err := readPDUConn(ctx, conn)
 		if err != nil {
 			return err
 		}
@@ -338,16 +342,17 @@ func scpLoop(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[
 			if !cmdDone || !dsDone {
 				continue
 			}
+			logDIMSE(ctx, "recv", pcid, cmdBuf)
 			if err := scpHandleMessage(ctx, conn, cfg, accepted, peerMax, pcid, cmdBuf, dsBuf, callingAE); err != nil {
 				return err
 			}
 			reset()
 		case *pdu.AReleaseRQ:
-			return pdu.Write(conn, &pdu.AReleaseRP{})
+			return writePDUConn(ctx, conn, &pdu.AReleaseRP{})
 		case *pdu.AAbort:
 			return nil
 		default:
-			_ = pdu.Write(conn, &pdu.AAbort{Source: 0x02, ReasonDiagnostic: 0x00})
+			_ = writePDUConn(ctx, conn, &pdu.AAbort{Source: 0x02, ReasonDiagnostic: 0x00})
 			return fmt.Errorf("ae: unexpected PDU %T", p)
 		}
 	}
@@ -362,7 +367,7 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 		if err != nil {
 			return err
 		}
-		return writeMessage(conn, pcid, rsp, nil, peerMax)
+		return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 	}
 
 	if findRQ, err := dimse.DecodeCFindRQ(cmd); err == nil {
@@ -422,7 +427,7 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 	if err != nil {
 		return err
 	}
-	return writeMessage(conn, pcid, rsp, nil, peerMax)
+	return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 }
 
 func scpHandleFind(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CFindRQ, ds []byte) error {
@@ -436,7 +441,7 @@ func scpHandleFind(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 		if err != nil {
 			return err
 		}
-		return writeMessage(conn, pcid, rsp, nil, peerMax)
+		return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 	}
 
 	var ident *godicom.Dataset
@@ -473,7 +478,7 @@ func scpHandleFind(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 			if err != nil {
 				return err
 			}
-			return writeMessage(conn, pcid, rsp, nil, peerMax)
+			return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 		}
 		hasDS := m.Identifier != nil && dimse.IsPending(m.Status)
 		rsp, err := (&dimse.CFindRSP{
@@ -492,7 +497,7 @@ func scpHandleFind(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 				return fmt.Errorf("ae: encode C-FIND identifier: %w", err)
 			}
 		}
-		if err := writeMessage(conn, pcid, rsp, payload, peerMax); err != nil {
+		if err := writeMessage(ctx, conn, pcid, rsp, payload, peerMax); err != nil {
 			return err
 		}
 		if !dimse.IsPending(m.Status) {
@@ -513,7 +518,7 @@ func scpHandleMove(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 		if err != nil {
 			return err
 		}
-		return writeMessage(conn, pcid, rsp, nil, peerMax)
+		return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 	}
 
 	var ident *godicom.Dataset
@@ -546,14 +551,14 @@ func scpHandleMove(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 			if len(plan.Responses) > 0 {
 				fail = plan.Responses
 			}
-			return writeRetrieveResponses(conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, fail)
+			return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, fail)
 		}
 		return nil
 	}
 	if len(plan.Responses) == 0 {
 		plan.Responses = []RetrieveMatch{{Status: dimse.StatusSuccess}}
 	}
-	return writeRetrieveResponses(conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, plan.Responses)
+	return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, plan.Responses)
 }
 
 func scpPerformMoveStores(ctx context.Context, conn net.Conn, cfg ServerConfig, peerMax uint32, pcid byte, transferSyntax string, rq *dimse.CMoveRQ, moveOriginatorAE string, stores []StoreRequest) error {
@@ -612,7 +617,7 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, cfg ServerConfig, 
 	)
 
 	writePending := func(remaining, completed, failed, warning uint16) error {
-		return writeRetrieveResponses(conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
+		return writeRetrieveResponses(ctx, conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
 			Status: dimse.StatusPending,
 			SubOperations: dimse.SubOperations{
 				Remaining: remaining, Completed: completed, Failed: failed, Warning: warning, Present: true,
@@ -711,7 +716,7 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, cfg ServerConfig, 
 	} else if f > 0 {
 		final = dcmstatus.UnableToPerformSubOperations
 	}
-	return writeRetrieveResponses(conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
+	return writeRetrieveResponses(ctx, conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
 		Status: final,
 		SubOperations: dimse.SubOperations{
 			Remaining: 0, Completed: c, Failed: f, Warning: w, Present: true,
@@ -730,7 +735,7 @@ func scpHandleGet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted
 		if err != nil {
 			return err
 		}
-		return writeMessage(conn, pcid, rsp, nil, peerMax)
+		return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 	}
 
 	var ident *godicom.Dataset
@@ -786,10 +791,10 @@ func scpHandleGet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted
 			return err
 		}
 		storeMsgID++
-		if err := writeMessage(conn, storePCID, cmd, payload, peerMax); err != nil {
+		if err := writeMessage(ctx, conn, storePCID, cmd, payload, peerMax); err != nil {
 			return err
 		}
-		rspCmd, _, err := readMessage(conn)
+		rspCmd, _, err := readMessage(ctx, conn)
 		if err != nil {
 			return err
 		}
@@ -798,10 +803,10 @@ func scpHandleGet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted
 		}
 	}
 
-	return writeRetrieveResponses(conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false, plan.Responses)
+	return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false, plan.Responses)
 }
 
-func writeRetrieveResponses(conn net.Conn, pcid byte, peerMax uint32, transferSyntax string, msgID uint16, sopClass string, isMove bool, matches []RetrieveMatch) error {
+func writeRetrieveResponses(ctx context.Context, conn net.Conn, pcid byte, peerMax uint32, transferSyntax string, msgID uint16, sopClass string, isMove bool, matches []RetrieveMatch) error {
 	for i, m := range matches {
 		if i > 0 && peekCancelRQ(conn, msgID) {
 			var (
@@ -824,7 +829,7 @@ func writeRetrieveResponses(conn net.Conn, pcid byte, peerMax uint32, transferSy
 			if err != nil {
 				return err
 			}
-			return writeMessage(conn, pcid, rsp, nil, peerMax)
+			return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 		}
 		hasDS := m.Identifier != nil
 		var (
@@ -858,7 +863,7 @@ func writeRetrieveResponses(conn net.Conn, pcid byte, peerMax uint32, transferSy
 				return fmt.Errorf("ae: encode retrieve identifier: %w", err)
 			}
 		}
-		if err := writeMessage(conn, pcid, rsp, payload, peerMax); err != nil {
+		if err := writeMessage(ctx, conn, pcid, rsp, payload, peerMax); err != nil {
 			return err
 		}
 		if !dimse.IsPending(m.Status) {
@@ -877,15 +882,16 @@ func contextByAbstractAccepted(accepted map[byte]acceptedContext, uid string) (b
 	return 0, "", false
 }
 
-func readMessage(conn net.Conn) (command, dataset []byte, err error) {
+func readMessage(ctx context.Context, conn net.Conn) (command, dataset []byte, err error) {
 	var (
 		cmdBuf  []byte
 		dsBuf   []byte
 		cmdDone bool
 		dsDone  bool
+		pcid    byte
 	)
 	for {
-		raw, err := pdu.Read(conn)
+		raw, err := readPDUConn(ctx, conn)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -894,6 +900,9 @@ func readMessage(conn net.Conn) (command, dataset []byte, err error) {
 			return nil, nil, fmt.Errorf("ae: unexpected PDU %T while reading message", raw)
 		}
 		for _, pdv := range p.PDVs {
+			if pcid == 0 {
+				pcid = pdv.ContextID
+			}
 			if pdv.IsCommand() {
 				cmdBuf = append(cmdBuf, pdv.Fragment()...)
 				if pdv.IsLast() {
@@ -914,18 +923,20 @@ func readMessage(conn net.Conn) (command, dataset []byte, err error) {
 			}
 		}
 		if cmdDone && dsDone {
+			logDIMSE(ctx, "recv", pcid, cmdBuf)
 			return cmdBuf, dsBuf, nil
 		}
 	}
 }
 
-func writeMessage(conn net.Conn, pcid byte, command, dataset []byte, maxPDU uint32) error {
+func writeMessage(ctx context.Context, conn net.Conn, pcid byte, command, dataset []byte, maxPDU uint32) error {
+	logDIMSE(ctx, "send", pcid, command)
 	pdus, err := pdu.FragmentMessage(pcid, command, dataset, maxPDU)
 	if err != nil {
 		return err
 	}
 	for _, p := range pdus {
-		if err := pdu.Write(conn, p); err != nil {
+		if err := writePDUConn(ctx, conn, p); err != nil {
 			return err
 		}
 	}
@@ -995,7 +1006,7 @@ func scpHandleNAction(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 	if err != nil {
 		return err
 	}
-	if err := writeMessage(conn, pcid, rsp, reply, peerMax); err != nil {
+	if err := writeMessage(ctx, conn, pcid, rsp, reply, peerMax); err != nil {
 		return err
 	}
 	if push == nil {
@@ -1008,7 +1019,7 @@ func scpHandleNAction(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 		go scpSendEventReportNewAssoc(cfg, dest, report)
 		return nil
 	}
-	return scpSendEventReport(conn, accepted, peerMax, push)
+	return scpSendEventReport(ctx, conn, accepted, peerMax, push)
 }
 
 func scpHandleNEventReport(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NEventReportRQ, ds []byte) error {
@@ -1045,10 +1056,10 @@ func scpHandleNEventReport(ctx context.Context, conn net.Conn, cfg ServerConfig,
 	if err != nil {
 		return err
 	}
-	return writeMessage(conn, pcid, rsp, nil, peerMax)
+	return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 }
 
-func scpSendEventReport(conn net.Conn, accepted map[byte]acceptedContext, peerMax uint32, req *EventReportRequest) error {
+func scpSendEventReport(ctx context.Context, conn net.Conn, accepted map[byte]acceptedContext, peerMax uint32, req *EventReportRequest) error {
 	pcid, ts, ok := contextByAbstractAccepted(accepted, req.AffectedSOPClassUID)
 	if !ok {
 		return fmt.Errorf("ae: no context for N-EVENT-REPORT %s", req.AffectedSOPClassUID)
@@ -1071,10 +1082,10 @@ func scpSendEventReport(conn net.Conn, accepted map[byte]acceptedContext, peerMa
 	if err != nil {
 		return err
 	}
-	if err := writeMessage(conn, pcid, cmd, payload, peerMax); err != nil {
+	if err := writeMessage(ctx, conn, pcid, cmd, payload, peerMax); err != nil {
 		return err
 	}
-	rspCmd, _, err := readMessage(conn)
+	rspCmd, _, err := readMessage(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -1087,6 +1098,8 @@ func scpSendEventReport(conn net.Conn, accepted map[byte]acceptedContext, peerMa
 func scpSendEventReportNewAssoc(cfg ServerConfig, dest EventReportDestination, req EventReportRequest) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	ctx = gonetdicom.LoggerContext(ctx, cfg.Logger, gonetdicom.ComponentSCP)
+	log := cfg.logger(ctx)
 
 	calling := dest.CallingAE
 	if calling == "" {
@@ -1094,15 +1107,11 @@ func scpSendEventReportNewAssoc(cfg ServerConfig, dest EventReportDestination, r
 	}
 	called := dest.CalledAE
 	if called == "" {
-		if log := cfg.log(); log != nil {
-			log.Error("ae: async N-EVENT-REPORT missing CalledAE")
-		}
+		log.Error("async N-EVENT-REPORT missing CalledAE")
 		return
 	}
 	if req.AffectedSOPClassUID == "" {
-		if log := cfg.log(); log != nil {
-			log.Error("ae: async N-EVENT-REPORT missing Affected SOP Class UID")
-		}
+		log.Error("async N-EVENT-REPORT missing Affected SOP Class UID")
 		return
 	}
 
@@ -1117,17 +1126,13 @@ func scpSendEventReportNewAssoc(cfg ServerConfig, dest EventReportDestination, r
 		Logger: cfg.Logger,
 	}, dest.Addr, called)
 	if err != nil {
-		if log := cfg.log(); log != nil {
-			log.Error("ae: async N-EVENT-REPORT dial failed", "addr", dest.Addr, "err", err)
-		}
+		log.Error("async N-EVENT-REPORT dial failed", gonetdicom.AttrAddr, dest.Addr, "err", err)
 		return
 	}
 	defer func() { _ = assoc.Release(ctx) }()
 
 	if _, err := assoc.NEventReport(ctx, req); err != nil {
-		if log := cfg.log(); log != nil {
-			log.Error("ae: async N-EVENT-REPORT failed", "err", err)
-		}
+		log.Error("async N-EVENT-REPORT failed", "err", err)
 	}
 }
 
@@ -1155,7 +1160,7 @@ func scpHandleNGet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 			result.AffectedSOPInstanceUID = rq.RequestedSOPInstanceUID
 		}
 	}
-	return writeNAttributeRSP(conn, peerMax, pcid, ok, ac, rq.MessageID, result.Status,
+	return writeNAttributeRSP(ctx, conn, peerMax, pcid, ok, ac, rq.MessageID, result.Status,
 		result.AffectedSOPClassUID, result.AffectedSOPInstanceUID,
 		result.AttributeList, result.AttributeListData, encodeNGetRSP)
 }
@@ -1193,7 +1198,7 @@ func scpHandleNSet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 			result.AffectedSOPInstanceUID = rq.RequestedSOPInstanceUID
 		}
 	}
-	return writeNAttributeRSP(conn, peerMax, pcid, ok, ac, rq.MessageID, result.Status,
+	return writeNAttributeRSP(ctx, conn, peerMax, pcid, ok, ac, rq.MessageID, result.Status,
 		result.AffectedSOPClassUID, result.AffectedSOPInstanceUID,
 		result.AttributeList, result.AttributeListData, encodeNSetRSP)
 }
@@ -1244,7 +1249,7 @@ func scpHandleNCreate(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 	if result.AffectedSOPInstanceUID == "" {
 		return fmt.Errorf("ae: N-CREATE-RSP missing Affected SOP Instance UID")
 	}
-	return writeNAttributeRSP(conn, peerMax, pcid, ok, ac, rq.MessageID, result.Status,
+	return writeNAttributeRSP(ctx, conn, peerMax, pcid, ok, ac, rq.MessageID, result.Status,
 		result.AffectedSOPClassUID, result.AffectedSOPInstanceUID,
 		result.AttributeList, result.AttributeListData, encodeNCreateRSP)
 }
@@ -1281,7 +1286,7 @@ func scpHandleNDelete(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 	if err != nil {
 		return err
 	}
-	return writeMessage(conn, pcid, rsp, nil, peerMax)
+	return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 }
 
 type nAttrEncoder func(msgID uint16, status uint16, classUID, instanceUID string, hasDS bool) ([]byte, error)
@@ -1316,7 +1321,7 @@ func encodeNCreateRSP(msgID uint16, status uint16, classUID, instanceUID string,
 	}).Encode()
 }
 
-func writeNAttributeRSP(conn net.Conn, peerMax uint32, pcid byte, ok bool, ac acceptedContext, msgID uint16, status uint16, classUID, instanceUID string, list []byte, listData *godicom.Dataset, enc nAttrEncoder) error {
+func writeNAttributeRSP(ctx context.Context, conn net.Conn, peerMax uint32, pcid byte, ok bool, ac acceptedContext, msgID uint16, status uint16, classUID, instanceUID string, list []byte, listData *godicom.Dataset, enc nAttrEncoder) error {
 	payload := list
 	if listData != nil {
 		if !ok {
@@ -1332,5 +1337,5 @@ func writeNAttributeRSP(conn net.Conn, peerMax uint32, pcid byte, ok bool, ac ac
 	if err != nil {
 		return err
 	}
-	return writeMessage(conn, pcid, rsp, payload, peerMax)
+	return writeMessage(ctx, conn, pcid, rsp, payload, peerMax)
 }
