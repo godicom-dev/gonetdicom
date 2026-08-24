@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"net/http"
 	"net/textproto"
 	"strings"
 )
@@ -15,11 +16,16 @@ func multipartContentType(boundary string) string {
 	return fmt.Sprintf(`%s; type="%s"; boundary=%s`, MediaTypeMultipart, MediaTypeDICOM, boundary)
 }
 
-func writeDICOMParts(w io.Writer, boundary string, parts [][]byte) error {
+// writeDICOMParts writes parts as a multipart/related body and sets the
+// response Content-Type to match.
+//
+// The boundary is the writer's own randomly generated one (crypto/rand backed).
+// It must never be a fixed string: DICOM part bodies are data-controlled, so a
+// predictable delimiter appearing inside an instance would silently truncate
+// the response. Callers must not have written a body before calling this.
+func writeDICOMParts(w http.ResponseWriter, parts [][]byte) error {
 	mw := multipart.NewWriter(w)
-	if err := mw.SetBoundary(boundary); err != nil {
-		return err
-	}
+	w.Header().Set("Content-Type", multipartContentType(mw.Boundary()))
 	for i, part := range parts {
 		h := make(textproto.MIMEHeader)
 		h.Set("Content-Type", MediaTypeDICOM)

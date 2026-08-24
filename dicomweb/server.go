@@ -386,9 +386,7 @@ func handleWADOMany(w http.ResponseWriter, r *http.Request, store Store, study, 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	boundary := "gonetdicom-boundary"
-	w.Header().Set("Content-Type", multipartContentType(boundary))
-	_ = writeDICOMParts(w, boundary, parts)
+	_ = writeDICOMParts(w, parts)
 }
 
 func handleWADOManyMetadata(w http.ResponseWriter, r *http.Request, store Store, prefix, study, series string) {
@@ -431,11 +429,7 @@ func handleWADOInstance(w http.ResponseWriter, r *http.Request, store Store, stu
 	}
 	accept := r.Header.Get("Accept")
 	if strings.Contains(accept, MediaTypeMultipart) || accept == "" {
-		boundary := "gonetdicom-boundary"
-		w.Header().Set("Content-Type", multipartContentType(boundary))
-		if err := writeDICOMParts(w, boundary, [][]byte{raw}); err != nil {
-			return
-		}
+		_ = writeDICOMParts(w, [][]byte{raw})
 		return
 	}
 	w.Header().Set("Content-Type", MediaTypeDICOM)
