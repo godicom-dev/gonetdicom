@@ -69,7 +69,7 @@ func DecodePDataTF(raw []byte) (*PDataTF, error) {
 		return nil, fmt.Errorf("%w: got 0x%02x want P-DATA-TF", ErrUnexpectedType, raw[0])
 	}
 	length := binary.BigEndian.Uint32(raw[2:6])
-	if int(6+length) != len(raw) {
+	if 6+uint64(length) != uint64(len(raw)) {
 		return nil, fmt.Errorf("pdu: P-DATA-TF length mismatch")
 	}
 	p := &PDataTF{}
@@ -78,16 +78,19 @@ func DecodePDataTF(raw []byte) (*PDataTF, error) {
 		if off+4 > len(raw) {
 			return nil, fmt.Errorf("pdu: truncated PDV length")
 		}
-		itemLen := int(binary.BigEndian.Uint32(raw[off : off+4]))
-		if itemLen < 2 || off+4+itemLen > len(raw) {
+		// The item length is 32 bits and is compared in uint64 for the same reason
+		// as the element lengths in dimse: converting it to a 32-bit int first turns
+		// a large length negative, and negative lengths pass a bounds check.
+		itemLen := uint64(binary.BigEndian.Uint32(raw[off : off+4]))
+		if itemLen < 2 || uint64(off)+4+itemLen > uint64(len(raw)) {
 			return nil, fmt.Errorf("pdu: bad PDV item length %d", itemLen)
 		}
 		pdv := PDV{
 			ContextID: raw[off+4],
-			Value:     append([]byte(nil), raw[off+5:off+4+itemLen]...),
+			Value:     append([]byte(nil), raw[off+5:off+4+int(itemLen)]...),
 		}
 		p.PDVs = append(p.PDVs, pdv)
-		off += 4 + itemLen
+		off += 4 + int(itemLen)
 	}
 	return p, nil
 }

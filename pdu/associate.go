@@ -166,7 +166,7 @@ func DecodeAAssociateRQ(raw []byte) (*AAssociateRQ, error) {
 		return nil, fmt.Errorf("%w: got 0x%02x want A-ASSOCIATE-RQ", ErrUnexpectedType, raw[0])
 	}
 	length := binary.BigEndian.Uint32(raw[2:6])
-	if int(6+length) != len(raw) {
+	if 6+uint64(length) != uint64(len(raw)) {
 		return nil, fmt.Errorf("pdu: A-ASSOCIATE-RQ length mismatch")
 	}
 	p := &AAssociateRQ{
@@ -271,7 +271,7 @@ func DecodeAAssociateAC(raw []byte) (*AAssociateAC, error) {
 		return nil, fmt.Errorf("%w: got 0x%02x want A-ASSOCIATE-AC", ErrUnexpectedType, raw[0])
 	}
 	length := binary.BigEndian.Uint32(raw[2:6])
-	if int(6+length) != len(raw) {
+	if 6+uint64(length) != uint64(len(raw)) {
 		return nil, fmt.Errorf("pdu: A-ASSOCIATE-AC length mismatch")
 	}
 	p := &AAssociateAC{

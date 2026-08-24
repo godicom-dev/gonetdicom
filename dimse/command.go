@@ -160,13 +160,16 @@ func decodeElements(b []byte) ([]element, error) {
 	for off+8 <= len(b) {
 		group := binary.LittleEndian.Uint16(b[off : off+2])
 		elem := binary.LittleEndian.Uint16(b[off+2 : off+4])
-		vlen := int(binary.LittleEndian.Uint32(b[off+4 : off+8]))
-		if off+8+vlen > len(b) {
+		// Value Length is 32 bits, so it is compared in uint64 rather than converted
+		// to int: where int is 32 bits wide a length above MaxInt32 becomes negative,
+		// the bounds check below passes, and the slice that follows panics.
+		vlen := uint64(binary.LittleEndian.Uint32(b[off+4 : off+8]))
+		if uint64(off)+8+vlen > uint64(len(b)) {
 			return nil, fmt.Errorf("dimse: truncated element (%04X,%04X)", group, elem)
 		}
-		val := append([]byte(nil), b[off+8:off+8+vlen]...)
+		val := append([]byte(nil), b[off+8:off+8+int(vlen)]...)
 		els = append(els, element{tag: uint32(group)<<16 | uint32(elem), value: val})
-		off += 8 + vlen
+		off += 8 + int(vlen)
 	}
 	if off != len(b) {
 		return nil, fmt.Errorf("dimse: trailing %d bytes", len(b)-off)

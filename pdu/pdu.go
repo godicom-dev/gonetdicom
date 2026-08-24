@@ -159,7 +159,9 @@ const maxItemLength = math.MaxUint16
 // by garbage, with no error on either side.
 var ErrTooLong = errors.New("pdu: value too long to encode")
 
-func errTooLong(what string, n, limit int) error {
+// limit is uint64 because one of these length fields is 32 bits wide, and
+// math.MaxUint32 does not fit an int where int is 32 bits.
+func errTooLong(what string, n int, limit uint64) error {
 	return fmt.Errorf("%w: %s is %d bytes, its length field holds at most %d",
 		ErrTooLong, what, n, limit)
 }
