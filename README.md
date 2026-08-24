@@ -202,6 +202,12 @@ cfg := ae.Config{
 
 Cancel an outstanding FIND / MOVE / GET with `assoc.CCancel(ctx, msgID)`.
 
+An `*ae.Association` carries one DIMSE operation at a time: each method sends its
+request and then reads responses until the final one, so two running at once
+interleave PDUs on the same connection. Dial one association per worker for
+parallel work. `CCancel`, `Abort` and `Close` exist to reach an operation that is
+already blocked, so those three are safe to call from another goroutine.
+
 **Storage SCP (C-STORE)**
 
 `Serve` blocks until `ctx` is cancelled. Do not reuse a short `WithTimeout`
