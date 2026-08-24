@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/godicom-dev/godicom"
+	"github.com/godicom-dev/godicom/uid"
 	"github.com/godicom-dev/gonetdicom/dimse"
 	"github.com/godicom-dev/gonetdicom/pdu"
 )
@@ -13,7 +14,7 @@ import (
 func TestInboundStoreRequestFileMetaMatchesPynetdicom(t *testing.T) {
 	t.Parallel()
 
-	const scUID = "1.2.840.10008.5.1.4.1.1.7"
+	const scUID = string(uid.SecondaryCaptureImageStorage)
 	ds := godicom.NewDataset()
 	ds.Set(godicom.NewDataElement(godicom.MustTag("SOPClassUID"), godicom.VRUI, scUID))
 	ds.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, "1.2.3.4.5"))

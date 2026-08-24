@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"github.com/godicom-dev/godicom"
+	"github.com/godicom-dev/godicom/uid"
 	"github.com/godicom-dev/gonetdicom/ae"
 	"github.com/godicom-dev/gonetdicom/dimse"
 	"github.com/godicom-dev/gonetdicom/pdu"
 )
 
-const secondaryCaptureSOPClass = "1.2.840.10008.5.1.4.1.1.7"
+const secondaryCaptureSOPClass = string(uid.SecondaryCaptureImageStorage)
 
 // mockSCUPeer accepts proposed contexts and handles C-ECHO / C-STORE / release.
 func mockSCUPeer(t *testing.T, conn net.Conn) {

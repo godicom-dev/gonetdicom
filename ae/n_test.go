@@ -7,12 +7,17 @@ import (
 	"time"
 
 	"github.com/godicom-dev/godicom"
+	"github.com/godicom-dev/godicom/uid"
 	"github.com/godicom-dev/gonetdicom/ae"
 	"github.com/godicom-dev/gonetdicom/dimse"
 	"github.com/godicom-dev/gonetdicom/pdu"
 )
 
-const printManagementSOPClass = "1.2.840.10008.5.1.1.9" // Basic Film Session (example N-* SOP)
+// An example N-* SOP Class: Basic Grayscale Print Management Meta. The UID was
+// written out here with a comment calling it Basic Film Session, which is a
+// different SOP Class (1.2.840.10008.5.1.1.1) — the kind of drift a name kept in
+// a comment invites and a named constant cannot have.
+const printManagementSOPClass = string(uid.BasicGrayscalePrintManagementMeta)
 
 func TestNGetSetCreateDeleteRoundtrip(t *testing.T) {
 	t.Parallel()
@@ -57,14 +62,14 @@ func TestNGetSetCreateDeleteRoundtrip(t *testing.T) {
 				}
 			},
 			OnNCreate: func(_ context.Context, req ae.CreateRequest) ae.CreateResult {
-				uid := req.AffectedSOPInstanceUID
-				if uid == "" {
-					uid = sopInstance
+				instanceUID := req.AffectedSOPInstanceUID
+				if instanceUID == "" {
+					instanceUID = sopInstance
 				}
 				return ae.CreateResult{
 					Status:                 dimse.StatusSuccess,
 					AffectedSOPClassUID:    req.AffectedSOPClassUID,
-					AffectedSOPInstanceUID: uid,
+					AffectedSOPInstanceUID: instanceUID,
 					AttributeListData:      req.AttributeListData,
 				}
 			},

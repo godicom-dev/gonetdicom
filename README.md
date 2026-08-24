@@ -137,18 +137,23 @@ cfg := ae.Config{
 	AETitle: "STORESCU",
 	PresentationContexts: []ae.PresentationContext{{
 		ID:               1,
-		AbstractSyntax:   "1.2.840.10008.5.1.4.1.1.7", // Secondary Capture
-		TransferSyntaxes: []string{"1.2.840.10008.1.2"},
+		AbstractSyntax:   string(uid.SecondaryCaptureImageStorage),
+		TransferSyntaxes: ae.UIDStrings(uid.ImplicitVRLittleEndian),
 	}},
 }
 assoc, err := ae.Dial(ctx, cfg, "pacs.example:11112", "ANY-SCP")
 // ...
 res, err := assoc.CStore(ctx, ae.StoreRequest{
-	AffectedSOPClassUID:    "1.2.840.10008.5.1.4.1.1.7",
+	AffectedSOPClassUID:    string(uid.SecondaryCaptureImageStorage),
 	AffectedSOPInstanceUID: "1.2.3.4.5", // optional: Data.SOPInstanceUID or ae.NewInstanceUID()
 	Data:                   ds,
 })
 ```
+
+SOP Classes and transfer syntaxes are named by *godicom*'s
+[`uid`](https://pkg.go.dev/github.com/godicom-dev/godicom/uid) package, so
+nothing here needs a UID pasted in; `ae.UIDStrings` converts a list of them to
+the `[]string` these fields hold.
 
 `CStore` does not modify the `Data` you hand it. With no
 `AffectedSOPInstanceUID` and no `SOPInstanceUID` in the dataset it generates a
@@ -236,6 +241,12 @@ err = ae.Serve(ctx, ln, ae.ServerConfig{
 	},
 })
 ```
+
+`ae.AllStorageSOPClasses` is the whole Storage Service Class (pynetdicom's
+`_STORAGE_CLASSES`), built from the *godicom* `uid` constants so each entry is
+named in code rather than in a comment; a test checks the set against the
+pynetdicom submodule. For a narrower SCP, name the classes you accept:
+`ae.UIDStrings(uid.CTImageStorage, uid.MRImageStorage)`.
 
 `AcceptedAbstractSyntaxes` may include `"*"` to accept any peer-proposed abstract
 syntax. Named DIMSE status constants live in package
