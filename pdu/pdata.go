@@ -57,7 +57,7 @@ func (p *PDataTF) Encode() ([]byte, error) {
 		copy(item[5:], pdv.Value)
 		body = append(body, item...)
 	}
-	return encodeHeader(TypePDataTF, body), nil
+	return encodeHeader(TypePDataTF, body)
 }
 
 // DecodePDataTF parses a P-DATA-TF PDU.

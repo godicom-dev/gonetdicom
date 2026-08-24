@@ -119,17 +119,24 @@ func (p *AAssociateRQ) Encode() ([]byte, error) {
 		appCtx = ApplicationContextName
 	}
 
-	var varItems []byte
-	varItems = append(varItems, encodeItem(ItemApplicationContext, []byte(appCtx))...)
-
+	varItems, err := appendItem(nil, ItemApplicationContext, []byte(appCtx))
+	if err != nil {
+		return nil, err
+	}
 	for _, pc := range p.PresentationContexts {
 		data := make([]byte, 4)
 		data[0] = pc.ID
-		data = append(data, encodeItem(ItemAbstractSyntax, []byte(pc.AbstractSyntax))...)
-		for _, ts := range pc.TransferSyntaxes {
-			data = append(data, encodeItem(ItemTransferSyntax, []byte(ts))...)
+		if data, err = appendItem(data, ItemAbstractSyntax, []byte(pc.AbstractSyntax)); err != nil {
+			return nil, err
 		}
-		varItems = append(varItems, encodeItem(ItemPresentationContextRQ, data)...)
+		for _, ts := range pc.TransferSyntaxes {
+			if data, err = appendItem(data, ItemTransferSyntax, []byte(ts)); err != nil {
+				return nil, err
+			}
+		}
+		if varItems, err = appendItem(varItems, ItemPresentationContextRQ, data); err != nil {
+			return nil, err
+		}
 	}
 
 	ui, err := encodeUserInformation(p.UserInformation)
@@ -147,7 +154,7 @@ func (p *AAssociateRQ) Encode() ([]byte, error) {
 	copy(body[4:20], called[:])
 	copy(body[20:36], calling[:])
 	copy(body[68:], varItems)
-	return encodeHeader(TypeAAssociateRQ, body), nil
+	return encodeHeader(TypeAAssociateRQ, body)
 }
 
 // DecodeAAssociateRQ parses an A-ASSOCIATE-RQ PDU.
@@ -220,16 +227,22 @@ func (p *AAssociateAC) Encode() ([]byte, error) {
 		appCtx = ApplicationContextName
 	}
 
-	var varItems []byte
-	varItems = append(varItems, encodeItem(ItemApplicationContext, []byte(appCtx))...)
+	varItems, err := appendItem(nil, ItemApplicationContext, []byte(appCtx))
+	if err != nil {
+		return nil, err
+	}
 	for _, pc := range p.PresentationContexts {
 		data := make([]byte, 4)
 		data[0] = pc.ID
 		data[2] = pc.Result
 		if pc.TransferSyntax != "" {
-			data = append(data, encodeItem(ItemTransferSyntax, []byte(pc.TransferSyntax))...)
+			if data, err = appendItem(data, ItemTransferSyntax, []byte(pc.TransferSyntax)); err != nil {
+				return nil, err
+			}
 		}
-		varItems = append(varItems, encodeItem(ItemPresentationContextAC, data)...)
+		if varItems, err = appendItem(varItems, ItemPresentationContextAC, data); err != nil {
+			return nil, err
+		}
 	}
 	ui, err := encodeUserInformation(p.UserInformation)
 	if err != nil {
@@ -246,7 +259,7 @@ func (p *AAssociateAC) Encode() ([]byte, error) {
 	copy(body[4:20], called[:])
 	copy(body[20:36], calling[:])
 	copy(body[68:], varItems)
-	return encodeHeader(TypeAAssociateAC, body), nil
+	return encodeHeader(TypeAAssociateAC, body)
 }
 
 // DecodeAAssociateAC parses an A-ASSOCIATE-AC PDU.
@@ -304,7 +317,7 @@ func (p *AAssociateRJ) Type() byte { return TypeAAssociateRJ }
 // Encode serializes the PDU.
 func (p *AAssociateRJ) Encode() ([]byte, error) {
 	body := []byte{0x00, p.Result, p.Source, p.ReasonDiagnostic}
-	return encodeHeader(TypeAAssociateRJ, body), nil
+	return encodeHeader(TypeAAssociateRJ, body)
 }
 
 // DecodeAAssociateRJ parses an A-ASSOCIATE-RJ PDU.
@@ -366,11 +379,17 @@ func encodeUserInformation(ui UserInformation) ([]byte, error) {
 	}
 	maxLen := make([]byte, 4)
 	binary.BigEndian.PutUint32(maxLen, ui.MaxLength)
-	var data []byte
-	data = append(data, encodeItem(ItemMaxLength, maxLen)...)
-	data = append(data, encodeItem(ItemImplementationClassUID, []byte(ui.ImplementationClassUID))...)
+	data, err := appendItem(nil, ItemMaxLength, maxLen)
+	if err != nil {
+		return nil, err
+	}
+	if data, err = appendItem(data, ItemImplementationClassUID, []byte(ui.ImplementationClassUID)); err != nil {
+		return nil, err
+	}
 	if ui.ImplementationVersionName != "" {
-		data = append(data, encodeItem(ItemImplementationVersion, []byte(ui.ImplementationVersionName))...)
+		if data, err = appendItem(data, ItemImplementationVersion, []byte(ui.ImplementationVersionName)); err != nil {
+			return nil, err
+		}
 	}
 	for _, role := range ui.RoleSelections {
 		item, err := encodeRoleSelection(role)
@@ -393,7 +412,7 @@ func encodeUserInformation(ui UserInformation) ([]byte, error) {
 		}
 		data = append(data, item...)
 	}
-	return encodeItem(ItemUserInformation, data), nil
+	return encodeItem(ItemUserInformation, data)
 }
 
 func decodeUserInformation(data []byte) (UserInformation, error) {
@@ -444,6 +463,9 @@ func encodeRoleSelection(role RoleSelection) ([]byte, error) {
 		return nil, fmt.Errorf("pdu: SCU and SCP roles cannot both be false for %q", role.SOPClassUID)
 	}
 	uid := []byte(role.SOPClassUID)
+	if len(uid) > maxItemLength {
+		return nil, errTooLong("role selection SOP Class UID", len(uid), maxItemLength)
+	}
 	body := make([]byte, 2+len(uid)+2)
 	binary.BigEndian.PutUint16(body[0:2], uint16(len(uid)))
 	copy(body[2:], uid)
@@ -453,7 +475,7 @@ func encodeRoleSelection(role RoleSelection) ([]byte, error) {
 	if role.SCPRole {
 		body[2+len(uid)+1] = 1
 	}
-	return encodeItem(ItemRoleSelection, body), nil
+	return encodeItem(ItemRoleSelection, body)
 }
 
 func decodeRoleSelection(data []byte) (RoleSelection, error) {
@@ -483,6 +505,15 @@ func encodeUserIdentityRQ(id UserIdentityRQ) ([]byte, error) {
 	if id.Type != UserIdentityUsernamePasscode {
 		sec = nil
 	}
+	// Both fields carry a credential the caller supplied — a Kerberos ticket, a
+	// SAML assertion, a JWT — and each has its own 16-bit length ahead of the
+	// item's.
+	if len(id.PrimaryField) > maxItemLength {
+		return nil, errTooLong("user identity primary field", len(id.PrimaryField), maxItemLength)
+	}
+	if len(sec) > maxItemLength {
+		return nil, errTooLong("user identity secondary field", len(sec), maxItemLength)
+	}
 	body := make([]byte, 0, 6+len(id.PrimaryField)+len(sec))
 	body = append(body, id.Type)
 	if id.PositiveResponseRequested {
@@ -498,7 +529,7 @@ func encodeUserIdentityRQ(id UserIdentityRQ) ([]byte, error) {
 	binary.BigEndian.PutUint16(slen, uint16(len(sec)))
 	body = append(body, slen...)
 	body = append(body, sec...)
-	return encodeItem(ItemUserIdentityRQ, body), nil
+	return encodeItem(ItemUserIdentityRQ, body)
 }
 
 func decodeUserIdentityRQ(data []byte) (UserIdentityRQ, error) {
@@ -526,10 +557,13 @@ func decodeUserIdentityRQ(data []byte) (UserIdentityRQ, error) {
 }
 
 func encodeUserIdentityAC(id UserIdentityAC) ([]byte, error) {
+	if len(id.ServerResponse) > maxItemLength {
+		return nil, errTooLong("user identity server response", len(id.ServerResponse), maxItemLength)
+	}
 	body := make([]byte, 2+len(id.ServerResponse))
 	binary.BigEndian.PutUint16(body[0:2], uint16(len(id.ServerResponse)))
 	copy(body[2:], id.ServerResponse)
-	return encodeItem(ItemUserIdentityAC, body), nil
+	return encodeItem(ItemUserIdentityAC, body)
 }
 
 func decodeUserIdentityAC(data []byte) (UserIdentityAC, error) {
