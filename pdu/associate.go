@@ -86,6 +86,10 @@ const (
 
 	// Source = RejectSourceServiceProviderACSE.
 	RejectReasonProtocolVersionNotSupported byte = 0x02
+
+	// Source = RejectSourceServiceProviderPres.
+	RejectReasonTemporaryCongestion byte = 0x01
+	RejectReasonLocalLimitExceeded  byte = 0x02
 )
 
 // AAssociateRQ is an A-ASSOCIATE-RQ PDU.

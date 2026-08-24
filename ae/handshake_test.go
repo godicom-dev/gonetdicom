@@ -14,6 +14,14 @@ import (
 // serveSCP starts cfg on a loopback listener and returns its address.
 func serveSCP(t *testing.T, cfg ae.ServerConfig) string {
 	t.Helper()
+	addr, _ := serveSCPCancel(t, cfg)
+	return addr
+}
+
+// serveSCPCancel is serveSCP plus the cancel func of the Serve context, for
+// tests that need to shut the server down mid-association.
+func serveSCPCancel(t *testing.T, cfg ae.ServerConfig) (string, context.CancelFunc) {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -24,7 +32,7 @@ func serveSCP(t *testing.T, cfg ae.ServerConfig) string {
 		_ = ln.Close()
 	})
 	go func() { _ = ae.Serve(ctx, ln, cfg) }()
-	return ln.Addr().String()
+	return ln.Addr().String(), cancel
 }
 
 // associateRQ builds a minimal but valid A-ASSOCIATE-RQ for calledAE.
@@ -68,14 +76,18 @@ func associate(t *testing.T, addr string, rq *pdu.AAssociateRQ) pdu.PDU {
 
 func requireReject(t *testing.T, got pdu.PDU, source, reason byte) {
 	t.Helper()
+	requireRejectResult(t, got, pdu.RejectResultPermanent, source, reason)
+}
+
+func requireRejectResult(t *testing.T, got pdu.PDU, result, source, reason byte) {
+	t.Helper()
 	rj, ok := got.(*pdu.AAssociateRJ)
 	if !ok {
 		t.Fatalf("expected A-ASSOCIATE-RJ, got %T", got)
 	}
-	if rj.Result != pdu.RejectResultPermanent || rj.Source != source || rj.ReasonDiagnostic != reason {
+	if rj.Result != result || rj.Source != source || rj.ReasonDiagnostic != reason {
 		t.Fatalf("RJ result=%d source=%d reason=%d, want %d/%d/%d",
-			rj.Result, rj.Source, rj.ReasonDiagnostic,
-			pdu.RejectResultPermanent, source, reason)
+			rj.Result, rj.Source, rj.ReasonDiagnostic, result, source, reason)
 	}
 }
 

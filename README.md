@@ -228,6 +228,15 @@ The Called AE Title is checked: a requestor asking for anything other than
 that deliberately answers to any name. A requestor that does not announce
 protocol version 1 is likewise rejected.
 
+Three `ServerConfig` fields bound what a peer can cost the SCP:
+`HandshakeTimeout` (default 30s) limits how long a connection may sit without
+completing negotiation, `IdleTimeout` ends an association whose peer goes silent
+— it is refreshed per read and write, so it bounds silence rather than total
+duration — and `MaxConcurrentAssociations` caps associations handled at once,
+answering anything above the cap with a transient *local-limit-exceeded*
+A-ASSOCIATE-RJ. `IdleTimeout` and `MaxConcurrentAssociations` are unlimited when
+unset; pass a negative `HandshakeTimeout` to opt out of that one deliberately.
+
 **Move Destination SCP (C-MOVE)**
 
 ```go

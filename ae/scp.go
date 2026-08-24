@@ -118,6 +118,29 @@ type ServerConfig struct {
 	// TLS, when non-nil, wraps accepted connections with TLS (use with ServeTLS
 	// or a tls.Listener). Ignored by Serve on a plain listener.
 	TLS *tls.Config
+	// HandshakeTimeout bounds association negotiation: how long a connection may
+	// take to send its A-ASSOCIATE-RQ and receive the reply. 0 uses
+	// DefaultHandshakeTimeout, negative means no limit.
+	//
+	// Unlike IdleTimeout this defaults to a real value, because a connection that
+	// has not associated yet costs a goroutine and a socket while having proved
+	// nothing: without a bound, opening connections and staying silent is enough
+	// to exhaust the server.
+	HandshakeTimeout time.Duration
+	// IdleTimeout bounds each PDU read and write on an established association.
+	// 0 (the default) means no limit.
+	//
+	// The deadline is per read/write, so it measures silence rather than total
+	// association lifetime: an association exchanging PDUs stays up indefinitely,
+	// one whose peer stops talking (or stops reading) ends after IdleTimeout.
+	IdleTimeout time.Duration
+	// MaxConcurrentAssociations caps how many associations are handled at once.
+	// 0 (the default) means no limit.
+	//
+	// A connection arriving while the cap is reached is rejected with a transient
+	// A-ASSOCIATE-RJ (local-limit-exceeded), which tells the requestor to retry
+	// later; closing the connection would leave it guessing.
+	MaxConcurrentAssociations int
 	// Logger receives SCP lifecycle and debug events.
 	// Nil falls back to context (WithLogger) then DiscardHandler (quiet).
 	Logger *slog.Logger
@@ -136,6 +159,15 @@ func (c ServerConfig) withDefaults() ServerConfig {
 	if c.ImplementationVersionName == "" {
 		c.ImplementationVersionName = ImplementationVersionName
 	}
+	switch {
+	case c.HandshakeTimeout == 0:
+		c.HandshakeTimeout = DefaultHandshakeTimeout
+	case c.HandshakeTimeout < 0:
+		c.HandshakeTimeout = 0 // explicitly unbounded
+	}
+	if c.IdleTimeout < 0 {
+		c.IdleTimeout = 0
+	}
 	return c
 }
 
@@ -143,10 +175,12 @@ func (c ServerConfig) logger(ctx context.Context) *slog.Logger {
 	return resolveAELogger(ctx, c.Logger)
 }
 
-// Serve accepts associations on ln until ctx is cancelled.
+// Serve accepts associations on ln until ctx is cancelled. Cancelling closes
+// the listener and every association still running.
 func Serve(ctx context.Context, ln net.Listener, cfg ServerConfig) error {
 	cfg = cfg.withDefaults()
 	ctx = gonetdicom.LoggerContext(ctx, cfg.Logger, gonetdicom.ComponentSCP)
+	limiter := newAssocLimiter(cfg.MaxConcurrentAssociations)
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
@@ -165,6 +199,11 @@ func Serve(ctx context.Context, ln net.Listener, cfg ServerConfig) error {
 			cfg.logger(ctx).Info("scp accepted connection",
 				gonetdicom.AttrRemote, c.RemoteAddr().String(),
 			)
+			if !limiter.acquire() {
+				_ = rejectOverloaded(ctx, c, cfg)
+				return
+			}
+			defer limiter.release()
 			_ = handleAssociation(ctx, c, cfg)
 		}(conn)
 	}
@@ -189,6 +228,13 @@ func ListenAndServeTLS(ctx context.Context, addr string, cfg ServerConfig) error
 func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) error {
 	defer func() { _ = conn.Close() }()
 	ctx = gonetdicom.LoggerContext(ctx, cfg.Logger, gonetdicom.ComponentSCP)
+	defer closeOnDone(ctx, conn)()
+
+	// Negotiation runs under one deadline covering the whole handshake; it is
+	// cleared before the association proper starts.
+	if cfg.HandshakeTimeout > 0 {
+		_ = conn.SetDeadline(time.Now().Add(cfg.HandshakeTimeout))
+	}
 
 	raw, err := readPDUConn(ctx, conn)
 	if err != nil {
@@ -314,6 +360,13 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 	if err := writePDUConn(ctx, conn, ac); err != nil {
 		return err
 	}
+
+	// Negotiation is over: drop its deadline and let IdleTimeout (if any) govern
+	// the association from here on.
+	if cfg.HandshakeTimeout > 0 {
+		_ = conn.SetDeadline(time.Time{})
+	}
+	conn = withIdleTimeout(conn, cfg.IdleTimeout)
 
 	peerMax := rq.UserInformation.MaxLength
 	// One reader owns the read side from here on; Close must run before the
