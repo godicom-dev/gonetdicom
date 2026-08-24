@@ -328,12 +328,29 @@ bulk, err := client.RetrieveBulkData(ctx, studyUID, seriesUID, sopUID)
 matches, err := client.SearchStudies(ctx, url.Values{"PatientID": {"P001"}})
 ```
 
+UIDs are checked before a request is built: a study, series, or instance UID
+carrying a `/`, a `..`, or a `%` names a resource other than the one asked for, so
+it fails with `dicomweb.ErrInvalidPath` instead of going out.
+
+Both sides bound how much one body may buffer, since instances are held whole in
+memory. `Client.MaxResponseBytes` (or `dicomweb.WithMaxResponseBytes`) defaults to
+`dicomweb.DefaultMaxResponseBytes` (1 GiB) and fails with `dicomweb.ErrTooLarge`
+rather than returning a truncated study; a negative value opts out.
+
 Origin-server MVP for tests and demos:
 
 ```go
 store := dicomweb.NewMemoryStore()
-http.ListenAndServe(":8080", dicomweb.Handler(store, "/dicom-web"))
+http.ListenAndServe(":8080", dicomweb.Handler(store, "/dicom-web",
+	dicomweb.WithMaxRequestBytes(64<<20)))
 ```
+
+A STOW-RS body is buffered whole before it reaches the `Store`, so `Handler`
+bounds it at `dicomweb.DefaultMaxRequestBytes` (256 MiB) unless
+`WithMaxRequestBytes` says otherwise, answering anything larger with 413. Error
+responses carry only a status and a fixed reason — the cause comes from your
+`Store`, from decoding stored bytes, or from the render path, and goes to the
+request context's logger (`gonetdicom.WithLogger`) instead of to the requestor.
 
 ## Logging
 

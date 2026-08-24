@@ -3,7 +3,6 @@ package dicomweb
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 
@@ -78,7 +77,7 @@ func (c *Client) search(ctx context.Context, path string, query url.Values) ([]*
 	if resp.StatusCode == http.StatusNoContent {
 		return nil, nil
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := readAll(resp.Body, c.maxResponseBytes())
 	if err != nil {
 		return nil, err
 	}

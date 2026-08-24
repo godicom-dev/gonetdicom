@@ -11,6 +11,7 @@ import (
 
 	"github.com/godicom-dev/godicom"
 	"github.com/godicom-dev/godicom/dicomjson"
+	"github.com/godicom-dev/gonetdicom"
 )
 
 // Store is the origin-server backing store for the Studies Service.
@@ -247,19 +248,76 @@ func mapValues(m map[string]*godicom.Dataset) []*godicom.Dataset {
 // ErrNotFound is returned when a resource is missing.
 var ErrNotFound = fmt.Errorf("dicomweb: not found")
 
+// HandlerOption configures a Handler.
+type HandlerOption func(*handlerOptions)
+
+type handlerOptions struct {
+	maxRequestBytes int64
+}
+
+// maxBytes resolves the request bound: unset means DefaultMaxRequestBytes, and a
+// negative value means the caller asked for no bound at all.
+func (o handlerOptions) maxBytes() int64 {
+	if o.maxRequestBytes == 0 {
+		return DefaultMaxRequestBytes
+	}
+	return o.maxRequestBytes
+}
+
+// WithMaxRequestBytes bounds one STOW-RS request body. Zero keeps
+// DefaultMaxRequestBytes; a negative n removes the bound, which makes this
+// server's memory use a function of what an unauthenticated client chooses to
+// post.
+func WithMaxRequestBytes(n int64) HandlerOption {
+	return func(o *handlerOptions) { o.maxRequestBytes = n }
+}
+
+// respondError answers the request and logs why.
+//
+// msg is all the requestor is told. Handler serves whoever connects to it, while
+// the errors here come from a Store implementation, from godicom decoding stored
+// bytes, or from the render path — text built out of server state: a filesystem
+// path, a DSN, an upstream URL, the contents of a stored instance. Only a message
+// this package composed from the request itself is safe to hand back, so the
+// detail goes to the log instead.
+//
+// The log target is the request context's logger, so install one with
+// gonetdicom.WithLogger from a middleware or http.Server.BaseContext.
+func respondError(w http.ResponseWriter, r *http.Request, op, msg string, code int, err error) {
+	gonetdicom.LoggerFromContext(r.Context()).
+		With(gonetdicom.AttrComponent, gonetdicom.ComponentDICOMweb).
+		ErrorContext(r.Context(), op,
+			gonetdicom.AttrMethod, r.Method,
+			gonetdicom.AttrURL, r.URL.Path,
+			gonetdicom.AttrHTTPStatus, code,
+			"err", err)
+	http.Error(w, msg, code)
+}
+
 // Handler returns an http.Handler for the Studies Service under the given prefix
 // (e.g. "/dicom-web" or ""). Trailing slashes are ignored.
-func Handler(store Store, prefix string) http.Handler {
+//
+// Request bodies are bounded (see WithMaxRequestBytes) and an error response
+// carries only its status and a fixed reason; the cause is logged. See
+// respondError.
+func Handler(store Store, prefix string, opts ...HandlerOption) http.Handler {
 	prefix = strings.TrimRight(prefix, "/")
+	var cfg handlerOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	maxBytes := cfg.maxBytes()
 	mux := http.NewServeMux()
 
 	mux.HandleFunc(prefix+"/studies", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			matches, err := store.SearchStudies(r.URL.Query())
-			writeQIDO(w, matches, err)
+			writeQIDO(w, r, matches, err)
 		case http.MethodPost:
-			handleSTOW(w, r, store, "")
+			handleSTOW(w, r, store, "", maxBytes)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -269,7 +327,7 @@ func Handler(store Store, prefix string) http.Handler {
 		parts := splitPath(path)
 		switch {
 		case r.Method == http.MethodPost && len(parts) == 1:
-			handleSTOW(w, r, store, parts[0])
+			handleSTOW(w, r, store, parts[0], maxBytes)
 
 		// GET /studies/{study}
 		case r.Method == http.MethodGet && len(parts) == 1:
@@ -280,11 +338,11 @@ func Handler(store Store, prefix string) http.Handler {
 		// GET /studies/{study}/series
 		case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "series":
 			matches, err := store.SearchSeries(parts[0], r.URL.Query())
-			writeQIDO(w, matches, err)
+			writeQIDO(w, r, matches, err)
 		// GET /studies/{study}/instances
 		case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "instances":
 			matches, err := store.SearchInstances(parts[0], "", r.URL.Query())
-			writeQIDO(w, matches, err)
+			writeQIDO(w, r, matches, err)
 		// GET /studies/{study}/series/{series}
 		case r.Method == http.MethodGet && len(parts) == 3 && parts[1] == "series":
 			handleWADOMany(w, r, store, parts[0], parts[2])
@@ -294,7 +352,7 @@ func Handler(store Store, prefix string) http.Handler {
 		// GET /studies/{study}/series/{series}/instances
 		case r.Method == http.MethodGet && len(parts) == 4 && parts[1] == "series" && parts[3] == "instances":
 			matches, err := store.SearchInstances(parts[0], parts[2], r.URL.Query())
-			writeQIDO(w, matches, err)
+			writeQIDO(w, r, matches, err)
 		// GET /studies/{study}/series/{series}/instances/{instance}
 		case r.Method == http.MethodGet && len(parts) == 5 && parts[1] == "series" && parts[3] == "instances":
 			handleWADOInstance(w, r, store, parts[0], parts[2], parts[4])
@@ -322,9 +380,9 @@ func splitPath(path string) []string {
 	return strings.Split(path, "/")
 }
 
-func writeQIDO(w http.ResponseWriter, matches []*godicom.Dataset, err error) {
+func writeQIDO(w http.ResponseWriter, r *http.Request, matches []*godicom.Dataset, err error) {
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondError(w, r, "qido: search", "search failed", http.StatusInternalServerError, err)
 		return
 	}
 	if len(matches) == 0 {
@@ -333,28 +391,48 @@ func writeQIDO(w http.ResponseWriter, matches []*godicom.Dataset, err error) {
 	}
 	body, err := dicomjson.MarshalDatasets(matches)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondError(w, r, "qido: marshal matches", "search failed", http.StatusInternalServerError, err)
 		return
 	}
 	w.Header().Set("Content-Type", MediaTypeDICOMJSON)
 	_, _ = w.Write(body)
 }
 
-func handleSTOW(w http.ResponseWriter, r *http.Request, store Store, studyUID string) {
-	parts, err := readDICOMParts(r.Body, r.Header.Get("Content-Type"))
+func handleSTOW(w http.ResponseWriter, r *http.Request, store Store, studyUID string, maxBytes int64) {
+	// The body is buffered whole and then handed to a Store that usually copies it,
+	// so its size is this server's memory use, decided by whoever posted it.
+	// Content-Length is checked first because it costs nothing and catches the
+	// honest client; MaxBytesReader catches the one that lies or sends chunked.
+	body := r.Body
+	if maxBytes > 0 {
+		if r.ContentLength > maxBytes {
+			respondError(w, r, "stow: request body", "request body too large", http.StatusRequestEntityTooLarge,
+				fmt.Errorf("%w: Content-Length %d over %d", ErrTooLarge, r.ContentLength, maxBytes))
+			return
+		}
+		body = http.MaxBytesReader(w, r.Body, maxBytes)
+	}
+	parts, err := readDICOMParts(body, r.Header.Get("Content-Type"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) || errors.Is(err, ErrTooLarge) {
+			respondError(w, r, "stow: request body", "request body too large", http.StatusRequestEntityTooLarge, err)
+			return
+		}
+		// This message describes the request's own Content-Type and multipart
+		// framing, which is the requestor's to fix and holds nothing of ours.
+		respondError(w, r, "stow: read parts", err.Error(), http.StatusBadRequest, err)
 		return
 	}
 	var refs []*godicom.Dataset
 	for _, part := range parts {
 		if err := store.PutInstance(studyUID, part); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			respondError(w, r, "stow: put instance", "instance rejected", http.StatusBadRequest, err)
 			return
 		}
 		fd, err := godicom.ReadBytes(part, nil)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			respondError(w, r, "stow: read stored instance", "instance rejected", http.StatusBadRequest, err)
 			return
 		}
 		ref := godicom.NewDataset()
@@ -366,14 +444,14 @@ func handleSTOW(w http.ResponseWriter, r *http.Request, store Store, studyUID st
 		}
 		refs = append(refs, ref)
 	}
-	body, err := dicomjson.MarshalDatasets(refs)
+	out, err := dicomjson.MarshalDatasets(refs)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondError(w, r, "stow: marshal response", "store failed", http.StatusInternalServerError, err)
 		return
 	}
 	w.Header().Set("Content-Type", MediaTypeDICOMJSON)
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	_, _ = w.Write(out)
 }
 
 func handleWADOMany(w http.ResponseWriter, r *http.Request, store Store, study, series string) {
@@ -383,7 +461,7 @@ func handleWADOMany(w http.ResponseWriter, r *http.Request, store Store, study, 
 			http.NotFound(w, r)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondError(w, r, "wado: list instances", "retrieve failed", http.StatusInternalServerError, err)
 		return
 	}
 	_ = writeDICOMParts(w, parts)
@@ -396,21 +474,21 @@ func handleWADOManyMetadata(w http.ResponseWriter, r *http.Request, store Store,
 			http.NotFound(w, r)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondError(w, r, "wado: list instances", "retrieve failed", http.StatusInternalServerError, err)
 		return
 	}
 	var metas []*godicom.Dataset
 	for _, part := range parts {
 		fd, err := godicom.ReadBytes(part, nil)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			respondError(w, r, "wado: read stored instance", "retrieve failed", http.StatusInternalServerError, err)
 			return
 		}
 		metas = append(metas, fd.Dataset)
 	}
 	body, err := marshalManyMetadata(metas, prefix, study, series)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondError(w, r, "wado: marshal metadata", "retrieve failed", http.StatusInternalServerError, err)
 		return
 	}
 	w.Header().Set("Content-Type", MediaTypeDICOMJSON)
@@ -424,7 +502,7 @@ func handleWADOInstance(w http.ResponseWriter, r *http.Request, store Store, stu
 			http.NotFound(w, r)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondError(w, r, "wado: get instance", "retrieve failed", http.StatusInternalServerError, err)
 		return
 	}
 	accept := r.Header.Get("Accept")
@@ -443,17 +521,17 @@ func handleWADOMetadata(w http.ResponseWriter, r *http.Request, store Store, pre
 			http.NotFound(w, r)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondError(w, r, "wado: get instance", "retrieve failed", http.StatusInternalServerError, err)
 		return
 	}
 	fd, err := godicom.ReadBytes(raw, nil)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondError(w, r, "wado: read stored instance", "retrieve failed", http.StatusInternalServerError, err)
 		return
 	}
 	body, err := marshalInstanceMetadata(fd.Dataset, BulkDataURI(prefix, study, series, instance))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondError(w, r, "wado: marshal metadata", "retrieve failed", http.StatusInternalServerError, err)
 		return
 	}
 	w.Header().Set("Content-Type", MediaTypeDICOMJSON)
@@ -467,13 +545,15 @@ func handleWADORendered(w http.ResponseWriter, r *http.Request, store Store, stu
 			http.NotFound(w, r)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondError(w, r, "wado: get instance", "retrieve failed", http.StatusInternalServerError, err)
 		return
 	}
 	opts := parseRenderOptions(r.Header.Get("Accept"), r.URL.Query())
 	mediaType, body, err := RenderInstance(raw, opts)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotAcceptable)
+		// The reason is a property of the stored instance — its transfer syntax, its
+		// frame count, its photometric interpretation — not of the request.
+		respondError(w, r, "wado: render instance", "cannot render this instance as requested", http.StatusNotAcceptable, err)
 		return
 	}
 	w.Header().Set("Content-Type", mediaType)
@@ -487,12 +567,12 @@ func handleWADOBulkData(w http.ResponseWriter, r *http.Request, store Store, stu
 			http.NotFound(w, r)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondError(w, r, "wado: get instance", "retrieve failed", http.StatusInternalServerError, err)
 		return
 	}
 	bulk, err := ExtractPixelBulkData(raw)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		respondError(w, r, "wado: extract bulk data", "no bulk data for this instance", http.StatusNotFound, err)
 		return
 	}
 	w.Header().Set("Content-Type", MediaTypeOctetStream)

@@ -3,7 +3,6 @@ package dicomweb
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -136,7 +135,7 @@ func (c *Client) RetrieveRenderedInstance(ctx context.Context, studyUID, seriesU
 	if err := checkStatus(resp, http.StatusOK); err != nil {
 		return "", nil, err
 	}
-	body, err = io.ReadAll(resp.Body)
+	body, err = readAll(resp.Body, c.maxResponseBytes())
 	if err != nil {
 		return "", nil, err
 	}
@@ -170,7 +169,7 @@ func (c *Client) RetrieveBulkData(ctx context.Context, studyUID, seriesUID, inst
 	if err := checkStatus(resp, http.StatusOK); err != nil {
 		return nil, err
 	}
-	return io.ReadAll(resp.Body)
+	return readAll(resp.Body, c.maxResponseBytes())
 }
 
 func urlValuesFrameQuality(opts RenderOptions) string {
@@ -199,7 +198,7 @@ func (c *Client) retrieveMany(ctx context.Context, url string) ([][]byte, error)
 	if err := checkStatus(resp, http.StatusOK); err != nil {
 		return nil, err
 	}
-	return readDICOMParts(resp.Body, resp.Header.Get("Content-Type"))
+	return readDICOMParts(capReader(resp.Body, c.maxResponseBytes()), resp.Header.Get("Content-Type"))
 }
 
 func (c *Client) retrieveMetadata(ctx context.Context, url string) ([]*godicom.Dataset, error) {
@@ -217,7 +216,7 @@ func (c *Client) retrieveMetadata(ctx context.Context, url string) ([]*godicom.D
 	if err := checkStatus(resp, http.StatusOK); err != nil {
 		return nil, err
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := readAll(resp.Body, c.maxResponseBytes())
 	if err != nil {
 		return nil, err
 	}

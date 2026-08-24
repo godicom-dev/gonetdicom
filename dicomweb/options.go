@@ -38,6 +38,17 @@ func WithTLSConfig(cfg *tls.Config) ClientOption {
 	}
 }
 
+// WithMaxResponseBytes bounds how much of one response body a call reads before
+// failing with ErrTooLarge. Zero keeps DefaultMaxResponseBytes; a negative n
+// reads without a bound, which leaves the peer deciding how much memory the
+// process uses.
+func WithMaxResponseBytes(n int64) ClientOption {
+	return func(c *Client) error {
+		c.MaxResponseBytes = n
+		return nil
+	}
+}
+
 // WithLogger sets the slog logger for request diagnostics.
 // Nil falls back to context (gonetdicom.WithLogger) then DiscardHandler.
 func WithLogger(log *slog.Logger) ClientOption {
