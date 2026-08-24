@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Robustness audit of the wire decoders, the SCP association lifecycle and the
+DICOMweb handlers ([#39](https://github.com/godicom-dev/gonetdicom/issues/39)).
+No exported symbol was removed; three behaviour changes are listed under Changed.
+
+### Security
+- `pdu.Read` no longer sizes its buffer from the declared length, where six bytes
+  from an unauthenticated peer bought a 4 GiB allocation: a 16 MiB
+  `MaxPDUReadLength` backstop with `ErrPDUTooLarge`, `ReadLimit` for a tighter
+  bound, and a chunked read that grows with bytes actually received
+- SCP resource limits, none of which existed: `ServerConfig.HandshakeTimeout`
+  (30s by default), `IdleTimeout` (refreshed per read and per write, so it
+  measures silence rather than duration) and `MaxConcurrentAssociations` (over
+  the cap the peer gets an A-ASSOCIATE-RJ, not a bare close). `Serve` also closes
+  in-flight connections when its context is cancelled
+- SCP validates the Called AE Title and the Protocol Version during negotiation
+  instead of accepting whatever arrives, and rejects an empty Calling AE Title —
+  which used to make the SCP fail while encoding its own A-ASSOCIATE-AC and drop
+  the connection with no explanation
+- WADO-RS multipart boundaries are per-response and random. The boundary was
+  hard-coded, so an instance containing that delimiter line ended the body early:
+  HTTP 200 with silently truncated data
+- DICOMweb path segments are validated (`ErrInvalidPath`), request and response
+  bodies are bounded (`DefaultMaxRequestBytes`, `DefaultMaxResponseBytes`,
+  `WithMaxRequestBytes`, `WithMaxResponseBytes`, `ErrTooLarge`), and handler
+  errors no longer echo store internals to the client
+- 32-bit wire lengths are compared in `uint64` instead of being converted to
+  `int`. Where `int` is 32 bits wide a DIMSE Value Length of `0xFFFFFFF8` came
+  out negative, passed its bounds check and panicked the decoder from 8 bytes; a
+  PDV item length of `0x7FFFFFFF` did the same from 20. Not reachable in a
+  released build, since godicom does not compile for a 32-bit target either
+
+### Fixed
+- One reader per SCP association. Cancel detection read the connection directly
+  under a 2 ms deadline, so a C-CANCEL-RQ split across TCP segments was consumed
+  and discarded and the next read landed mid-PDU, after which the SCP could block
+  forever on an open connection. Removing the per-response deadline also made
+  600 C-FIND matches stream in ~20 ms instead of ~1.5 s
+- The SCP dispatches on the Command Field rather than trying each `Decode*RQ` in
+  turn: a command set carrying no (0000,0100) satisfied all of them and was
+  handled as a C-ECHO. A C-CANCEL-RQ arriving after its operation finished is
+  logged and ignored instead of aborting the association
+- Presentation-context-IDs are assigned without collisions and validated before
+  anything is sent (`ErrPresentationContexts`, `MaxPresentationContexts`). The
+  old `id = 2*i+1` overflowed a byte past the 128th context and ignored IDs the
+  caller had set, proposing one ID twice
+- `CStore` no longer writes the SOP Instance UID it generates into the caller's
+  `Dataset`, which made a reused Dataset send every instance under one identity
+- Message IDs are atomic, and `Abort` no longer clears the connection out from
+  under a blocked reader — aborting a blocked C-FIND panicked on a nil `net.Conn`
+- `pdu` refuses to encode a value its length field cannot describe (`ErrTooLong`)
+  rather than writing a truncated length
+
+### Changed
+- **A requested `Priority` of MEDIUM is sent as MEDIUM.** MEDIUM encodes as
+  0x0000, and every SCU verb read that zero as "unset" and substituted LOW, so
+  MEDIUM was the one priority the API could not express. An unset `Priority` now
+  means MEDIUM; pass `dimse.PriorityLow` to deprioritise a request
+- **An SCP answers only to its own AE title.** Set
+  `ServerConfig.AllowAnyCalledAETitle`, or list the titles it should answer to in
+  `AlternativeAETitles`, for the previous behaviour
+- **`pdu.Read` rejects a PDU declaring more than `MaxPDUReadLength` (16 MiB).**
+- `ae.AllStorageSOPClasses` is built from `godicom/uid` constants instead of UID
+  strings with names in trailing comments, five of which disagreed with the UID
+  beside them. The exported list is byte-identical: same 170 entries, same order
+- Named constants for the A-ASSOCIATE-RJ result / source / reason bytes and the
+  protocol version bit (`pdu.RejectResultPermanent`,
+  `pdu.RejectSourceServiceUser`, `pdu.RejectReasonCalledAENotRecognized`,
+  `pdu.ProtocolVersion1`, …)
+
+### Added
+- `ae.UIDStrings` converts `uid.UID` values to the `[]string` the abstract-syntax
+  and transfer-syntax fields hold, so callers can name a SOP class instead of
+  pasting its UID
+- Fuzz targets over the unauthenticated wire path — `pdu.FuzzRead`,
+  `pdu.FuzzDecodePDataTF`, `dimse.FuzzDecodeElements`,
+  `dimse.FuzzCommandDecoders` — asserting encode/decode round-trip byte identity
+  and full byte accounting, not just the absence of panics
+- CI runs ubuntu/windows/macos against Go 1.26 and 1.27, tests `./pdu ./dimse
+  ./status` on linux/386, and fuzzes each target for 60s per run
+
 ## [0.15.0] - 2026-08-13
 
 ### Added
