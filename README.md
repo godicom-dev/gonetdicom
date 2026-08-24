@@ -222,6 +222,12 @@ err = ae.Serve(ctx, ln, ae.ServerConfig{
 syntax. Named DIMSE status constants live in package
 [`status`](https://pkg.go.dev/github.com/godicom-dev/gonetdicom/status).
 
+The Called AE Title is checked: a requestor asking for anything other than
+`AETitle` (or an entry in `AlternativeAETitles`) gets an A-ASSOCIATE-RJ with
+*called-AE-title-not-recognized*. Set `AllowAnyCalledAETitle: true` for an SCP
+that deliberately answers to any name. A requestor that does not announce
+protocol version 1 is likewise rejected.
+
 **Move Destination SCP (C-MOVE)**
 
 ```go

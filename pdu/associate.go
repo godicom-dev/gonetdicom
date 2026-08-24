@@ -52,6 +52,42 @@ type UserInformation struct {
 	UserIdentityAC            *UserIdentityAC // A-ASSOCIATE-AC only
 }
 
+// ProtocolVersion1 is bit 0 of the Protocol-version field, identifying DICOM
+// Upper Layer protocol version 1 — the only version defined.
+//
+// The field is a bit field with one bit per version (PS3.8 9.3.2), so an
+// acceptor tests bit 0 rather than comparing the whole field: a requestor that
+// also announces some future version still speaks version 1.
+const ProtocolVersion1 uint16 = 0x0001
+
+// A-ASSOCIATE-RJ Result values (PS3.8 Table 9-21).
+const (
+	RejectResultPermanent byte = 0x01
+	RejectResultTransient byte = 0x02
+)
+
+// A-ASSOCIATE-RJ Source values (PS3.8 Table 9-21). The Source decides how the
+// Reason/Diag byte is interpreted.
+const (
+	RejectSourceServiceUser         byte = 0x01 // DICOM UL service-user
+	RejectSourceServiceProviderACSE byte = 0x02 // service-provider, ACSE related
+	RejectSourceServiceProviderPres byte = 0x03 // service-provider, presentation related
+)
+
+// A-ASSOCIATE-RJ Reason/Diag values (PS3.8 Table 9-21), grouped by the Source
+// they belong to. Values repeat across sources, so pick the one matching the
+// Source being sent.
+const (
+	// Source = RejectSourceServiceUser.
+	RejectReasonNoReasonGiven          byte = 0x01
+	RejectReasonAppContextNotSupported byte = 0x02
+	RejectReasonCallingAENotRecognized byte = 0x03
+	RejectReasonCalledAENotRecognized  byte = 0x07
+
+	// Source = RejectSourceServiceProviderACSE.
+	RejectReasonProtocolVersionNotSupported byte = 0x02
+)
+
 // AAssociateRQ is an A-ASSOCIATE-RQ PDU.
 type AAssociateRQ struct {
 	ProtocolVersion        uint16

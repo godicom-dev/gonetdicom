@@ -42,7 +42,7 @@ func TestDial_DebugLogsPDUAndDIMSE(t *testing.T) {
 	assoc, err := ae.Dial(dialCtx, ae.Config{
 		AETitle: "DBGSCU",
 		Logger:  logger,
-	}, ln.Addr().String(), "DBGSCP")
+	}, ln.Addr().String(), "DBG SCP")
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

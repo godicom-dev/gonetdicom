@@ -76,6 +76,18 @@ type ServerConfig struct {
 	MaxPDULength              uint32
 	ImplementationClassUID    string
 	ImplementationVersionName string
+	// AlternativeAETitles are further Called AE Titles this SCP answers to,
+	// for an SCP published under more than one name.
+	AlternativeAETitles []string
+	// AllowAnyCalledAETitle accepts an association whatever Called AE Title the
+	// requestor asked for.
+	//
+	// By default the Called AE Title must be AETitle or one of
+	// AlternativeAETitles; anything else is rejected with A-ASSOCIATE-RJ
+	// (called-AE-title-not-recognized). Set this only for a deliberately
+	// promiscuous SCP — accepting any name makes it impossible for a peer to
+	// detect that it is talking to the wrong endpoint.
+	AllowAnyCalledAETitle bool
 	// AcceptedAbstractSyntaxes lists SOP Class UIDs the SCP will accept
 	// (plus Verification is always accepted for C-ECHO). Prefer
 	// AllStorageSOPClasses for a generic Storage SCP (pynetdicom
@@ -188,14 +200,21 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 		return fmt.Errorf("ae: expected A-ASSOCIATE-RQ, got %T", raw)
 	}
 
+	if err := checkProtocolVersion(ctx, conn, cfg, rq); err != nil {
+		return err
+	}
+	if err := checkAETitles(ctx, conn, cfg, rq); err != nil {
+		return err
+	}
+
 	var userIdentityAC *pdu.UserIdentityAC
 	if rq.UserInformation.UserIdentityRQ != nil && cfg.OnUserIdentity != nil {
 		ok, resp := cfg.OnUserIdentity(*rq.UserInformation.UserIdentityRQ)
 		if !ok {
 			_ = writePDUConn(ctx, conn, &pdu.AAssociateRJ{
-				Result:           0x02, // transient
-				Source:           0x02, // ACSE
-				ReasonDiagnostic: 0x01, // no reason given (pynetdicom)
+				Result:           pdu.RejectResultTransient,
+				Source:           pdu.RejectSourceServiceProviderACSE,
+				ReasonDiagnostic: pdu.RejectReasonNoReasonGiven, // pynetdicom
 			})
 			return fmt.Errorf("%w: user identity verification failed", ErrRejected)
 		}
@@ -275,8 +294,13 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 	}
 
 	ac := &pdu.AAssociateAC{
+		// The two AE title fields are reserved in an A-ASSOCIATE-AC: PS3.8 has
+		// them sent back exactly as received and not tested by the receiver.
+		// Substituting cfg.AETitle here would look more informative and be less
+		// conformant; the Called AE Title is validated above instead.
 		CalledAETitle:          rq.CalledAETitle,
 		CallingAETitle:         rq.CallingAETitle,
+		ProtocolVersion:        pdu.ProtocolVersion1,
 		ApplicationContextName: rq.ApplicationContextName,
 		PresentationContexts:   acContexts,
 		UserInformation: pdu.UserInformation{
