@@ -879,13 +879,9 @@ func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg Server
 			}
 			payload = encoded
 		}
-		priority := store.Priority
-		if priority == 0 {
-			priority = dimse.PriorityLow
-		}
 		cmd, err := (&dimse.CStoreRQ{
 			MessageID:                            storeMsgID,
-			Priority:                             priority,
+			Priority:                             store.Priority,
 			AffectedSOPClassUID:                  store.AffectedSOPClassUID,
 			AffectedSOPInstanceUID:               store.AffectedSOPInstanceUID,
 			MoveOriginatorApplicationEntityTitle: store.MoveOriginatorApplicationEntityTitle,

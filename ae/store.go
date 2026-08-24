@@ -31,7 +31,9 @@ type StoreRequest struct {
 	Data                                 *godicom.Dataset
 	FileMeta                             *godicom.FileMetaDataset
 	TransferSyntax                       string
-	Priority                             uint16 // 0 defaults to PriorityLow
+	// Priority requests a service priority from the peer, which may ignore it.
+	// The zero value is dimse.PriorityMedium — normal priority.
+	Priority                             uint16
 	MoveOriginatorApplicationEntityTitle string
 	MoveOriginatorMessageID              uint16
 }
@@ -76,14 +78,10 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 		return nil, fmt.Errorf("ae: C-STORE missing dataset")
 	}
 
-	priority := req.Priority
-	if priority == 0 {
-		priority = dimse.PriorityLow
-	}
 	msgID := a.nextMessageID()
 	cmd, err := (&dimse.CStoreRQ{
 		MessageID:                            msgID,
-		Priority:                             priority,
+		Priority:                             req.Priority,
 		AffectedSOPClassUID:                  req.AffectedSOPClassUID,
 		AffectedSOPInstanceUID:               req.AffectedSOPInstanceUID,
 		MoveOriginatorApplicationEntityTitle: req.MoveOriginatorApplicationEntityTitle,
