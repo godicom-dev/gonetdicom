@@ -182,20 +182,16 @@ func AcceptFromConn(ctx context.Context, cfg Config, conn net.Conn, calledAE str
 }
 
 func (a *Association) negotiate(ctx context.Context) error {
-	pcs := make([]pdu.PresentationContextRQ, 0, len(a.cfg.PresentationContexts))
-	byID := make(map[byte]PresentationContext, len(a.cfg.PresentationContexts))
-	for i, pc := range a.cfg.PresentationContexts {
-		id := pc.ID
-		if id == 0 {
-			id = byte(2*i + 1) // odd IDs: 1,3,5,...
-		}
-		if len(pc.TransferSyntaxes) == 0 {
-			pc.TransferSyntaxes = []string{pdu.ImplicitVRLittleEndian}
-		}
-		pc.ID = id
-		byID[id] = pc
+	proposed, err := buildPresentationContexts(a.cfg.PresentationContexts)
+	if err != nil {
+		return err
+	}
+	pcs := make([]pdu.PresentationContextRQ, 0, len(proposed))
+	byID := make(map[byte]PresentationContext, len(proposed))
+	for _, pc := range proposed {
+		byID[pc.ID] = pc
 		pcs = append(pcs, pdu.PresentationContextRQ{
-			ID:               id,
+			ID:               pc.ID,
 			AbstractSyntax:   pc.AbstractSyntax,
 			TransferSyntaxes: pc.TransferSyntaxes,
 		})

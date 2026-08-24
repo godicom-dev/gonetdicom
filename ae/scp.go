@@ -682,7 +682,6 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cf
 
 	seen := map[string]struct{}{}
 	var pcs []PresentationContext
-	id := byte(1)
 	for _, s := range stores {
 		if s.AffectedSOPClassUID == "" {
 			continue
@@ -691,12 +690,12 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cf
 			continue
 		}
 		seen[s.AffectedSOPClassUID] = struct{}{}
+		// ID left unset: Dial assigns the free odd IDs. Counting up by two here
+		// wrapped back to 1 past the 128th SOP class.
 		pcs = append(pcs, PresentationContext{
-			ID:               id,
 			AbstractSyntax:   s.AffectedSOPClassUID,
 			TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian},
 		})
-		id += 2
 	}
 	if len(pcs) == 0 {
 		return fmt.Errorf("ae: C-MOVE stores missing SOP Class UID")

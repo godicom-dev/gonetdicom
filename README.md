@@ -150,6 +150,14 @@ res, err := assoc.CStore(ctx, ae.StoreRequest{
 })
 ```
 
+Leaving `ID` unset lets `Dial` assign the free odd Presentation-context-IDs,
+which is usually what you want; an explicit `ID` is kept as given. Since IDs are
+odd values in 1..255, one association carries at most
+`ae.MaxPresentationContexts` (128) of them — proposing more, an even ID, or the
+same ID twice fails with `ae.ErrPresentationContexts` rather than putting an
+ambiguous A-ASSOCIATE-RQ on the wire. To offer many storage SOP classes at once,
+negotiate in batches or narrow the list.
+
 **Query / Retrieve SCU (C-FIND / C-MOVE / C-GET)**
 
 ```go
