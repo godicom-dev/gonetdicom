@@ -150,6 +150,11 @@ res, err := assoc.CStore(ctx, ae.StoreRequest{
 })
 ```
 
+`CStore` does not modify the `Data` you hand it. With no
+`AffectedSOPInstanceUID` and no `SOPInstanceUID` in the dataset it generates a
+UID and encodes a copy carrying it, so reusing one `Dataset` across a series
+gives every instance its own identity; supplying the UID skips the copy.
+
 Leaving `ID` unset lets `Dial` assign the free odd Presentation-context-IDs,
 which is usually what you want; an explicit `ID` is kept as given. Since IDs are
 odd values in 1..255, one association carries at most
