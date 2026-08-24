@@ -292,73 +292,40 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 	}
 
 	peerMax := rq.UserInformation.MaxLength
-	return scpLoop(ctx, conn, cfg, accepted, peerMax, rq.CallingAETitle)
+	// One reader owns the read side from here on; Close must run before the
+	// deferred conn.Close so the reading goroutine cannot be left blocked.
+	r := newAssocReader(ctx, conn)
+	defer r.Close()
+	return scpLoop(ctx, conn, r, cfg, accepted, peerMax, rq.CallingAETitle)
 }
 
-func scpLoop(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, callingAE string) error {
-	var cmdBuf, dsBuf []byte
-	var cmdDone, dsDone bool
-	var pcid byte
-
-	reset := func() {
-		cmdBuf, dsBuf = nil, nil
-		cmdDone, dsDone = false, false
-		pcid = 0
-	}
-
+func scpLoop(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, callingAE string) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		raw, err := readPDUConn(ctx, conn)
-		if err != nil {
-			return err
+		it := r.next(ctx)
+		switch {
+		case it.Err != nil:
+			return it.Err
+		case it.Control != nil:
+			switch p := it.Control.(type) {
+			case *pdu.AReleaseRQ:
+				return writePDUConn(ctx, conn, &pdu.AReleaseRP{})
+			case *pdu.AAbort:
+				return nil
+			default:
+				_ = writePDUConn(ctx, conn, &pdu.AAbort{Source: 0x02, ReasonDiagnostic: 0x00})
+				return fmt.Errorf("ae: unexpected PDU %T", p)
+			}
 		}
-		switch p := raw.(type) {
-		case *pdu.PDataTF:
-			for _, pdv := range p.PDVs {
-				if pcid == 0 {
-					pcid = pdv.ContextID
-				}
-				if pdv.IsCommand() {
-					cmdBuf = append(cmdBuf, pdv.Fragment()...)
-					if pdv.IsLast() {
-						cmdDone = true
-						hasDS, err := dimse.CommandHasDataset(cmdBuf)
-						if err != nil {
-							return err
-						}
-						if !hasDS {
-							dsDone = true
-						}
-					}
-				} else {
-					dsBuf = append(dsBuf, pdv.Fragment()...)
-					if pdv.IsLast() {
-						dsDone = true
-					}
-				}
-			}
-			if !cmdDone || !dsDone {
-				continue
-			}
-			logDIMSE(ctx, "recv", pcid, cmdBuf)
-			if err := scpHandleMessage(ctx, conn, cfg, accepted, peerMax, pcid, cmdBuf, dsBuf, callingAE); err != nil {
-				return err
-			}
-			reset()
-		case *pdu.AReleaseRQ:
-			return writePDUConn(ctx, conn, &pdu.AReleaseRP{})
-		case *pdu.AAbort:
-			return nil
-		default:
-			_ = writePDUConn(ctx, conn, &pdu.AAbort{Source: 0x02, ReasonDiagnostic: 0x00})
-			return fmt.Errorf("ae: unexpected PDU %T", p)
+		if err := scpHandleMessage(ctx, conn, r, cfg, accepted, peerMax, it.ContextID, it.Command, it.Dataset, callingAE); err != nil {
+			return err
 		}
 	}
 }
 
-func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, cmd, ds []byte, callingAE string) error {
+func scpHandleMessage(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, cmd, ds []byte, callingAE string) error {
 	if echoRQ, err := dimse.DecodeCEchoRQ(cmd); err == nil {
 		rsp, err := (&dimse.CEchoRSP{
 			MessageIDBeingRespondedTo: echoRQ.MessageID,
@@ -371,19 +338,19 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 	}
 
 	if findRQ, err := dimse.DecodeCFindRQ(cmd); err == nil {
-		return scpHandleFind(ctx, conn, cfg, accepted, peerMax, pcid, findRQ, ds)
+		return scpHandleFind(ctx, conn, r, cfg, accepted, peerMax, pcid, findRQ, ds)
 	}
 
 	if moveRQ, err := dimse.DecodeCMoveRQ(cmd); err == nil {
-		return scpHandleMove(ctx, conn, cfg, accepted, peerMax, pcid, moveRQ, ds, callingAE)
+		return scpHandleMove(ctx, conn, r, cfg, accepted, peerMax, pcid, moveRQ, ds, callingAE)
 	}
 
 	if getRQ, err := dimse.DecodeCGetRQ(cmd); err == nil {
-		return scpHandleGet(ctx, conn, cfg, accepted, peerMax, pcid, getRQ, ds)
+		return scpHandleGet(ctx, conn, r, cfg, accepted, peerMax, pcid, getRQ, ds)
 	}
 
 	if actionRQ, err := dimse.DecodeNActionRQ(cmd); err == nil {
-		return scpHandleNAction(ctx, conn, cfg, accepted, peerMax, pcid, actionRQ, ds)
+		return scpHandleNAction(ctx, conn, r, cfg, accepted, peerMax, pcid, actionRQ, ds)
 	}
 
 	if erRQ, err := dimse.DecodeNEventReportRQ(cmd); err == nil {
@@ -430,7 +397,7 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 	return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 }
 
-func scpHandleFind(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CFindRQ, ds []byte) error {
+func scpHandleFind(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CFindRQ, ds []byte) error {
 	ac, ok := accepted[pcid]
 	if !ok || ac.AbstractSyntax != rq.AffectedSOPClassUID {
 		rsp, err := (&dimse.CFindRSP{
@@ -469,7 +436,7 @@ func scpHandleFind(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 	}
 
 	for i, m := range matches {
-		if i > 0 && peekCancelRQ(conn, rq.MessageID) {
+		if i > 0 && r.pollStop(rq.MessageID) {
 			rsp, err := (&dimse.CFindRSP{
 				MessageIDBeingRespondedTo: rq.MessageID,
 				AffectedSOPClassUID:       rq.AffectedSOPClassUID,
@@ -507,7 +474,7 @@ func scpHandleFind(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 	return nil
 }
 
-func scpHandleMove(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CMoveRQ, ds []byte, callingAE string) error {
+func scpHandleMove(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CMoveRQ, ds []byte, callingAE string) error {
 	ac, ok := accepted[pcid]
 	if !ok || ac.AbstractSyntax != rq.AffectedSOPClassUID {
 		rsp, err := (&dimse.CMoveRSP{
@@ -541,7 +508,7 @@ func scpHandleMove(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 		})
 	}
 	if len(plan.Stores) > 0 {
-		if err := scpPerformMoveStores(ctx, conn, cfg, peerMax, pcid, ac.TransferSyntax, rq, callingAE, plan.Stores); err != nil {
+		if err := scpPerformMoveStores(ctx, conn, r, cfg, peerMax, pcid, ac.TransferSyntax, rq, callingAE, plan.Stores); err != nil {
 			fail := []RetrieveMatch{{
 				Status: dcmstatus.MoveDestinationUnknown,
 				SubOperations: dimse.SubOperations{
@@ -551,17 +518,17 @@ func scpHandleMove(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 			if len(plan.Responses) > 0 {
 				fail = plan.Responses
 			}
-			return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, fail)
+			return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, fail)
 		}
 		return nil
 	}
 	if len(plan.Responses) == 0 {
 		plan.Responses = []RetrieveMatch{{Status: dimse.StatusSuccess}}
 	}
-	return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, plan.Responses)
+	return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, plan.Responses)
 }
 
-func scpPerformMoveStores(ctx context.Context, conn net.Conn, cfg ServerConfig, peerMax uint32, pcid byte, transferSyntax string, rq *dimse.CMoveRQ, moveOriginatorAE string, stores []StoreRequest) error {
+func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, peerMax uint32, pcid byte, transferSyntax string, rq *dimse.CMoveRQ, moveOriginatorAE string, stores []StoreRequest) error {
 	dest, ok := cfg.MoveDestinations[rq.MoveDestination]
 	if !ok || dest.Addr == "" {
 		return fmt.Errorf("ae: unknown Move Destination %q", rq.MoveDestination)
@@ -617,7 +584,7 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, cfg ServerConfig, 
 	)
 
 	writePending := func(remaining, completed, failed, warning uint16) error {
-		return writeRetrieveResponses(ctx, conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
+		return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
 			Status: dimse.StatusPending,
 			SubOperations: dimse.SubOperations{
 				Remaining: remaining, Completed: completed, Failed: failed, Warning: warning, Present: true,
@@ -716,7 +683,7 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, cfg ServerConfig, 
 	} else if f > 0 {
 		final = dcmstatus.UnableToPerformSubOperations
 	}
-	return writeRetrieveResponses(ctx, conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
+	return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
 		Status: final,
 		SubOperations: dimse.SubOperations{
 			Remaining: 0, Completed: c, Failed: f, Warning: w, Present: true,
@@ -724,7 +691,7 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, cfg ServerConfig, 
 	}})
 }
 
-func scpHandleGet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CGetRQ, ds []byte) error {
+func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CGetRQ, ds []byte) error {
 	ac, ok := accepted[pcid]
 	if !ok || ac.AbstractSyntax != rq.AffectedSOPClassUID {
 		rsp, err := (&dimse.CGetRSP{
@@ -794,7 +761,7 @@ func scpHandleGet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted
 		if err := writeMessage(ctx, conn, storePCID, cmd, payload, peerMax); err != nil {
 			return err
 		}
-		rspCmd, _, err := readMessage(ctx, conn)
+		_, rspCmd, _, err := r.message(ctx)
 		if err != nil {
 			return err
 		}
@@ -803,12 +770,12 @@ func scpHandleGet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted
 		}
 	}
 
-	return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false, plan.Responses)
+	return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false, plan.Responses)
 }
 
-func writeRetrieveResponses(ctx context.Context, conn net.Conn, pcid byte, peerMax uint32, transferSyntax string, msgID uint16, sopClass string, isMove bool, matches []RetrieveMatch) error {
+func writeRetrieveResponses(ctx context.Context, conn net.Conn, r *assocReader, pcid byte, peerMax uint32, transferSyntax string, msgID uint16, sopClass string, isMove bool, matches []RetrieveMatch) error {
 	for i, m := range matches {
-		if i > 0 && peekCancelRQ(conn, msgID) {
+		if i > 0 && r.pollStop(msgID) {
 			var (
 				rsp []byte
 				err error
@@ -882,53 +849,6 @@ func contextByAbstractAccepted(accepted map[byte]acceptedContext, uid string) (b
 	return 0, "", false
 }
 
-func readMessage(ctx context.Context, conn net.Conn) (command, dataset []byte, err error) {
-	var (
-		cmdBuf  []byte
-		dsBuf   []byte
-		cmdDone bool
-		dsDone  bool
-		pcid    byte
-	)
-	for {
-		raw, err := readPDUConn(ctx, conn)
-		if err != nil {
-			return nil, nil, err
-		}
-		p, ok := raw.(*pdu.PDataTF)
-		if !ok {
-			return nil, nil, fmt.Errorf("ae: unexpected PDU %T while reading message", raw)
-		}
-		for _, pdv := range p.PDVs {
-			if pcid == 0 {
-				pcid = pdv.ContextID
-			}
-			if pdv.IsCommand() {
-				cmdBuf = append(cmdBuf, pdv.Fragment()...)
-				if pdv.IsLast() {
-					cmdDone = true
-					hasDS, err := dimse.CommandHasDataset(cmdBuf)
-					if err != nil {
-						return nil, nil, err
-					}
-					if !hasDS {
-						dsDone = true
-					}
-				}
-			} else {
-				dsBuf = append(dsBuf, pdv.Fragment()...)
-				if pdv.IsLast() {
-					dsDone = true
-				}
-			}
-		}
-		if cmdDone && dsDone {
-			logDIMSE(ctx, "recv", pcid, cmdBuf)
-			return cmdBuf, dsBuf, nil
-		}
-	}
-}
-
 func writeMessage(ctx context.Context, conn net.Conn, pcid byte, command, dataset []byte, maxPDU uint32) error {
 	logDIMSE(ctx, "send", pcid, command)
 	pdus, err := pdu.FragmentMessage(pcid, command, dataset, maxPDU)
@@ -943,7 +863,7 @@ func writeMessage(ctx context.Context, conn net.Conn, pcid byte, command, datase
 	return nil
 }
 
-func scpHandleNAction(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NActionRQ, ds []byte) error {
+func scpHandleNAction(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NActionRQ, ds []byte) error {
 	ac, ok := accepted[pcid]
 	status := dcmstatus.SOPClassNotSupported
 	result := ActionResult{
@@ -1019,7 +939,7 @@ func scpHandleNAction(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 		go scpSendEventReportNewAssoc(cfg, dest, report)
 		return nil
 	}
-	return scpSendEventReport(ctx, conn, accepted, peerMax, push)
+	return scpSendEventReport(ctx, conn, r, accepted, peerMax, push)
 }
 
 func scpHandleNEventReport(ctx context.Context, conn net.Conn, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NEventReportRQ, ds []byte) error {
@@ -1059,7 +979,7 @@ func scpHandleNEventReport(ctx context.Context, conn net.Conn, cfg ServerConfig,
 	return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 }
 
-func scpSendEventReport(ctx context.Context, conn net.Conn, accepted map[byte]acceptedContext, peerMax uint32, req *EventReportRequest) error {
+func scpSendEventReport(ctx context.Context, conn net.Conn, r *assocReader, accepted map[byte]acceptedContext, peerMax uint32, req *EventReportRequest) error {
 	pcid, ts, ok := contextByAbstractAccepted(accepted, req.AffectedSOPClassUID)
 	if !ok {
 		return fmt.Errorf("ae: no context for N-EVENT-REPORT %s", req.AffectedSOPClassUID)
@@ -1085,7 +1005,7 @@ func scpSendEventReport(ctx context.Context, conn net.Conn, accepted map[byte]ac
 	if err := writeMessage(ctx, conn, pcid, cmd, payload, peerMax); err != nil {
 		return err
 	}
-	rspCmd, _, err := readMessage(ctx, conn)
+	_, rspCmd, _, err := r.message(ctx)
 	if err != nil {
 		return err
 	}
