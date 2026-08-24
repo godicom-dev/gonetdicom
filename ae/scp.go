@@ -325,8 +325,26 @@ func scpLoop(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfi
 	}
 }
 
+// scpHandleMessage dispatches one received DIMSE message on Command Field
+// (0000,0100).
+//
+// Dispatch must not be done by trying each decoder in turn: the decoders only
+// reject a Command Field that is present and wrong, so a command set with no
+// Command Field at all satisfies every one of them and would be handled as
+// whichever was tried first.
 func scpHandleMessage(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, cmd, ds []byte, callingAE string) error {
-	if echoRQ, err := dimse.DecodeCEchoRQ(cmd); err == nil {
+	field, err := dimse.PeekCommandField(cmd)
+	if err != nil {
+		_ = writePDUConn(ctx, conn, &pdu.AAbort{Source: 0x02, ReasonDiagnostic: 0x00})
+		return fmt.Errorf("ae: %w", err)
+	}
+
+	switch field {
+	case dimse.CommandCEchoRQ:
+		echoRQ, err := dimse.DecodeCEchoRQ(cmd)
+		if err != nil {
+			return err
+		}
 		rsp, err := (&dimse.CEchoRSP{
 			MessageIDBeingRespondedTo: echoRQ.MessageID,
 			Status:                    dimse.StatusSuccess,
@@ -335,66 +353,109 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, r *assocReader, cfg Se
 			return err
 		}
 		return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
-	}
 
-	if findRQ, err := dimse.DecodeCFindRQ(cmd); err == nil {
-		return scpHandleFind(ctx, conn, r, cfg, accepted, peerMax, pcid, findRQ, ds)
-	}
-
-	if moveRQ, err := dimse.DecodeCMoveRQ(cmd); err == nil {
-		return scpHandleMove(ctx, conn, r, cfg, accepted, peerMax, pcid, moveRQ, ds, callingAE)
-	}
-
-	if getRQ, err := dimse.DecodeCGetRQ(cmd); err == nil {
-		return scpHandleGet(ctx, conn, r, cfg, accepted, peerMax, pcid, getRQ, ds)
-	}
-
-	if actionRQ, err := dimse.DecodeNActionRQ(cmd); err == nil {
-		return scpHandleNAction(ctx, conn, r, cfg, accepted, peerMax, pcid, actionRQ, ds)
-	}
-
-	if erRQ, err := dimse.DecodeNEventReportRQ(cmd); err == nil {
-		return scpHandleNEventReport(ctx, conn, cfg, accepted, peerMax, pcid, erRQ, ds)
-	}
-
-	if nGetRQ, err := dimse.DecodeNGetRQ(cmd); err == nil {
-		return scpHandleNGet(ctx, conn, cfg, accepted, peerMax, pcid, nGetRQ)
-	}
-
-	if nSetRQ, err := dimse.DecodeNSetRQ(cmd); err == nil {
-		return scpHandleNSet(ctx, conn, cfg, accepted, peerMax, pcid, nSetRQ, ds)
-	}
-
-	if nCreateRQ, err := dimse.DecodeNCreateRQ(cmd); err == nil {
-		return scpHandleNCreate(ctx, conn, cfg, accepted, peerMax, pcid, nCreateRQ, ds)
-	}
-
-	if nDeleteRQ, err := dimse.DecodeNDeleteRQ(cmd); err == nil {
-		return scpHandleNDelete(ctx, conn, cfg, accepted, peerMax, pcid, nDeleteRQ)
-	}
-
-	rq, err := dimse.DecodeCStoreRQ(cmd)
-	if err != nil {
-		return fmt.Errorf("ae: unsupported DIMSE command: %w", err)
-	}
-	status := dcmstatus.SOPClassNotSupported
-	if abs, ok := accepted[pcid]; ok && abs.AbstractSyntax == rq.AffectedSOPClassUID {
-		if cfg.OnCStore != nil {
-			status = cfg.OnCStore(ctx, newInboundStoreRequest(rq, ds, abs.TransferSyntax))
-		} else {
-			status = dimse.StatusSuccess
+	case dimse.CommandCStoreRQ:
+		rq, err := dimse.DecodeCStoreRQ(cmd)
+		if err != nil {
+			return err
 		}
+		status := dcmstatus.SOPClassNotSupported
+		if abs, ok := accepted[pcid]; ok && abs.AbstractSyntax == rq.AffectedSOPClassUID {
+			if cfg.OnCStore != nil {
+				status = cfg.OnCStore(ctx, newInboundStoreRequest(rq, ds, abs.TransferSyntax))
+			} else {
+				status = dimse.StatusSuccess
+			}
+		}
+		rsp, err := (&dimse.CStoreRSP{
+			MessageIDBeingRespondedTo: rq.MessageID,
+			AffectedSOPClassUID:       rq.AffectedSOPClassUID,
+			AffectedSOPInstanceUID:    rq.AffectedSOPInstanceUID,
+			Status:                    status,
+		}).Encode()
+		if err != nil {
+			return err
+		}
+		return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
+
+	case dimse.CommandCFindRQ:
+		rq, err := dimse.DecodeCFindRQ(cmd)
+		if err != nil {
+			return err
+		}
+		return scpHandleFind(ctx, conn, r, cfg, accepted, peerMax, pcid, rq, ds)
+
+	case dimse.CommandCMoveRQ:
+		rq, err := dimse.DecodeCMoveRQ(cmd)
+		if err != nil {
+			return err
+		}
+		return scpHandleMove(ctx, conn, r, cfg, accepted, peerMax, pcid, rq, ds, callingAE)
+
+	case dimse.CommandCGetRQ:
+		rq, err := dimse.DecodeCGetRQ(cmd)
+		if err != nil {
+			return err
+		}
+		return scpHandleGet(ctx, conn, r, cfg, accepted, peerMax, pcid, rq, ds)
+
+	case dimse.CommandCCancelRQ:
+		// A cancel for an operation that is no longer running: the response
+		// stream consumes the ones it is waiting for (see assocReader.pollStop),
+		// so anything reaching here is late. Ignoring it is what PS3.7 allows;
+		// tearing the association down over it is not.
+		if c, err := dimse.DecodeCCancelRQ(cmd); err == nil {
+			cfg.logger(ctx).Debug("ignoring C-CANCEL-RQ for an operation that is not running",
+				gonetdicom.AttrMessageID, c.MessageIDBeingRespondedTo)
+		}
+		return nil
+
+	case dimse.CommandNActionRQ:
+		rq, err := dimse.DecodeNActionRQ(cmd)
+		if err != nil {
+			return err
+		}
+		return scpHandleNAction(ctx, conn, r, cfg, accepted, peerMax, pcid, rq, ds)
+
+	case dimse.CommandNEventReportRQ:
+		rq, err := dimse.DecodeNEventReportRQ(cmd)
+		if err != nil {
+			return err
+		}
+		return scpHandleNEventReport(ctx, conn, cfg, accepted, peerMax, pcid, rq, ds)
+
+	case dimse.CommandNGetRQ:
+		rq, err := dimse.DecodeNGetRQ(cmd)
+		if err != nil {
+			return err
+		}
+		return scpHandleNGet(ctx, conn, cfg, accepted, peerMax, pcid, rq)
+
+	case dimse.CommandNSetRQ:
+		rq, err := dimse.DecodeNSetRQ(cmd)
+		if err != nil {
+			return err
+		}
+		return scpHandleNSet(ctx, conn, cfg, accepted, peerMax, pcid, rq, ds)
+
+	case dimse.CommandNCreateRQ:
+		rq, err := dimse.DecodeNCreateRQ(cmd)
+		if err != nil {
+			return err
+		}
+		return scpHandleNCreate(ctx, conn, cfg, accepted, peerMax, pcid, rq, ds)
+
+	case dimse.CommandNDeleteRQ:
+		rq, err := dimse.DecodeNDeleteRQ(cmd)
+		if err != nil {
+			return err
+		}
+		return scpHandleNDelete(ctx, conn, cfg, accepted, peerMax, pcid, rq)
+
+	default:
+		_ = writePDUConn(ctx, conn, &pdu.AAbort{Source: 0x02, ReasonDiagnostic: 0x00})
+		return fmt.Errorf("ae: unsupported DIMSE command %s (0x%04x)", dimse.CommandName(field), field)
 	}
-	rsp, err := (&dimse.CStoreRSP{
-		MessageIDBeingRespondedTo: rq.MessageID,
-		AffectedSOPClassUID:       rq.AffectedSOPClassUID,
-		AffectedSOPInstanceUID:    rq.AffectedSOPInstanceUID,
-		Status:                    status,
-	}).Encode()
-	if err != nil {
-		return err
-	}
-	return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 }
 
 func scpHandleFind(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CFindRQ, ds []byte) error {

@@ -102,6 +102,16 @@ func (s *rawSCU) sendSplit(command []byte, gap time.Duration) {
 	}
 }
 
+// nextPDU reads one raw PDU, whatever its type.
+func (s *rawSCU) nextPDU(timeout time.Duration) (pdu.PDU, error) {
+	s.t.Helper()
+	if err := s.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, err
+	}
+	defer func() { _ = s.conn.SetReadDeadline(time.Time{}) }()
+	return pdu.Read(s.conn)
+}
+
 // nextCommand reads PDUs until a complete command set arrives, returning it.
 func (s *rawSCU) nextCommand(timeout time.Duration) ([]byte, error) {
 	s.t.Helper()
