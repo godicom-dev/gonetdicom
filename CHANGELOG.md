@@ -39,6 +39,16 @@ No exported symbol was removed; three behaviour changes are listed under Changed
   released build, since godicom does not compile for a 32-bit target either
 
 ### Fixed
+- UID padding is trimmed when decoding an A-ASSOCIATE
+  ([#42](https://github.com/godicom-dev/gonetdicom/issues/42)). PS3.5 9.1 pads an
+  odd-length UID with a NUL and most UIDs traded during negotiation are odd
+  (`1.2.840.10008.1.1` is 17 bytes), so a conforming peer sends that byte — and
+  it stayed in the string, losing every comparison built on it: the SCP answered
+  "abstract syntax not supported" for a SOP class it supports, a proposed Role
+  Selection was dropped, and an accepted Transfer Syntax reached godicom naming
+  nothing. Covers the Application Context, Abstract Syntax, Transfer Syntax,
+  Implementation Class UID and Role Selection SOP Class items. Encoding is
+  unchanged and still writes UIDs unpadded, which is what pynetdicom sends
 - One reader per SCP association. Cancel detection read the connection directly
   under a 2 ms deadline, so a C-CANCEL-RQ split across TCP segments was consumed
   and discarded and the next read landed mid-PDU, after which the SCP could block

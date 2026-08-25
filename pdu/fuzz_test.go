@@ -54,6 +54,27 @@ func FuzzRead(f *testing.F) {
 				},
 			},
 		},
+		// A peer that pads its odd-length UIDs, which PS3.5 9.1 tells it to. The
+		// decoder trims the pad byte, so this is also the one seed where what was
+		// decoded is a byte shorter than what arrived — the case the round trip
+		// below has to stay true across.
+		&AAssociateRQ{
+			CalledAETitle:          "ANY-SCP",
+			CallingAETitle:         "PADSCU",
+			ApplicationContextName: ApplicationContextName + padOnTheWire,
+			PresentationContexts: []PresentationContextRQ{{
+				ID:               1,
+				AbstractSyntax:   VerificationSOPClass + padOnTheWire,
+				TransferSyntaxes: []string{ImplicitVRLittleEndian + padOnTheWire},
+			}},
+			UserInformation: UserInformation{
+				MaxLength:              DefaultMaxPDULength,
+				ImplementationClassUID: implClassUIDOdd + padOnTheWire,
+				RoleSelections: []RoleSelection{
+					{SOPClassUID: VerificationSOPClass + padOnTheWire, SCURole: true, SCPRole: true},
+				},
+			},
+		},
 	} {
 		b, err := p.Encode()
 		if err != nil {
