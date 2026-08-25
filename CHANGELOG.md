@@ -5,11 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.16.0] - 2026-08-25
 
-Robustness audit of the wire decoders, the SCP association lifecycle and the
-DICOMweb handlers ([#39](https://github.com/godicom-dev/gonetdicom/issues/39)).
-No exported symbol was removed; three behaviour changes are listed under Changed.
+A robustness release. Most of it is the audit of the wire decoders, the SCP
+association lifecycle and the DICOMweb handlers
+([#39](https://github.com/godicom-dev/gonetdicom/issues/39)); the two
+negotiation and C-MOVE fixes that head Fixed came out of following that work up
+([#42](https://github.com/godicom-dev/gonetdicom/issues/42),
+[#41](https://github.com/godicom-dev/gonetdicom/issues/41)).
+
+No exported symbol was removed. Three behaviour changes are visible to callers
+and are listed under Changed, each with the way to restore the old behaviour.
 
 ### Security
 - `pdu.Read` no longer sizes its buffer from the declared length, where six bytes
