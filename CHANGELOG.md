@@ -49,6 +49,16 @@ No exported symbol was removed; three behaviour changes are listed under Changed
   nothing. Covers the Application Context, Abstract Syntax, Transfer Syntax,
   Implementation Class UID and Role Selection SOP Class items. Encoding is
   unchanged and still writes UIDs unpadded, which is what pynetdicom sends
+- C-MOVE sub-operation counts saturate at 65535 instead of wrapping
+  ([#41](https://github.com/godicom-dev/gonetdicom/issues/41)). The four counts
+  are US on the wire, but the SCP also *counted* in `uint16`, so a `MovePlan` of
+  65536 stores reported `Remaining: 0` in its first Pending response — an SCU
+  reading that as "nothing outstanding" stopped there — and the next response
+  computed `total-done` as `0-1` and said 65535 were outstanding, so the count
+  moved backwards. On the failure path 65536 failures were reported as 0: total
+  success under a failure status. Counting is now in `int` and narrowed once, at
+  the wire, and the final status is decided on the real counts. C-MOVE itself has
+  no 65535 limit, so an oversized plan is served and logged rather than rejected
 - One reader per SCP association. Cancel detection read the connection directly
   under a 2 ms deadline, so a C-CANCEL-RQ split across TCP segments was consumed
   and discarded and the next read landed mid-PDU, after which the SCP could block

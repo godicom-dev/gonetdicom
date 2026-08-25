@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"context"
+	"math"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/godicom-dev/gonetdicom/ae"
 	"github.com/godicom-dev/gonetdicom/dimse"
 	"github.com/godicom-dev/gonetdicom/pdu"
+	dcmstatus "github.com/godicom-dev/gonetdicom/status"
 )
 
 func TestCMoveSCURoundtrip(t *testing.T) {
@@ -341,5 +343,86 @@ func TestCMoveDestinationStore(t *testing.T) {
 	}
 	cancel()
 	<-errCh
+	<-errCh
+}
+
+// A MovePlan with more sub-operations than the US count field can hold. The
+// destination is unknown, so no store is attempted and the SCP takes its failure
+// path — which is the cheap way to reach the narrowing with a plan this size.
+//
+// Counted in uint16 the report was not merely imprecise: 65536 failures were
+// reported as 0, so the SCU was told every sub-operation succeeded while the
+// status said none had.
+func TestCMoveSubOperationCountSaturates(t *testing.T) {
+	t.Parallel()
+
+	const oversized = math.MaxUint16 + 1
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- ae.Serve(ctx, ln, ae.ServerConfig{
+			AETitle: "MOVESCP",
+			AcceptedAbstractSyntaxes: []string{
+				ae.PatientRootQueryRetrieveInformationModelMove,
+			},
+			// No MoveDestinations: the plan's stores are never attempted, so this
+			// stays a test about the count rather than about 65536 associations.
+			OnCMove: func(_ context.Context, _ ae.MoveRequest) ae.MovePlan {
+				return ae.MovePlan{Stores: make([]ae.StoreRequest, oversized)}
+			},
+		})
+	}()
+
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer dialCancel()
+
+	assoc, err := ae.Dial(dialCtx, ae.Config{
+		AETitle: "MOVESCU",
+		PresentationContexts: []ae.PresentationContext{{
+			ID:               1,
+			AbstractSyntax:   ae.PatientRootQueryRetrieveInformationModelMove,
+			TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian},
+		}},
+	}, ln.Addr().String(), "MOVESCP")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	query := godicom.NewDataset()
+	query.Set(godicom.NewDataElement(godicom.MustTag("QueryRetrieveLevel"), godicom.VRCS, "STUDY"))
+
+	matches, err := assoc.CMove(dialCtx, ae.MoveRequest{
+		QueryModel:      ae.PatientRootQueryRetrieveInformationModelMove,
+		MoveDestination: "NOWHERE",
+		IdentifierData:  query,
+	})
+	if err != nil {
+		t.Fatalf("C-MOVE: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("got %d responses, want 1", len(matches))
+	}
+	got := matches[0]
+	if got.Status != dcmstatus.MoveDestinationUnknown {
+		t.Errorf("status 0x%04x, want 0x%04x (Move Destination unknown)",
+			got.Status, dcmstatus.MoveDestinationUnknown)
+	}
+	if got.SubOperations.Failed != math.MaxUint16 {
+		t.Errorf("Failed = %d for a plan of %d stores, want %d (saturated)",
+			got.SubOperations.Failed, oversized, uint16(math.MaxUint16))
+	}
+	if err := assoc.Release(dialCtx); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	cancel()
 	<-errCh
 }

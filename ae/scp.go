@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"sync"
 	"time"
@@ -650,7 +651,7 @@ func scpHandleMove(ctx context.Context, conn net.Conn, r *assocReader, cfg Serve
 			fail := []RetrieveMatch{{
 				Status: dcmstatus.MoveDestinationUnknown,
 				SubOperations: dimse.SubOperations{
-					Failed: uint16(len(plan.Stores)), Present: true,
+					Failed: subOpCount(len(plan.Stores)), Present: true,
 				},
 			}}
 			if len(plan.Responses) > 0 {
@@ -664,6 +665,22 @@ func scpHandleMove(ctx context.Context, conn net.Conn, r *assocReader, cfg Serve
 		plan.Responses = []RetrieveMatch{{Status: dimse.StatusSuccess}}
 	}
 	return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, plan.Responses)
+}
+
+// subOpCount narrows a sub-operation count to the US field that carries it
+// (PS3.7 Table 9.1-4), saturating at 65535 rather than wrapping.
+//
+// Saturating loses precision; wrapping loses monotonicity, and monotonicity is
+// what an SCU reads these counts for. A Remaining that goes 0 then 65535 is not
+// an inaccurate progress report, it is a contradictory one.
+func subOpCount(n int) uint16 {
+	if n > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	if n < 0 {
+		return 0
+	}
+	return uint16(n)
 }
 
 func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, peerMax uint32, pcid byte, transferSyntax string, rq *dimse.CMoveRQ, moveOriginatorAE string, stores []StoreRequest) error {
@@ -712,19 +729,34 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cf
 		prepared[i] = store
 	}
 
-	total := uint16(len(prepared))
+	// Counted in int, narrowed only where the wire demands it. The four
+	// Sub-Operations counts are US on the wire (PS3.7 Table 9.1-4), so 65535 is a
+	// real ceiling — but C-MOVE itself has no such limit, and counting in uint16
+	// meant the ceiling was crossed silently and in the wrong direction: at 65536
+	// stores `total` was 0, so the first Pending response told the SCU nothing was
+	// outstanding, and the next one computed total-done as 0-1 and said 65535 were.
+	// An SCU treating Remaining == 0 as the end of the transfer stopped there.
+	total := len(prepared)
+	if total > math.MaxUint16 {
+		cfg.logger(ctx).Warn("scp C-MOVE sub-operation counts saturated",
+			gonetdicom.AttrMessageID, rq.MessageID,
+			"sub_operations", total,
+			"limit", math.MaxUint16,
+		)
+	}
 	var (
 		mu                         sync.Mutex
-		completed, failed, warning uint16
-		done                       uint16
+		completed, failed, warning int
+		done                       int
 		writeErr                   error
 	)
 
-	writePending := func(remaining, completed, failed, warning uint16) error {
+	writePending := func(remaining, completed, failed, warning int) error {
 		return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
 			Status: dimse.StatusPending,
 			SubOperations: dimse.SubOperations{
-				Remaining: remaining, Completed: completed, Failed: failed, Warning: warning, Present: true,
+				Remaining: subOpCount(remaining), Completed: subOpCount(completed),
+				Failed: subOpCount(failed), Warning: subOpCount(warning), Present: true,
 			},
 		}})
 	}
@@ -820,10 +852,14 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cf
 	} else if f > 0 {
 		final = dcmstatus.UnableToPerformSubOperations
 	}
+	// The status is decided on the real counts, not the saturated ones: a batch
+	// where everything past 65535 failed is still a warning, whatever the reported
+	// number of failures says.
 	return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
 		Status: final,
 		SubOperations: dimse.SubOperations{
-			Remaining: 0, Completed: c, Failed: f, Warning: w, Present: true,
+			Remaining: 0, Completed: subOpCount(c), Failed: subOpCount(f),
+			Warning: subOpCount(w), Present: true,
 		},
 	}})
 }
