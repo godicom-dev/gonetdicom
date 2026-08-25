@@ -21,7 +21,7 @@ func TestWADOBoundaryNotForgeableByInstanceData(t *testing.T) {
 	t.Parallel()
 
 	fd := sampleFile(t, "1.2.3.4.5", "1.2.3.4")
-	fd.Dataset.Set(godicom.NewDataElement(godicom.MustTag("PatientComments"), godicom.VRLT, delimiterBait))
+	fd.Set(godicom.NewDataElement(godicom.MustTag("PatientComments"), godicom.VRLT, delimiterBait))
 	stored, err := fd.EncodeFile(nil)
 	if err != nil {
 		t.Fatalf("encode: %v", err)

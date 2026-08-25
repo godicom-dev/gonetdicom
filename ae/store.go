@@ -25,12 +25,12 @@ import (
 //	fd := &godicom.FileDataset{Dataset: req.Data, FileMeta: req.FileMeta}
 //	_ = fd.SaveAs(req.AffectedSOPInstanceUID+".dcm", &godicom.WriteOptions{EnforceFileFormat: true})
 type StoreRequest struct {
-	AffectedSOPClassUID                  string
-	AffectedSOPInstanceUID               string
-	Dataset                              []byte
-	Data                                 *godicom.Dataset
-	FileMeta                             *godicom.FileMetaDataset
-	TransferSyntax                       string
+	AffectedSOPClassUID    string
+	AffectedSOPInstanceUID string
+	Dataset                []byte
+	Data                   *godicom.Dataset
+	FileMeta               *godicom.FileMetaDataset
+	TransferSyntax         string
 	// Priority requests a service priority from the peer, which may ignore it.
 	// The zero value is dimse.PriorityMedium — normal priority.
 	Priority                             uint16

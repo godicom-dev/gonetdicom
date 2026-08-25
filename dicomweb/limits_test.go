@@ -18,16 +18,16 @@ func TestResolveRejectsSegmentsThatChangeTheResource(t *testing.T) {
 
 	c := &Client{BaseURL: "https://pacs.example/dicom-web"}
 	for _, uid := range []string{
-		"1.2.3/../../../metadata",             // climbs out of the instance
-		"../../studies/9.9.9",                 // climbs out of the service
-		"1.2.3/series/9.9/instances/9.9",      // grafts on a whole resource path
-		"..",                                  // resolved away by the path itself
-		".",                                   //
-		"1.2.3%2f9.9.9",                       // pre-escaped: escaped again, or not, either way not a UID
-		"1.2.3?PatientID=*",                   // query smuggled into the path
-		"1.2.3#frag",                          //
-		"1.2.3\n",                             // header-ish junk from a text field
-		"",                                    // silently dropped, leaving a shorter path
+		"1.2.3/../../../metadata",        // climbs out of the instance
+		"../../studies/9.9.9",            // climbs out of the service
+		"1.2.3/series/9.9/instances/9.9", // grafts on a whole resource path
+		"..",                             // resolved away by the path itself
+		".",                              //
+		"1.2.3%2f9.9.9",                  // pre-escaped: escaped again, or not, either way not a UID
+		"1.2.3?PatientID=*",              // query smuggled into the path
+		"1.2.3#frag",                     //
+		"1.2.3\n",                        // header-ish junk from a text field
+		"",                               // silently dropped, leaving a shorter path
 	} {
 		got, err := c.resolve("studies", "1.2.3", "series", "1.2.3.4", "instances", uid, "metadata")
 		if !errors.Is(err, ErrInvalidPath) {

@@ -94,12 +94,12 @@ type idleConn struct {
 }
 
 func (c *idleConn) Read(b []byte) (int, error) {
-	_ = c.Conn.SetReadDeadline(time.Now().Add(c.idle))
+	_ = c.SetReadDeadline(time.Now().Add(c.idle))
 	return c.Conn.Read(b)
 }
 
 func (c *idleConn) Write(b []byte) (int, error) {
-	_ = c.Conn.SetWriteDeadline(time.Now().Add(c.idle))
+	_ = c.SetWriteDeadline(time.Now().Add(c.idle))
 	return c.Conn.Write(b)
 }
 
