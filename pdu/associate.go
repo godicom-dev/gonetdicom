@@ -182,7 +182,7 @@ func DecodeAAssociateRQ(raw []byte) (*AAssociateRQ, error) {
 	for _, it := range items {
 		switch it.Type {
 		case ItemApplicationContext:
-			p.ApplicationContextName = string(it.Data)
+			p.ApplicationContextName = trimUIDPadding(it.Data)
 		case ItemPresentationContextRQ:
 			pc, err := decodePresentationContextRQ(it.Data)
 			if err != nil {
@@ -287,7 +287,7 @@ func DecodeAAssociateAC(raw []byte) (*AAssociateAC, error) {
 	for _, it := range items {
 		switch it.Type {
 		case ItemApplicationContext:
-			p.ApplicationContextName = string(it.Data)
+			p.ApplicationContextName = trimUIDPadding(it.Data)
 		case ItemPresentationContextAC:
 			pc, err := decodePresentationContextAC(it.Data)
 			if err != nil {
@@ -347,9 +347,9 @@ func decodePresentationContextRQ(data []byte) (PresentationContextRQ, error) {
 	for _, s := range subs {
 		switch s.Type {
 		case ItemAbstractSyntax:
-			pc.AbstractSyntax = string(s.Data)
+			pc.AbstractSyntax = trimUIDPadding(s.Data)
 		case ItemTransferSyntax:
-			pc.TransferSyntaxes = append(pc.TransferSyntaxes, string(s.Data))
+			pc.TransferSyntaxes = append(pc.TransferSyntaxes, trimUIDPadding(s.Data))
 		}
 	}
 	return pc, nil
@@ -366,7 +366,7 @@ func decodePresentationContextAC(data []byte) (PresentationContextAC, error) {
 	}
 	for _, s := range subs {
 		if s.Type == ItemTransferSyntax {
-			pc.TransferSyntax = string(s.Data)
+			pc.TransferSyntax = trimUIDPadding(s.Data)
 			break
 		}
 	}
@@ -429,7 +429,7 @@ func decodeUserInformation(data []byte) (UserInformation, error) {
 			}
 			ui.MaxLength = binary.BigEndian.Uint32(s.Data)
 		case ItemImplementationClassUID:
-			ui.ImplementationClassUID = string(s.Data)
+			ui.ImplementationClassUID = trimUIDPadding(s.Data)
 		case ItemImplementationVersion:
 			ui.ImplementationVersionName = string(s.Data)
 		case ItemRoleSelection:
@@ -486,7 +486,10 @@ func decodeRoleSelection(data []byte) (RoleSelection, error) {
 	if len(data) < 2+uidLen+2 {
 		return RoleSelection{}, fmt.Errorf("pdu: truncated role selection item")
 	}
-	uid := string(data[2 : 2+uidLen])
+	// The role bytes sit after the UID at the length the peer declared, so the
+	// offsets below stay on uidLen even though the UID itself may be a byte
+	// shorter once its padding is off.
+	uid := trimUIDPadding(data[2 : 2+uidLen])
 	return RoleSelection{
 		SOPClassUID: uid,
 		SCURole:     data[2+uidLen] != 0,

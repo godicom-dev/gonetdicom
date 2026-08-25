@@ -199,6 +199,33 @@ func TrimAETitle(b []byte) string {
 	return strings.TrimRight(string(b), " ")
 }
 
+// trimUIDPadding returns b as a string with trailing NULs removed.
+//
+// PS3.5 9.1 pads a UID to an even length with a NUL, and the A-ASSOCIATE items
+// carrying UIDs inherit that: Application Context, Abstract Syntax, Transfer
+// Syntax, Implementation Class UID, Role Selection SOP Class. Most UIDs in play
+// are odd-length — "1.2.840.10008.3.1.1.1" is 21, "1.2.840.10008.1.1" and
+// "1.2.840.10008.1.2" are 17 — so a peer that pads really does send the extra
+// byte. Keeping it in the string makes the UID compare unequal to the same UID
+// written in Go source, which is how the abstract and transfer syntaxes are
+// matched during negotiation: the SCP would answer "abstract syntax not
+// supported" for a SOP class it supports.
+//
+// Every trailing NUL comes off, not just the one PS3.5 asks for. A UID cannot
+// contain a NUL, so there is nothing to lose by it, and trimming exactly one is
+// not stable under re-encoding: a peer sending two left the second in the
+// string, Encode wrote it back out, and decoding that took off one more. The
+// association code echoes negotiated items to the peer, so a decode that shifts
+// by a byte each pass puts a different item on the wire than the one that
+// arrived (FuzzRead corpus entry 67a2b7e903f84363).
+//
+// Encode does not pad, which is what pynetdicom does too — its golden
+// A-ASSOCIATE-RQ carries all three UIDs at their odd lengths, and it strips on
+// the way in. Padding is what a peer may send, not what it must receive.
+func trimUIDPadding(b []byte) string {
+	return strings.TrimRight(string(b), "\x00")
+}
+
 func encodeItem(itemType byte, data []byte) ([]byte, error) {
 	if len(data) > maxItemLength {
 		return nil, errTooLong(fmt.Sprintf("item type 0x%02x", itemType), len(data), maxItemLength)
