@@ -9,6 +9,7 @@ package dicomweb
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -33,6 +34,18 @@ type Client struct {
 	Timeout    time.Duration // used when HTTPClient is nil
 	TLS        *tls.Config   // used by NewClient for the default transport
 	Logger     *slog.Logger  // optional; nil falls back to context then DiscardHandler
+	// MaxResponseBytes bounds how much of one response body a call reads before
+	// failing with ErrTooLarge. Zero uses DefaultMaxResponseBytes; negative reads
+	// without a bound. Retrieving a whole study buffers every instance, so this is
+	// what stands between a wrong Content-Length and the process's memory.
+	MaxResponseBytes int64
+}
+
+func (c *Client) maxResponseBytes() int64 {
+	if c == nil || c.MaxResponseBytes == 0 {
+		return DefaultMaxResponseBytes
+	}
+	return c.MaxResponseBytes
 }
 
 func (c *Client) httpClient() *http.Client {
@@ -65,6 +78,16 @@ func (c *Client) base() (*url.URL, error) {
 	return u, nil
 }
 
+// ErrInvalidPath reports a path segment that cannot be used as given.
+//
+// In DICOMweb the resource is the path, and the variable segments are UIDs: a UID
+// carrying a "/" or a ".." segment names a different instance, series or service
+// than the caller asked for, and the request that goes out looks perfectly
+// well-formed. Percent-escaping such a segment instead would only turn it into a
+// request no server can answer, so a UID that is not a UID is an error here —
+// before anything is sent.
+var ErrInvalidPath = errors.New("dicomweb: invalid path segment")
+
 func (c *Client) resolve(parts ...string) (string, error) {
 	base, err := c.base()
 	if err != nil {
@@ -73,8 +96,8 @@ func (c *Client) resolve(parts ...string) (string, error) {
 	joined := strings.TrimRight(base.Path, "/")
 	for _, p := range parts {
 		p = strings.Trim(p, "/")
-		if p == "" {
-			continue
+		if err := checkPathSegment(p); err != nil {
+			return "", err
 		}
 		joined += "/" + p
 	}
@@ -83,6 +106,29 @@ func (c *Client) resolve(parts ...string) (string, error) {
 	out.RawQuery = ""
 	out.Fragment = ""
 	return out.String(), nil
+}
+
+// checkPathSegment accepts one path segment of a DICOMweb URL. The variable
+// segments are UIDs — digits and dots — and the fixed ones are words such as
+// "studies", so RFC 3986's unreserved set covers every legitimate value. "." and
+// ".." are excluded on top of that, since a path resolves them away instead of
+// carrying them.
+func checkPathSegment(p string) error {
+	if p == "" {
+		return fmt.Errorf("%w: empty", ErrInvalidPath)
+	}
+	if p == "." || p == ".." {
+		return fmt.Errorf("%w: %q names another resource", ErrInvalidPath, p)
+	}
+	for i := 0; i < len(p); i++ {
+		switch ch := p[i]; {
+		case ch >= 'a' && ch <= 'z', ch >= 'A' && ch <= 'Z', ch >= '0' && ch <= '9':
+		case ch == '-', ch == '.', ch == '_', ch == '~':
+		default:
+			return fmt.Errorf("%w: %q contains %q", ErrInvalidPath, p, string(rune(ch)))
+		}
+	}
+	return nil
 }
 
 func (c *Client) do(ctx context.Context, req *http.Request) (*http.Response, error) {

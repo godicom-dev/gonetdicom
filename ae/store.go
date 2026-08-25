@@ -25,13 +25,15 @@ import (
 //	fd := &godicom.FileDataset{Dataset: req.Data, FileMeta: req.FileMeta}
 //	_ = fd.SaveAs(req.AffectedSOPInstanceUID+".dcm", &godicom.WriteOptions{EnforceFileFormat: true})
 type StoreRequest struct {
-	AffectedSOPClassUID                  string
-	AffectedSOPInstanceUID               string
-	Dataset                              []byte
-	Data                                 *godicom.Dataset
-	FileMeta                             *godicom.FileMetaDataset
-	TransferSyntax                       string
-	Priority                             uint16 // 0 defaults to PriorityLow
+	AffectedSOPClassUID    string
+	AffectedSOPInstanceUID string
+	Dataset                []byte
+	Data                   *godicom.Dataset
+	FileMeta               *godicom.FileMetaDataset
+	TransferSyntax         string
+	// Priority requests a service priority from the peer, which may ignore it.
+	// The zero value is dimse.PriorityMedium — normal priority.
+	Priority                             uint16
 	MoveOriginatorApplicationEntityTitle string
 	MoveOriginatorMessageID              uint16
 }
@@ -44,6 +46,11 @@ type StoreResult struct {
 }
 
 // CStore sends a C-STORE-RQ and waits for the C-STORE-RSP.
+//
+// req.Data is read-only: when neither req.AffectedSOPInstanceUID nor the
+// dataset's SOPInstanceUID supplies one, CStore generates a UID and encodes a
+// copy of the Dataset carrying it, leaving the caller's Dataset as it was.
+// Supplying the UID skips the copy.
 func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResult, error) {
 	if req.AffectedSOPClassUID == "" {
 		return nil, fmt.Errorf("ae: C-STORE missing Affected SOP Class UID")
@@ -55,8 +62,19 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 	}
 	if req.AffectedSOPInstanceUID == "" {
 		req.AffectedSOPInstanceUID = NewInstanceUID()
-		if req.Data != nil && !req.Data.Has(godicom.MustTag("SOPInstanceUID")) {
-			req.Data.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, req.AffectedSOPInstanceUID))
+		if req.Data != nil {
+			// The generated UID goes on a copy. req.Data belongs to the caller, and
+			// writing it back there turned their Dataset into one that already has a
+			// SOP Instance UID: re-sending it after changing pixel data or an
+			// InstanceNumber then shipped a second, different instance under the
+			// first one's identity, which an archive stores as one instance.
+			//
+			// Callers that set SOPInstanceUID themselves — or pass
+			// AffectedSOPInstanceUID, or pre-encoded Dataset bytes — never reach the
+			// copy.
+			data := req.Data.Clone()
+			data.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, req.AffectedSOPInstanceUID))
+			req.Data = data
 		}
 	}
 	pc, ok := a.contextByAbstract(req.AffectedSOPClassUID)
@@ -76,14 +94,10 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 		return nil, fmt.Errorf("ae: C-STORE missing dataset")
 	}
 
-	priority := req.Priority
-	if priority == 0 {
-		priority = dimse.PriorityLow
-	}
 	msgID := a.nextMessageID()
 	cmd, err := (&dimse.CStoreRQ{
 		MessageID:                            msgID,
-		Priority:                             priority,
+		Priority:                             req.Priority,
 		AffectedSOPClassUID:                  req.AffectedSOPClassUID,
 		AffectedSOPInstanceUID:               req.AffectedSOPInstanceUID,
 		MoveOriginatorApplicationEntityTitle: req.MoveOriginatorApplicationEntityTitle,

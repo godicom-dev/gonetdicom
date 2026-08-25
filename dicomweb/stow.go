@@ -3,7 +3,6 @@ package dicomweb
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/godicom-dev/godicom"
@@ -45,7 +44,7 @@ func (c *Client) StoreInstances(ctx context.Context, studyUID string, instances 
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := readAll(resp.Body, c.maxResponseBytes())
 	if err != nil {
 		return nil, err
 	}

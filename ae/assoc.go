@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/godicom-dev/gonetdicom"
@@ -105,14 +106,33 @@ type AcceptedContext struct {
 }
 
 // Association is an established DIMSE association (SCU role).
+//
+// It carries one DIMSE operation at a time: each method sends its request and
+// then reads responses until the final one, so two of them running at once
+// interleave PDUs on the same connection and neither peer can make sense of the
+// result. Parallel work needs parallel associations.
+//
+// CCancel, Abort and Close are the deliberate exceptions. All three exist to
+// reach an operation that is already blocked, so all three are safe to call from
+// another goroutine.
 type Association struct {
-	conn                 net.Conn
-	cfg                  Config
+	conn net.Conn
+	cfg  Config
+	// called, peerMax, contexts and userIdentityResponse are written by negotiate
+	// before the Association is handed to the caller, and only read afterwards.
 	called               string
 	peerMax              uint32
 	contexts             []AcceptedContext
-	nextID               uint16
 	userIdentityResponse []byte
+	// nextID is atomic so Message IDs stay unique even when a caller ignores the
+	// contract above: a lost increment puts two outstanding requests under one ID,
+	// and the responses to them can no longer be told apart.
+	nextID atomic.Uint32
+	// closed makes the teardown methods idempotent. conn itself is never cleared —
+	// a goroutine unwinding out of readPDU still clears its deadline through it,
+	// and clearing the field turned a concurrent Abort into a nil-pointer panic
+	// instead of the interruption it was asked for.
+	closed atomic.Bool
 }
 
 // Dial associates with addr (host:port) as an SCU.
@@ -142,12 +162,7 @@ func Dial(ctx context.Context, cfg Config, addr, calledAE string) (*Association,
 		return nil, fmt.Errorf("ae: dial %s: %w", addr, err)
 	}
 
-	assoc := &Association{
-		conn:   conn,
-		cfg:    cfg,
-		called: calledAE,
-		nextID: 1,
-	}
+	assoc := &Association{conn: conn, cfg: cfg, called: calledAE}
 	if err := assoc.negotiate(ctx); err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -169,12 +184,7 @@ func AcceptFromConn(ctx context.Context, cfg Config, conn net.Conn, calledAE str
 	if calledAE == "" {
 		return nil, fmt.Errorf("ae: empty called AE title")
 	}
-	assoc := &Association{
-		conn:   conn,
-		cfg:    cfg,
-		called: calledAE,
-		nextID: 1,
-	}
+	assoc := &Association{conn: conn, cfg: cfg, called: calledAE}
 	if err := assoc.negotiate(ctx); err != nil {
 		return nil, err
 	}
@@ -182,20 +192,16 @@ func AcceptFromConn(ctx context.Context, cfg Config, conn net.Conn, calledAE str
 }
 
 func (a *Association) negotiate(ctx context.Context) error {
-	pcs := make([]pdu.PresentationContextRQ, 0, len(a.cfg.PresentationContexts))
-	byID := make(map[byte]PresentationContext, len(a.cfg.PresentationContexts))
-	for i, pc := range a.cfg.PresentationContexts {
-		id := pc.ID
-		if id == 0 {
-			id = byte(2*i + 1) // odd IDs: 1,3,5,...
-		}
-		if len(pc.TransferSyntaxes) == 0 {
-			pc.TransferSyntaxes = []string{pdu.ImplicitVRLittleEndian}
-		}
-		pc.ID = id
-		byID[id] = pc
+	proposed, err := buildPresentationContexts(a.cfg.PresentationContexts)
+	if err != nil {
+		return err
+	}
+	pcs := make([]pdu.PresentationContextRQ, 0, len(proposed))
+	byID := make(map[byte]PresentationContext, len(proposed))
+	for _, pc := range proposed {
+		byID[pc.ID] = pc
 		pcs = append(pcs, pdu.PresentationContextRQ{
-			ID:               id,
+			ID:               pc.ID,
 			AbstractSyntax:   pc.AbstractSyntax,
 			TransferSyntaxes: pc.TransferSyntaxes,
 		})
@@ -293,13 +299,14 @@ func (a *Association) contextByAbstract(uid string) (AcceptedContext, bool) {
 	return AcceptedContext{}, false
 }
 
+// nextMessageID hands out the Message ID for one request. IDs start at 1 and
+// skip 0 on wrap, as pynetdicom does.
 func (a *Association) nextMessageID() uint16 {
-	id := a.nextID
-	a.nextID++
-	if a.nextID == 0 {
-		a.nextID = 1
+	for {
+		if id := uint16(a.nextID.Add(1)); id != 0 {
+			return id
+		}
 	}
-	return id
 }
 
 // CEcho sends a C-ECHO-RQ and waits for a successful C-ECHO-RSP.
@@ -414,7 +421,7 @@ func (a *Association) recvMessagePC(ctx context.Context) (pcid byte, command, da
 
 // Release performs association release and closes the connection.
 func (a *Association) Release(ctx context.Context) error {
-	if a.conn == nil {
+	if a.closed.Load() {
 		return nil
 	}
 	ctx = a.logCtx(ctx)
@@ -442,7 +449,7 @@ func (a *Association) Release(ctx context.Context) error {
 
 // Abort sends A-ABORT and closes the connection.
 func (a *Association) Abort() error {
-	if a.conn == nil {
+	if a.closed.Load() {
 		return nil
 	}
 	defer func() { _ = a.closeConn() }()
@@ -460,12 +467,10 @@ func (a *Association) Close() error {
 }
 
 func (a *Association) closeConn() error {
-	if a.conn == nil {
+	if !a.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	err := a.conn.Close()
-	a.conn = nil
-	return err
+	return a.conn.Close()
 }
 
 func (a *Association) writePDU(ctx context.Context, p pdu.PDU) error {

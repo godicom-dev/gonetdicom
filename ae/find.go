@@ -23,7 +23,9 @@ type FindRequest struct {
 	QueryModel     string // Affected SOP Class UID (information model)
 	Identifier     []byte
 	IdentifierData *godicom.Dataset
-	Priority       uint16 // 0 defaults to PriorityLow
+	// Priority requests a service priority from the peer, which may ignore it.
+	// The zero value is dimse.PriorityMedium — normal priority.
+	Priority uint16
 	// MessageID, when non-zero, is used as the C-FIND-RQ Message ID (for C-CANCEL).
 	MessageID uint16
 }
@@ -56,17 +58,13 @@ func (a *Association) CFind(ctx context.Context, req FindRequest) ([]FindMatch, 
 		return nil, fmt.Errorf("ae: C-FIND missing identifier")
 	}
 
-	priority := req.Priority
-	if priority == 0 {
-		priority = dimse.PriorityLow
-	}
 	msgID := req.MessageID
 	if msgID == 0 {
 		msgID = a.nextMessageID()
 	}
 	cmd, err := (&dimse.CFindRQ{
 		MessageID:           msgID,
-		Priority:            priority,
+		Priority:            req.Priority,
 		AffectedSOPClassUID: req.QueryModel,
 	}).Encode()
 	if err != nil {

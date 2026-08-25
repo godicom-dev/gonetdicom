@@ -7,8 +7,51 @@ on:
     branches: [main]
 
 jobs:
+  # go.mod requires Go 1.26, so the version axis spans the two current stable
+  # releases: the minimum the module claims to support, and the next one, which
+  # is where a change in the toolchain shows up first. Windows and macOS are here
+  # because this is a networking library that nothing but CI exercises off Linux.
   test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        go: ["1.26", "1.27"]
+    runs-on: ${{ matrix.os }}
+    name: test (${{ matrix.os }}, go${{ matrix.go }})
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+
+      - name: Test (race)
+        if: runner.os != 'Windows'
+        run: go test -race ./...
+
+      # -race needs cgo, and pointing it at whatever gcc the hosted Windows
+      # image ships is not a dependency worth taking; the detector still runs on
+      # the other two platforms, on the same code.
+      - name: Test
+        if: runner.os == 'Windows'
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+  # The PDU and DIMSE decoders read 32-bit length fields straight off the wire,
+  # and the mistakes that invites are invisible where int is 64 bits wide: a
+  # length above MaxInt32 only goes negative, and only slides past a bounds
+  # check, on a 32-bit build. These are the packages that build for one today —
+  # anything above them reaches godicom, which does not compile for a 32-bit
+  # target (encaps/encode.go: "(1 << 32) - 1 overflows int"). Widen the list when
+  # that changes.
+  test-386:
     runs-on: ubuntu-latest
+    name: test (linux/386)
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,10 +62,46 @@ jobs:
           go-version-file: go.mod
 
       - name: Test
-        run: go test -race ./...
+        env:
+          GOARCH: "386"
+        run: go test ./pdu ./dimse ./status
 
-      - name: Vet
-        run: go vet ./...
+  # Every "go test" run above replays the fuzz corpus, which catches regressions
+  # against inputs already known. This job looks for new ones. A failure here is
+  # a finding, not flakiness: it writes the input to testdata/fuzz, and that file
+  # belongs in the fix's commit.
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {pkg: ./pdu, target: FuzzRead}
+          - {pkg: ./pdu, target: FuzzDecodePDataTF}
+          - {pkg: ./dimse, target: FuzzDecodeElements}
+          - {pkg: ./dimse, target: FuzzCommandDecoders}
+    name: fuzz (${{ matrix.target }})
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Fuzz
+        run: >
+          go test ${{ matrix.pkg }}
+          -run=${{ matrix.target }} -fuzz=${{ matrix.target }} -fuzztime=60s
+
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}-corpus
+          path: ${{ matrix.pkg }}/testdata/fuzz
+          if-no-files-found: ignore
 
   lint:
     runs-on: ubuntu-latest

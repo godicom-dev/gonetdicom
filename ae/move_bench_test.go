@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/godicom-dev/godicom"
+	"github.com/godicom-dev/godicom/uid"
 	"github.com/godicom-dev/gonetdicom/ae"
 	"github.com/godicom-dev/gonetdicom/dimse"
 	"github.com/godicom-dev/gonetdicom/pdu"
@@ -26,7 +27,7 @@ func BenchmarkCMoveStoreAssociations(b *testing.B) {
 
 func benchmarkCMoveStores(b *testing.B, maxAssoc, nStores int) {
 	b.Helper()
-	ctUID := "1.2.840.10008.5.1.4.1.1.2"
+	ctUID := string(uid.CTImageStorage)
 
 	storeLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -67,12 +68,12 @@ func benchmarkCMoveStores(b *testing.B, maxAssoc, nStores int) {
 				stores := make([]ae.StoreRequest, nStores)
 				for i := range stores {
 					ds := godicom.NewDataset()
-					uid := "1.2.9." + strconv.Itoa(i)
+					instanceUID := "1.2.9." + strconv.Itoa(i)
 					ds.Set(godicom.NewDataElement(godicom.MustTag("SOPClassUID"), godicom.VRUI, ctUID))
-					ds.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, uid))
+					ds.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, instanceUID))
 					stores[i] = ae.StoreRequest{
 						AffectedSOPClassUID:    ctUID,
-						AffectedSOPInstanceUID: uid,
+						AffectedSOPInstanceUID: instanceUID,
 						Data:                   ds,
 					}
 				}

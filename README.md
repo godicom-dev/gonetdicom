@@ -137,18 +137,36 @@ cfg := ae.Config{
 	AETitle: "STORESCU",
 	PresentationContexts: []ae.PresentationContext{{
 		ID:               1,
-		AbstractSyntax:   "1.2.840.10008.5.1.4.1.1.7", // Secondary Capture
-		TransferSyntaxes: []string{"1.2.840.10008.1.2"},
+		AbstractSyntax:   string(uid.SecondaryCaptureImageStorage),
+		TransferSyntaxes: ae.UIDStrings(uid.ImplicitVRLittleEndian),
 	}},
 }
 assoc, err := ae.Dial(ctx, cfg, "pacs.example:11112", "ANY-SCP")
 // ...
 res, err := assoc.CStore(ctx, ae.StoreRequest{
-	AffectedSOPClassUID:    "1.2.840.10008.5.1.4.1.1.7",
+	AffectedSOPClassUID:    string(uid.SecondaryCaptureImageStorage),
 	AffectedSOPInstanceUID: "1.2.3.4.5", // optional: Data.SOPInstanceUID or ae.NewInstanceUID()
 	Data:                   ds,
 })
 ```
+
+SOP Classes and transfer syntaxes are named by *godicom*'s
+[`uid`](https://pkg.go.dev/github.com/godicom-dev/godicom/uid) package, so
+nothing here needs a UID pasted in; `ae.UIDStrings` converts a list of them to
+the `[]string` these fields hold.
+
+`CStore` does not modify the `Data` you hand it. With no
+`AffectedSOPInstanceUID` and no `SOPInstanceUID` in the dataset it generates a
+UID and encodes a copy carrying it, so reusing one `Dataset` across a series
+gives every instance its own identity; supplying the UID skips the copy.
+
+Leaving `ID` unset lets `Dial` assign the free odd Presentation-context-IDs,
+which is usually what you want; an explicit `ID` is kept as given. Since IDs are
+odd values in 1..255, one association carries at most
+`ae.MaxPresentationContexts` (128) of them — proposing more, an even ID, or the
+same ID twice fails with `ae.ErrPresentationContexts` rather than putting an
+ambiguous A-ASSOCIATE-RQ on the wire. To offer many storage SOP classes at once,
+negotiate in batches or narrow the list.
 
 **Query / Retrieve SCU (C-FIND / C-MOVE / C-GET)**
 
@@ -189,6 +207,12 @@ cfg := ae.Config{
 
 Cancel an outstanding FIND / MOVE / GET with `assoc.CCancel(ctx, msgID)`.
 
+An `*ae.Association` carries one DIMSE operation at a time: each method sends its
+request and then reads responses until the final one, so two running at once
+interleave PDUs on the same connection. Dial one association per worker for
+parallel work. `CCancel`, `Abort` and `Close` exist to reach an operation that is
+already blocked, so those three are safe to call from another goroutine.
+
 **Storage SCP (C-STORE)**
 
 `Serve` blocks until `ctx` is cancelled. Do not reuse a short `WithTimeout`
@@ -218,9 +242,30 @@ err = ae.Serve(ctx, ln, ae.ServerConfig{
 })
 ```
 
+`ae.AllStorageSOPClasses` is the whole Storage Service Class (pynetdicom's
+`_STORAGE_CLASSES`), built from the *godicom* `uid` constants so each entry is
+named in code rather than in a comment; a test checks the set against the
+pynetdicom submodule. For a narrower SCP, name the classes you accept:
+`ae.UIDStrings(uid.CTImageStorage, uid.MRImageStorage)`.
+
 `AcceptedAbstractSyntaxes` may include `"*"` to accept any peer-proposed abstract
 syntax. Named DIMSE status constants live in package
 [`status`](https://pkg.go.dev/github.com/godicom-dev/gonetdicom/status).
+
+The Called AE Title is checked: a requestor asking for anything other than
+`AETitle` (or an entry in `AlternativeAETitles`) gets an A-ASSOCIATE-RJ with
+*called-AE-title-not-recognized*. Set `AllowAnyCalledAETitle: true` for an SCP
+that deliberately answers to any name. A requestor that does not announce
+protocol version 1 is likewise rejected.
+
+Three `ServerConfig` fields bound what a peer can cost the SCP:
+`HandshakeTimeout` (default 30s) limits how long a connection may sit without
+completing negotiation, `IdleTimeout` ends an association whose peer goes silent
+— it is refreshed per read and write, so it bounds silence rather than total
+duration — and `MaxConcurrentAssociations` caps associations handled at once,
+answering anything above the cap with a transient *local-limit-exceeded*
+A-ASSOCIATE-RJ. `IdleTimeout` and `MaxConcurrentAssociations` are unlimited when
+unset; pass a negative `HandshakeTimeout` to opt out of that one deliberately.
 
 **Move Destination SCP (C-MOVE)**
 
@@ -294,12 +339,29 @@ bulk, err := client.RetrieveBulkData(ctx, studyUID, seriesUID, sopUID)
 matches, err := client.SearchStudies(ctx, url.Values{"PatientID": {"P001"}})
 ```
 
+UIDs are checked before a request is built: a study, series, or instance UID
+carrying a `/`, a `..`, or a `%` names a resource other than the one asked for, so
+it fails with `dicomweb.ErrInvalidPath` instead of going out.
+
+Both sides bound how much one body may buffer, since instances are held whole in
+memory. `Client.MaxResponseBytes` (or `dicomweb.WithMaxResponseBytes`) defaults to
+`dicomweb.DefaultMaxResponseBytes` (1 GiB) and fails with `dicomweb.ErrTooLarge`
+rather than returning a truncated study; a negative value opts out.
+
 Origin-server MVP for tests and demos:
 
 ```go
 store := dicomweb.NewMemoryStore()
-http.ListenAndServe(":8080", dicomweb.Handler(store, "/dicom-web"))
+http.ListenAndServe(":8080", dicomweb.Handler(store, "/dicom-web",
+	dicomweb.WithMaxRequestBytes(64<<20)))
 ```
+
+A STOW-RS body is buffered whole before it reaches the `Store`, so `Handler`
+bounds it at `dicomweb.DefaultMaxRequestBytes` (256 MiB) unless
+`WithMaxRequestBytes` says otherwise, answering anything larger with 413. Error
+responses carry only a status and a fixed reason — the cause comes from your
+`Store`, from decoding stored bytes, or from the render path, and goes to the
+request context's logger (`gonetdicom.WithLogger`) instead of to the requestor.
 
 ## Logging
 

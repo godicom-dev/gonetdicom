@@ -3,11 +3,8 @@ package ae
 import (
 	"context"
 	"fmt"
-	"net"
-	"time"
 
 	"github.com/godicom-dev/gonetdicom/dimse"
-	"github.com/godicom-dev/gonetdicom/pdu"
 )
 
 // CCancel sends a C-CANCEL-RQ for an outstanding C-FIND / C-MOVE / C-GET.
@@ -17,7 +14,9 @@ import (
 // the presentation context when contextID is 0.
 //
 // Safe to call concurrently with a blocked CFind/CMove/CGet on the same
-// association (net.Conn supports concurrent Read+Write).
+// association (net.Conn supports concurrent Read+Write). The peer SCP notices
+// the cancel between two of its responses, so expect to receive some further
+// pending responses before the final Cancel status.
 func (a *Association) CCancel(ctx context.Context, messageID uint16, contextID byte, queryModel string) error {
 	pcid := contextID
 	if pcid == 0 {
@@ -35,39 +34,4 @@ func (a *Association) CCancel(ctx context.Context, messageID uint16, contextID b
 		return err
 	}
 	return a.sendMessage(ctx, pcid, cmd, nil)
-}
-
-// peekCancelRQ tries to read a pending C-CANCEL-RQ for msgID without blocking long.
-// Returns true if a matching cancel was consumed from the connection.
-func peekCancelRQ(conn net.Conn, msgID uint16) bool {
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Millisecond))
-	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
-
-	raw, err := pdu.Read(conn)
-	if err != nil {
-		return false
-	}
-	p, ok := raw.(*pdu.PDataTF)
-	if !ok {
-		return false
-	}
-	var cmdBuf []byte
-	cmdDone := false
-	for _, pdv := range p.PDVs {
-		if !pdv.IsCommand() {
-			continue
-		}
-		cmdBuf = append(cmdBuf, pdv.Fragment()...)
-		if pdv.IsLast() {
-			cmdDone = true
-		}
-	}
-	if !cmdDone {
-		return false
-	}
-	cancel, err := dimse.DecodeCCancelRQ(cmdBuf)
-	if err != nil {
-		return false
-	}
-	return cancel.MessageIDBeingRespondedTo == msgID
 }

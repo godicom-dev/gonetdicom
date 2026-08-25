@@ -23,7 +23,9 @@ type MoveRequest struct {
 	MoveDestination string
 	Identifier      []byte
 	IdentifierData  *godicom.Dataset
-	Priority        uint16
+	// Priority requests a service priority from the peer, which may ignore it.
+	// The zero value is dimse.PriorityMedium — normal priority.
+	Priority uint16
 }
 
 // RetrieveMatch is one C-MOVE/C-GET response.
@@ -49,14 +51,10 @@ func (a *Association) CMove(ctx context.Context, req MoveRequest) ([]RetrieveMat
 	if err != nil {
 		return nil, err
 	}
-	priority := req.Priority
-	if priority == 0 {
-		priority = dimse.PriorityLow
-	}
 	msgID := a.nextMessageID()
 	cmd, err := (&dimse.CMoveRQ{
 		MessageID:           msgID,
-		Priority:            priority,
+		Priority:            req.Priority,
 		AffectedSOPClassUID: req.QueryModel,
 		MoveDestination:     req.MoveDestination,
 	}).Encode()
@@ -77,8 +75,10 @@ type GetRequest struct {
 	QueryModel     string
 	Identifier     []byte
 	IdentifierData *godicom.Dataset
-	Priority       uint16
-	OnCStore       StoreHandler
+	// Priority requests a service priority from the peer, which may ignore it.
+	// The zero value is dimse.PriorityMedium — normal priority.
+	Priority uint16
+	OnCStore StoreHandler
 }
 
 // CGet sends a C-GET-RQ, handles interleaved C-STORE requests, and collects
@@ -95,14 +95,10 @@ func (a *Association) CGet(ctx context.Context, req GetRequest) ([]RetrieveMatch
 	if err != nil {
 		return nil, err
 	}
-	priority := req.Priority
-	if priority == 0 {
-		priority = dimse.PriorityLow
-	}
 	msgID := a.nextMessageID()
 	cmd, err := (&dimse.CGetRQ{
 		MessageID:           msgID,
-		Priority:            priority,
+		Priority:            req.Priority,
 		AffectedSOPClassUID: req.QueryModel,
 	}).Encode()
 	if err != nil {

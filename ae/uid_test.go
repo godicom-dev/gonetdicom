@@ -78,9 +78,10 @@ func TestCStoreSCU_AutoInstanceUID(t *testing.T) {
 	if err := uid.Validate(res.AffectedSOPInstanceUID); err != nil {
 		t.Fatal(err)
 	}
-	got, ok := ds.GetString(godicom.MustTag("SOPInstanceUID"))
-	if !ok || got != res.AffectedSOPInstanceUID {
-		t.Fatalf("dataset SOPInstanceUID = %q want %q", got, res.AffectedSOPInstanceUID)
+	// The UID goes on the wire, not into the caller's Dataset — see
+	// TestCStoreDoesNotMutateCallerDataset for why that distinction matters.
+	if got, ok := ds.GetString(godicom.MustTag("SOPInstanceUID")); ok {
+		t.Fatalf("caller Dataset gained SOPInstanceUID %q", got)
 	}
 	if err := assoc.Release(ctx); err != nil {
 		t.Fatalf("release: %v", err)

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/godicom-dev/godicom/uid"
 	"github.com/godicom-dev/gonetdicom/ae"
 	"github.com/godicom-dev/gonetdicom/dimse"
 	"github.com/godicom-dev/gonetdicom/pdu"
@@ -75,7 +76,7 @@ func TestServeCStoreSCP(t *testing.T) {
 func TestServeCStoreSCPAcceptAllStorage(t *testing.T) {
 	t.Parallel()
 
-	const ctSOPClass = "1.2.840.10008.5.1.4.1.1.2"
+	const ctSOPClass = string(uid.CTImageStorage)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -190,9 +191,9 @@ func TestServeCStoreSCPWildcardAbstractSyntax(t *testing.T) {
 
 func TestAllStorageSOPClassesIncludesCT(t *testing.T) {
 	t.Parallel()
-	const ct = "1.2.840.10008.5.1.4.1.1.2"
-	for _, uid := range ae.AllStorageSOPClasses {
-		if uid == ct {
+	const ct = string(uid.CTImageStorage)
+	for _, sopClass := range ae.AllStorageSOPClasses {
+		if sopClass == ct {
 			return
 		}
 	}

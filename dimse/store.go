@@ -11,7 +11,10 @@ const (
 	CommandCStoreRSP uint16 = 0x8001
 )
 
-// Priority values for C-STORE / C-FIND / C-MOVE / C-GET.
+// Priority values for C-STORE / C-FIND / C-MOVE / C-GET (0000,0700).
+//
+// MEDIUM is encoded as zero, so the zero value of a Priority field is already a
+// valid request for normal priority — there is no "unset" to substitute for.
 const (
 	PriorityMedium uint16 = 0x0000
 	PriorityHigh   uint16 = 0x0001
