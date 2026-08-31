@@ -131,7 +131,7 @@ func (a *Association) CGet(ctx context.Context, req GetRequest) ([]RetrieveMatch
 		}
 		m := RetrieveMatch{Status: rsp.Status, SubOperations: rsp.SubOperations}
 		if len(rspDS) > 0 {
-			ident, err := godicom.DecodeDataset(rspDS, pc.TransferSyntax)
+			ident, err := godicom.DecodeDataset(rspDS, godicom.UID(pc.TransferSyntax))
 			if err != nil {
 				return matches, fmt.Errorf("ae: decode C-GET identifier: %w", err)
 			}
@@ -178,7 +178,7 @@ func (a *Association) collectRetrieve(ctx context.Context, transferSyntax string
 		}
 		m := RetrieveMatch{Status: status, SubOperations: subOps}
 		if len(rspDS) > 0 {
-			ident, err := godicom.DecodeDataset(rspDS, transferSyntax)
+			ident, err := godicom.DecodeDataset(rspDS, godicom.UID(transferSyntax))
 			if err != nil {
 				return matches, fmt.Errorf("ae: decode retrieve identifier: %w", err)
 			}
@@ -218,7 +218,7 @@ func (a *Association) handleInboundStore(ctx context.Context, pcid byte, rq *dim
 func encodeIdentifier(transferSyntax string, raw []byte, data *godicom.Dataset) ([]byte, error) {
 	payload := raw
 	if data != nil {
-		encoded, err := data.Encode(transferSyntax)
+		encoded, err := data.Encode(godicom.UID(transferSyntax))
 		if err != nil {
 			return nil, fmt.Errorf("ae: encode identifier: %w", err)
 		}

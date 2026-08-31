@@ -5,6 +5,39 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Depend on [godicom](https://github.com/godicom-dev/godicom) at
+  `v0.29.1-0.20260826030733-bcdbe0445007`, up from `v0.26.0`. Three releases'
+  worth of fixes arrive with it, and the 32-bit ones matter here: godicom's data
+  dictionary answered the wrong VR for nearly every tag on a 32-bit platform, and
+  `ParseTag` could not parse the item and delimiter tags from their hex-string
+  form on any platform. Also read and write diagnostics
+  (`ReadOptions.OnDiagnostic`, `WriteOptions.OnDiagnostic`), dictionary-VR
+  setters, and a fix for `AT` elements, which godicom wrote byte-swapped under
+  little endian
+- Transfer syntaxes are converted to `godicom.UID` where they cross into godicom
+  (31 call sites in `ae`). godicom v0.27.0 retyped its transfer-syntax parameters
+  from `string` to `uid.UID`; this package's `AbstractSyntax` and
+  `TransferSyntax` fields stay `string`, which is what `pdu` puts on the wire and
+  what `ae.UIDStrings` exists to feed them. `pdu`, `dimse` and `status` import no
+  godicom at all — the wire layers are dependency-free on purpose — so the
+  conversion belongs at the `ae` boundary and nowhere below it. No exported
+  signature changes
+
+### Removed
+- **BREAKING: `ae.WaveformPresentationStateStorage` and
+  `ae.WaveformAcquisitionPresentationStateStorage`.** They were spelled out here
+  only because godicom's UID dictionary did not name them yet, and their doc
+  comment said to drop them once it did — `TestStorageSOPClassesGodicomDoesNotName`
+  watched for exactly that and fired on this bump. Use
+  `uid.WaveformPresentationStateStorage` and
+  `uid.WaveformAcquisitionPresentationStateStorage`; the UID strings are
+  unchanged, and `AllStorageSOPClasses` still lists both SOP classes. The
+  surviving test now treats an entry missing from godicom's dictionary as a
+  failure rather than skipping it
+
 ## [0.16.0] - 2026-08-25
 
 A robustness release. Most of it is the audit of the wire decoders, the SCP

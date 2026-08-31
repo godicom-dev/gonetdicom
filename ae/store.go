@@ -84,7 +84,7 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 
 	payload := req.Dataset
 	if req.Data != nil {
-		encoded, err := req.Data.Encode(pc.TransferSyntax)
+		encoded, err := req.Data.Encode(godicom.UID(pc.TransferSyntax))
 		if err != nil {
 			return nil, fmt.Errorf("ae: encode dataset: %w", err)
 		}
@@ -148,7 +148,7 @@ func newInboundStoreRequest(rq *dimse.CStoreRQ, dataset []byte, transferSyntax s
 	if len(dataset) == 0 || transferSyntax == "" {
 		return req
 	}
-	ds, err := godicom.DecodeDataset(dataset, transferSyntax)
+	ds, err := godicom.DecodeDataset(dataset, godicom.UID(transferSyntax))
 	if err != nil {
 		return req
 	}

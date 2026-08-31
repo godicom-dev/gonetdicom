@@ -92,7 +92,7 @@ func (a *Association) NAction(ctx context.Context, req ActionRequest) (*ActionRe
 
 	payload := req.ActionInformation
 	if req.ActionInformationData != nil {
-		encoded, err := req.ActionInformationData.Encode(pc.TransferSyntax)
+		encoded, err := req.ActionInformationData.Encode(godicom.UID(pc.TransferSyntax))
 		if err != nil {
 			return nil, fmt.Errorf("ae: encode action information: %w", err)
 		}
@@ -133,7 +133,7 @@ func (a *Association) NAction(ctx context.Context, req ActionRequest) (*ActionRe
 		ActionReply:            rspDS,
 	}
 	if len(rspDS) > 0 {
-		ds, err := godicom.DecodeDataset(rspDS, pc.TransferSyntax)
+		ds, err := godicom.DecodeDataset(rspDS, godicom.UID(pc.TransferSyntax))
 		if err != nil {
 			return nil, fmt.Errorf("ae: decode action reply: %w", err)
 		}
@@ -163,7 +163,7 @@ func (a *Association) NEventReport(ctx context.Context, req EventReportRequest) 
 
 	payload := req.EventInformation
 	if req.EventInformationData != nil {
-		encoded, err := req.EventInformationData.Encode(pc.TransferSyntax)
+		encoded, err := req.EventInformationData.Encode(godicom.UID(pc.TransferSyntax))
 		if err != nil {
 			return nil, fmt.Errorf("ae: encode event information: %w", err)
 		}
@@ -219,7 +219,7 @@ func (a *Association) handleIncomingEventReport(ctx context.Context, h EventRepo
 	}
 	var info *godicom.Dataset
 	if len(rspDS) > 0 {
-		info, err = godicom.DecodeDataset(rspDS, ts)
+		info, err = godicom.DecodeDataset(rspDS, godicom.UID(ts))
 		if err != nil {
 			return fmt.Errorf("ae: decode event information: %w", err)
 		}
