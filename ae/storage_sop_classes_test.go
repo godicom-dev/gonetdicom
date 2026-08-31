@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 
@@ -15,8 +14,9 @@ import (
 // The list used to be 170 UID strings whose names lived only in trailing
 // comments, so a name could say one thing while the UID next to it meant
 // another and nothing would notice. The entries are godicom/uid constants now,
-// which makes a wrong name a compile error; what is left to check is that no
-// entry names something other than a Storage SOP Class, and that none repeats.
+// which makes a wrong name a compile error; what is left to check is that every
+// one of them is registered, that none names something other than a Storage SOP
+// Class, and that none repeats.
 func TestAllStorageSOPClassesAreDistinctStorageClasses(t *testing.T) {
 	t.Parallel()
 
@@ -32,9 +32,11 @@ func TestAllStorageSOPClassesAreDistinctStorageClasses(t *testing.T) {
 		}
 		seen[u] = i
 
-		info, known := uid.Known[uid.UID(u)]
+		info, known := uid.Lookup(uid.UID(u))
 		if !known {
-			// One of the two godicom does not name yet; the test below tracks those.
+			// Every entry is a godicom/uid constant now, and a constant without a
+			// dictionary entry would mean the two generated tables disagree.
+			t.Errorf("entry %d (%s) is not in godicom's UID dictionary", i, u)
 			continue
 		}
 		if info.Type != "SOP Class" {
@@ -103,30 +105,4 @@ func parseStorageClasses(t *testing.T, src string) map[string]string {
 		t.Fatal("_STORAGE_CLASSES parsed as empty: pynetdicom's sop_class.py changed shape")
 	}
 	return out
-}
-
-// Two Storage SOP Classes are written out here because godicom's dictionary does
-// not name them. That is a gap in the dependency, not a permanent arrangement,
-// so this test says when it closes.
-func TestStorageSOPClassesGodicomDoesNotName(t *testing.T) {
-	t.Parallel()
-
-	for _, c := range []struct{ keyword, value string }{
-		{"WaveformPresentationStateStorage", ae.WaveformPresentationStateStorage},
-		{"WaveformAcquisitionPresentationStateStorage", ae.WaveformAcquisitionPresentationStateStorage},
-	} {
-		if !slices.Contains(ae.AllStorageSOPClasses, c.value) {
-			t.Errorf("%s (%s) is missing from AllStorageSOPClasses", c.keyword, c.value)
-		}
-		got, ok := uid.Lookup(c.keyword)
-		if !ok {
-			continue
-		}
-		if string(got) != c.value {
-			t.Errorf("godicom names %s %s, we have %s", c.keyword, got, c.value)
-			continue
-		}
-		t.Errorf("godicom's dictionary now has %s: drop ae.%s and use uid.%s",
-			c.keyword, c.keyword, c.keyword)
-	}
 }

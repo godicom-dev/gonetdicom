@@ -48,7 +48,7 @@ func (a *Association) CFind(ctx context.Context, req FindRequest) ([]FindMatch, 
 
 	payload := req.Identifier
 	if req.IdentifierData != nil {
-		encoded, err := req.IdentifierData.Encode(pc.TransferSyntax)
+		encoded, err := req.IdentifierData.Encode(godicom.UID(pc.TransferSyntax))
 		if err != nil {
 			return nil, fmt.Errorf("ae: encode identifier: %w", err)
 		}
@@ -89,7 +89,7 @@ func (a *Association) CFind(ctx context.Context, req FindRequest) ([]FindMatch, 
 		}
 		m := FindMatch{Status: rsp.Status}
 		if len(rspDS) > 0 {
-			ident, err := godicom.DecodeDataset(rspDS, pc.TransferSyntax)
+			ident, err := godicom.DecodeDataset(rspDS, godicom.UID(pc.TransferSyntax))
 			if err != nil {
 				return matches, fmt.Errorf("ae: decode C-FIND identifier: %w", err)
 			}

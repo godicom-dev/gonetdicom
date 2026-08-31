@@ -552,7 +552,7 @@ func scpHandleFind(ctx context.Context, conn net.Conn, r *assocReader, cfg Serve
 
 	var ident *godicom.Dataset
 	if len(ds) > 0 {
-		decoded, err := godicom.DecodeDataset(ds, ac.TransferSyntax)
+		decoded, err := godicom.DecodeDataset(ds, godicom.UID(ac.TransferSyntax))
 		if err != nil {
 			return fmt.Errorf("ae: decode C-FIND identifier: %w", err)
 		}
@@ -598,7 +598,7 @@ func scpHandleFind(ctx context.Context, conn net.Conn, r *assocReader, cfg Serve
 		}
 		var payload []byte
 		if hasDS {
-			payload, err = m.Identifier.Encode(ac.TransferSyntax)
+			payload, err = m.Identifier.Encode(godicom.UID(ac.TransferSyntax))
 			if err != nil {
 				return fmt.Errorf("ae: encode C-FIND identifier: %w", err)
 			}
@@ -629,7 +629,7 @@ func scpHandleMove(ctx context.Context, conn net.Conn, r *assocReader, cfg Serve
 
 	var ident *godicom.Dataset
 	if len(ds) > 0 {
-		decoded, err := godicom.DecodeDataset(ds, ac.TransferSyntax)
+		decoded, err := godicom.DecodeDataset(ds, godicom.UID(ac.TransferSyntax))
 		if err != nil {
 			return fmt.Errorf("ae: decode C-MOVE identifier: %w", err)
 		}
@@ -880,7 +880,7 @@ func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg Server
 
 	var ident *godicom.Dataset
 	if len(ds) > 0 {
-		decoded, err := godicom.DecodeDataset(ds, ac.TransferSyntax)
+		decoded, err := godicom.DecodeDataset(ds, godicom.UID(ac.TransferSyntax))
 		if err != nil {
 			return fmt.Errorf("ae: decode C-GET identifier: %w", err)
 		}
@@ -908,7 +908,7 @@ func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg Server
 		}
 		payload := store.Dataset
 		if store.Data != nil {
-			encoded, err := store.Data.Encode(storeTS)
+			encoded, err := store.Data.Encode(godicom.UID(storeTS))
 			if err != nil {
 				return fmt.Errorf("ae: encode C-GET store dataset: %w", err)
 			}
@@ -994,7 +994,7 @@ func writeRetrieveResponses(ctx context.Context, conn net.Conn, r *assocReader, 
 		}
 		var payload []byte
 		if hasDS {
-			payload, err = m.Identifier.Encode(transferSyntax)
+			payload, err = m.Identifier.Encode(godicom.UID(transferSyntax))
 			if err != nil {
 				return fmt.Errorf("ae: encode retrieve identifier: %w", err)
 			}
@@ -1045,7 +1045,7 @@ func scpHandleNAction(ctx context.Context, conn net.Conn, r *assocReader, cfg Se
 	if ok && ac.AbstractSyntax == rq.RequestedSOPClassUID {
 		var info *godicom.Dataset
 		if len(ds) > 0 {
-			decoded, err := godicom.DecodeDataset(ds, ac.TransferSyntax)
+			decoded, err := godicom.DecodeDataset(ds, godicom.UID(ac.TransferSyntax))
 			if err != nil {
 				return fmt.Errorf("ae: decode action information: %w", err)
 			}
@@ -1078,7 +1078,7 @@ func scpHandleNAction(ctx context.Context, conn net.Conn, r *assocReader, cfg Se
 		if !ok {
 			return fmt.Errorf("ae: cannot encode action reply without accepted context")
 		}
-		encoded, err := result.ActionReplyData.Encode(ac.TransferSyntax)
+		encoded, err := result.ActionReplyData.Encode(godicom.UID(ac.TransferSyntax))
 		if err != nil {
 			return fmt.Errorf("ae: encode action reply: %w", err)
 		}
@@ -1117,7 +1117,7 @@ func scpHandleNEventReport(ctx context.Context, conn net.Conn, cfg ServerConfig,
 	if ok && ac.AbstractSyntax == rq.AffectedSOPClassUID {
 		var info *godicom.Dataset
 		if len(ds) > 0 {
-			decoded, err := godicom.DecodeDataset(ds, ac.TransferSyntax)
+			decoded, err := godicom.DecodeDataset(ds, godicom.UID(ac.TransferSyntax))
 			if err != nil {
 				return fmt.Errorf("ae: decode event information: %w", err)
 			}
@@ -1155,7 +1155,7 @@ func scpSendEventReport(ctx context.Context, conn net.Conn, r *assocReader, acce
 	}
 	payload := req.EventInformation
 	if req.EventInformationData != nil {
-		encoded, err := req.EventInformationData.Encode(ts)
+		encoded, err := req.EventInformationData.Encode(godicom.UID(ts))
 		if err != nil {
 			return fmt.Errorf("ae: encode event information: %w", err)
 		}
@@ -1264,7 +1264,7 @@ func scpHandleNSet(ctx context.Context, conn net.Conn, cfg ServerConfig, accepte
 	if ok && ac.AbstractSyntax == rq.RequestedSOPClassUID {
 		var mod *godicom.Dataset
 		if len(ds) > 0 {
-			decoded, err := godicom.DecodeDataset(ds, ac.TransferSyntax)
+			decoded, err := godicom.DecodeDataset(ds, godicom.UID(ac.TransferSyntax))
 			if err != nil {
 				return fmt.Errorf("ae: decode modification list: %w", err)
 			}
@@ -1302,7 +1302,7 @@ func scpHandleNCreate(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 	if ok && ac.AbstractSyntax == rq.AffectedSOPClassUID {
 		var attrs *godicom.Dataset
 		if len(ds) > 0 {
-			decoded, err := godicom.DecodeDataset(ds, ac.TransferSyntax)
+			decoded, err := godicom.DecodeDataset(ds, godicom.UID(ac.TransferSyntax))
 			if err != nil {
 				return fmt.Errorf("ae: decode N-CREATE attribute list: %w", err)
 			}
@@ -1416,7 +1416,7 @@ func writeNAttributeRSP(ctx context.Context, conn net.Conn, peerMax uint32, pcid
 		if !ok {
 			return fmt.Errorf("ae: cannot encode attribute list without accepted context")
 		}
-		encoded, err := listData.Encode(ac.TransferSyntax)
+		encoded, err := listData.Encode(godicom.UID(ac.TransferSyntax))
 		if err != nil {
 			return fmt.Errorf("ae: encode attribute list: %w", err)
 		}

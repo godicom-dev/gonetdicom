@@ -130,7 +130,7 @@ func (a *Association) NGet(ctx context.Context, req NGetRequest) (*NGetResult, e
 		AttributeList:          rspDS,
 	}
 	if len(rspDS) > 0 {
-		ds, err := godicom.DecodeDataset(rspDS, pc.TransferSyntax)
+		ds, err := godicom.DecodeDataset(rspDS, godicom.UID(pc.TransferSyntax))
 		if err != nil {
 			return nil, fmt.Errorf("ae: decode N-GET attribute list: %w", err)
 		}
@@ -153,7 +153,7 @@ func (a *Association) NSet(ctx context.Context, req SetRequest) (*SetResult, err
 	}
 	payload := req.ModificationList
 	if req.ModificationListData != nil {
-		encoded, err := req.ModificationListData.Encode(pc.TransferSyntax)
+		encoded, err := req.ModificationListData.Encode(godicom.UID(pc.TransferSyntax))
 		if err != nil {
 			return nil, fmt.Errorf("ae: encode modification list: %w", err)
 		}
@@ -190,7 +190,7 @@ func (a *Association) NSet(ctx context.Context, req SetRequest) (*SetResult, err
 		AttributeList:          rspDS,
 	}
 	if len(rspDS) > 0 {
-		ds, err := godicom.DecodeDataset(rspDS, pc.TransferSyntax)
+		ds, err := godicom.DecodeDataset(rspDS, godicom.UID(pc.TransferSyntax))
 		if err != nil {
 			return nil, fmt.Errorf("ae: decode N-SET attribute list: %w", err)
 		}
@@ -210,7 +210,7 @@ func (a *Association) NCreate(ctx context.Context, req CreateRequest) (*CreateRe
 	}
 	payload := req.AttributeList
 	if req.AttributeListData != nil {
-		encoded, err := req.AttributeListData.Encode(pc.TransferSyntax)
+		encoded, err := req.AttributeListData.Encode(godicom.UID(pc.TransferSyntax))
 		if err != nil {
 			return nil, fmt.Errorf("ae: encode N-CREATE attribute list: %w", err)
 		}
@@ -247,7 +247,7 @@ func (a *Association) NCreate(ctx context.Context, req CreateRequest) (*CreateRe
 		AttributeList:          rspDS,
 	}
 	if len(rspDS) > 0 {
-		ds, err := godicom.DecodeDataset(rspDS, pc.TransferSyntax)
+		ds, err := godicom.DecodeDataset(rspDS, godicom.UID(pc.TransferSyntax))
 		if err != nil {
 			return nil, fmt.Errorf("ae: decode N-CREATE attribute list: %w", err)
 		}

@@ -171,8 +171,8 @@ var AllStorageSOPClasses = UIDStrings(
 	uid.GeneralECGWaveformStorage,
 	uid.AmbulatoryECGWaveformStorage,
 	uid.General32bitECGWaveformStorage,
-	WaveformPresentationStateStorage,
-	WaveformAcquisitionPresentationStateStorage,
+	uid.WaveformPresentationStateStorage,
+	uid.WaveformAcquisitionPresentationStateStorage,
 	uid.HemodynamicWaveformStorage,
 	uid.CardiacElectrophysiologyWaveformStorage,
 	uid.BasicVoiceAudioWaveformStorage,
@@ -189,13 +189,4 @@ var AllStorageSOPClasses = UIDStrings(
 	uid.MicroscopyBulkSimpleAnnotationsStorage,
 	uid.RTBrachyApplicationSetupDeliveryInstructionStorage,
 	uid.RTBeamsDeliveryInstructionStorage,
-)
-
-// Storage SOP Classes godicom's UID dictionary does not name yet (godicom
-// v0.26.0), spelled out so the list above stays complete. Untyped so they pass
-// anywhere a UID string or a uid.UID is wanted; drop them once the dictionary
-// catches up (TestStorageSOPClassesGodicomDoesNotName watches for that).
-const (
-	WaveformPresentationStateStorage            = "1.2.840.10008.5.1.4.1.1.9.100.1"
-	WaveformAcquisitionPresentationStateStorage = "1.2.840.10008.5.1.4.1.1.9.100.2"
 )

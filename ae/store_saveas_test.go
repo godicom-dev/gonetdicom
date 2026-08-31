@@ -69,7 +69,7 @@ func TestInboundStoreRequestPreservesRLEMultiFrame(t *testing.T) {
 	if !ok || ts == "" {
 		t.Fatal("missing TS")
 	}
-	raw, err := orig.Encode(ts)
+	raw, err := orig.Encode(godicom.UID(ts))
 	if err != nil {
 		t.Fatal(err)
 	}
