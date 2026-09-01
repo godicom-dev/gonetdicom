@@ -8,15 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- Depend on [godicom](https://github.com/godicom-dev/godicom) at
-  `v0.29.1-0.20260826030733-bcdbe0445007`, up from `v0.26.0`. Three releases'
-  worth of fixes arrive with it, and the 32-bit ones matter here: godicom's data
-  dictionary answered the wrong VR for nearly every tag on a 32-bit platform, and
-  `ParseTag` could not parse the item and delimiter tags from their hex-string
-  form on any platform. Also read and write diagnostics
+- Depend on [godicom](https://github.com/godicom-dev/godicom) `v0.30.0`, up from
+  `v0.26.0`. Four releases' worth of fixes arrive with it, and the 32-bit ones
+  matter here: godicom's data dictionary answered the wrong VR for nearly every
+  tag on a 32-bit platform, and `ParseTag` could not parse the item and delimiter
+  tags from their hex-string form on any platform. Also read and write diagnostics
   (`ReadOptions.OnDiagnostic`, `WriteOptions.OnDiagnostic`), dictionary-VR
-  setters, and a fix for `AT` elements, which godicom wrote byte-swapped under
-  little endian
+  setters, a data dictionary a caller can supply per read
+  (`ReadOptions.Dictionary`, `NewPrivateDictionary`), and a fix for `AT` elements,
+  which godicom wrote byte-swapped under little endian
 - Transfer syntaxes are converted to `godicom.UID` where they cross into godicom
   (30 call sites in `ae`). godicom v0.27.0 retyped its transfer-syntax parameters
   from `string` to `uid.UID`; this package's `AbstractSyntax` and
