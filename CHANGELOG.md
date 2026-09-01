@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   setters, and a fix for `AT` elements, which godicom wrote byte-swapped under
   little endian
 - Transfer syntaxes are converted to `godicom.UID` where they cross into godicom
-  (31 call sites in `ae`). godicom v0.27.0 retyped its transfer-syntax parameters
+  (30 call sites in `ae`). godicom v0.27.0 retyped its transfer-syntax parameters
   from `string` to `uid.UID`; this package's `AbstractSyntax` and
   `TransferSyntax` fields stay `string`, which is what `pdu` puts on the wire and
   what `ae.UIDStrings` exists to feed them. `pdu`, `dimse` and `status` import no
