@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1] - 2026-10-20
+
+A dependency release: godicom `v0.30.0` → `v0.33.0`. Nothing in the exported
+surface changed.
+
+### Changed
+- Depend on [godicom](https://github.com/godicom-dev/godicom) `v0.33.0`, up from
+  `v0.30.0`. The three releases in between add `ReadOptions.OnElement`, palette
+  color lookup (`ApplyColorLUT`, and `DisplayFrame` for `PALETTE COLOR`), a
+  read-only DICOMDIR (`OpenFileSet`, `LoadFileSet`), and `Dataset.OverlayArray`.
+  godicom `v0.31.0` also stopped `SpecificTags` from emptying the sequences it
+  keeps: the filter applies to the top-level dataset only. This module does not
+  call `SpecificTags`, so that change does not affect its behaviour
+
 ## [0.17.0] - 2026-09-04
 
 A dependency release: godicom `v0.26.0` → `v0.30.0`. Four releases' worth of
