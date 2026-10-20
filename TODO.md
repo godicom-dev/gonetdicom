@@ -5,10 +5,10 @@ this file tracks deferred work.
 
 ## Status
 
-DIMSE (association, C-ECHO / C-STORE / C-FIND / C-MOVE / C-GET / C-CANCEL,
-DIMSE-N, role selection, user identity, storage commitment) and a DICOMweb MVP
-(WADO-RS including rendered/bulkdata, STOW-RS, QIDO-RS) ship as of **v0.13.0**,
-on [godicom](https://github.com/godicom-dev/godicom) `v0.25.1+`.
+As of **v0.17.1**, on [godicom](https://github.com/godicom-dev/godicom)
+`v0.33.0`: DIMSE (association, C-ECHO / C-STORE / C-FIND / C-MOVE / C-GET /
+C-CANCEL, DIMSE-N, role selection, user identity, storage commitment) and a
+DICOMweb MVP (WADO-RS including rendered/bulkdata, STOW-RS, QIDO-RS).
 
 ## Principles
 
@@ -24,7 +24,7 @@ on [godicom](https://github.com/godicom-dev/godicom) `v0.25.1+`.
 
 - Full SCP framework parity with pynetdicom
 - DICOM WebSockets
-- HTJ2K / JPEG encode for Accept renegotiation (blocked on JPEG encode upstream)
+- C-STORE transfer-syntax transcoding when the accepted presentation context differs from the stored dataset. godicom can encode JPEG and HTJ2K; this module does not transcode
 - Study / series multipart rendered; richer QIDO fuzzy matching
 - Production origin-server auth and persistence backends
 - Broader multi-PACS soak matrix in CI
