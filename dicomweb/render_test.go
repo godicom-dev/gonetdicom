@@ -342,9 +342,9 @@ func compressedFile(t *testing.T) *godicom.FileDataset {
 		t.Fatal(err)
 	}
 	fd := mono8File(t)
-	fd.Dataset.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, "1.2.3.4.7"))
-	fd.Dataset.Set(godicom.NewDataElement(godicom.MustTag("NumberOfFrames"), godicom.VRIS, "2"))
-	fd.Dataset.Set(godicom.NewDataElement(godicom.MustTag("PixelData"), godicom.VROB, enc))
+	fd.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, "1.2.3.4.7"))
+	fd.Set(godicom.NewDataElement(godicom.MustTag("NumberOfFrames"), godicom.VRIS, "2"))
+	fd.Set(godicom.NewDataElement(godicom.MustTag("PixelData"), godicom.VROB, enc))
 	fd.FileMeta.Set(godicom.NewDataElement(godicom.MustTag("MediaStorageSOPInstanceUID"), godicom.VRUI, "1.2.3.4.7"))
 	fd.FileMeta.Set(godicom.NewDataElement(godicom.MustTag("TransferSyntaxUID"), godicom.VRUI, string(uid.JPEGBaseline8Bit)))
 	return fd

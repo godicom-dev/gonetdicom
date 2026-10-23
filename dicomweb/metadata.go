@@ -43,7 +43,7 @@ func metadataDataset(fd *godicom.FileDataset) *godicom.Dataset {
 	}
 	if fd.Dataset != nil && fd.FileMeta != nil {
 		if ts, ok := fd.FileMeta.GetString(godicom.MustTag("TransferSyntaxUID")); ok && ts != "" {
-			fd.Dataset.Set(godicom.NewDataElement(godicom.MustTag("TransferSyntaxUID"), godicom.VRUI, ts))
+			fd.Set(godicom.NewDataElement(godicom.MustTag("TransferSyntaxUID"), godicom.VRUI, ts))
 		}
 	}
 	return fd.Dataset
