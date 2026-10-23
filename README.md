@@ -335,6 +335,7 @@ mt, img, err := client.RetrieveRenderedInstance(ctx, studyUID, seriesUID, sopUID
 	Quality:   90,
 })
 bulk, err := client.RetrieveBulkData(ctx, studyUID, seriesUID, sopUID)
+frames, err := client.RetrieveFrames(ctx, studyUID, seriesUID, sopUID, []int{1})
 
 matches, err := client.SearchStudies(ctx, url.Values{"PatientID": {"P001"}})
 ```

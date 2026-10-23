@@ -64,6 +64,22 @@ func TestMetadataBulkDataURI(t *testing.T) {
 	if strings.Contains(pd, "InlineBinary") {
 		t.Fatalf("PixelData must not use InlineBinary: %s", pd)
 	}
+	if !strings.Contains(string(raw), `"00020010"`) || !strings.Contains(string(raw), "1.2.840.10008.1.2.1") {
+		t.Fatalf("metadata missing TransferSyntaxUID: %s", raw)
+	}
+
+	seriesResp, err := srv.Client().Get(srv.URL + "/dicom-web/studies/1.2.3/series/1.2.3.4/metadata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer seriesResp.Body.Close()
+	seriesRaw, err := io.ReadAll(seriesResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seriesResp.StatusCode != http.StatusOK || !strings.Contains(string(seriesRaw), `"00020010"`) {
+		t.Fatalf("series metadata %d %s", seriesResp.StatusCode, seriesRaw)
+	}
 
 	meta, err := client.RetrieveInstanceMetadata(ctx, "1.2.3", "1.2.3.4", "1.2.3.4.5")
 	if err != nil {

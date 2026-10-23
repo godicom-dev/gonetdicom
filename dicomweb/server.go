@@ -365,6 +365,9 @@ func Handler(store Store, prefix string, opts ...HandlerOption) http.Handler {
 		// GET .../instances/{instance}/bulkdata
 		case r.Method == http.MethodGet && len(parts) == 6 && parts[1] == "series" && parts[3] == "instances" && parts[5] == "bulkdata":
 			handleWADOBulkData(w, r, store, parts[0], parts[2], parts[4])
+		// GET .../instances/{instance}/frames/{frames}
+		case r.Method == http.MethodGet && len(parts) == 7 && parts[1] == "series" && parts[3] == "instances" && parts[5] == "frames":
+			handleWADOFrames(w, r, store, parts[0], parts[2], parts[4], parts[6])
 		default:
 			http.NotFound(w, r)
 		}
@@ -484,7 +487,7 @@ func handleWADOManyMetadata(w http.ResponseWriter, r *http.Request, store Store,
 			respondError(w, r, "wado: read stored instance", "retrieve failed", http.StatusInternalServerError, err)
 			return
 		}
-		metas = append(metas, fd.Dataset)
+		metas = append(metas, metadataDataset(fd))
 	}
 	body, err := marshalManyMetadata(metas, prefix, study, series)
 	if err != nil {
@@ -529,7 +532,7 @@ func handleWADOMetadata(w http.ResponseWriter, r *http.Request, store Store, pre
 		respondError(w, r, "wado: read stored instance", "retrieve failed", http.StatusInternalServerError, err)
 		return
 	}
-	body, err := marshalInstanceMetadata(fd.Dataset, BulkDataURI(prefix, study, series, instance))
+	body, err := marshalInstanceMetadata(metadataDataset(fd), BulkDataURI(prefix, study, series, instance))
 	if err != nil {
 		respondError(w, r, "wado: marshal metadata", "retrieve failed", http.StatusInternalServerError, err)
 		return
@@ -577,4 +580,41 @@ func handleWADOBulkData(w http.ResponseWriter, r *http.Request, store Store, stu
 	}
 	w.Header().Set("Content-Type", MediaTypeOctetStream)
 	_, _ = w.Write(bulk)
+}
+
+func handleWADOFrames(w http.ResponseWriter, r *http.Request, store Store, study, series, instance, frameList string) {
+	indexes, err := parseFrameList(frameList)
+	if err != nil {
+		http.Error(w, "bad frame list", http.StatusBadRequest)
+		return
+	}
+	raw, err := store.GetInstance(study, series, instance)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		respondError(w, r, "wado: get instance", "retrieve failed", http.StatusInternalServerError, err)
+		return
+	}
+	transferSyntax, frames, err := ExtractFrames(raw)
+	if err != nil {
+		if errors.Is(err, errNoPixelData) {
+			respondError(w, r, "wado: extract frames", "no bulk data for this instance", http.StatusNotFound, err)
+			return
+		}
+		respondError(w, r, "wado: extract frames", "cannot retrieve frames", http.StatusNotAcceptable, err)
+		return
+	}
+	selected := make([][]byte, 0, len(indexes))
+	for _, n := range indexes {
+		if n > len(frames) {
+			respondError(w, r, "wado: frame index", "cannot retrieve frames", http.StatusNotAcceptable,
+				fmt.Errorf("dicomweb: frame %d out of range (have %d)", n, len(frames)))
+			return
+		}
+		selected = append(selected, frames[n-1])
+	}
+	// A part write can fail only after the multipart preamble is on the wire.
+	_ = writeFrameParts(w, selected, transferSyntax)
 }

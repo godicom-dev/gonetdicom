@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/godicom-dev/godicom"
@@ -170,6 +172,51 @@ func (c *Client) RetrieveBulkData(ctx context.Context, studyUID, seriesUID, inst
 		return nil, err
 	}
 	return readAll(resp.Body, c.maxResponseBytes())
+}
+
+// RetrieveFrames fetches the given 1-based frame numbers as stored bytes
+// (WADO-RS Retrieve Frames). Compressed frames stay in their transfer syntax.
+func (c *Client) RetrieveFrames(ctx context.Context, studyUID, seriesUID, instanceUID string, frames []int) ([][]byte, error) {
+	if studyUID == "" || seriesUID == "" || instanceUID == "" {
+		return nil, fmt.Errorf("dicomweb: study/series/instance UID required")
+	}
+	if len(frames) == 0 {
+		return nil, fmt.Errorf("dicomweb: frame list required")
+	}
+	var list strings.Builder
+	for i, n := range frames {
+		if n < 1 {
+			return nil, fmt.Errorf("dicomweb: frame numbers are 1-based")
+		}
+		if i > 0 {
+			list.WriteByte(',')
+		}
+		list.WriteString(strconv.Itoa(n))
+	}
+	base, err := c.resolve("studies", studyUID, "series", seriesUID, "instances", instanceUID, "frames")
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return nil, err
+	}
+	u.Path += "/" + list.String()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", fmt.Sprintf(`%s; type="%s"; transfer-syntax=*`, MediaTypeMultipart, MediaTypeOctetStream))
+
+	resp, err := c.do(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return readDICOMParts(capReader(resp.Body, c.maxResponseBytes()), resp.Header.Get("Content-Type"))
 }
 
 func urlValuesFrameQuality(opts RenderOptions) string {

@@ -16,6 +16,11 @@ func multipartContentType(boundary string) string {
 	return fmt.Sprintf(`%s; type="%s"; boundary=%s`, MediaTypeMultipart, MediaTypeDICOM, boundary)
 }
 
+func frameMultipartContentType(boundary, transferSyntax string) string {
+	return fmt.Sprintf(`%s; type="%s"; transfer-syntax=%s; boundary=%s`,
+		MediaTypeMultipart, MediaTypeOctetStream, transferSyntax, boundary)
+}
+
 // writeDICOMParts writes parts as a multipart/related body and sets the
 // response Content-Type to match.
 //
@@ -35,6 +40,26 @@ func writeDICOMParts(w http.ResponseWriter, parts [][]byte) error {
 			return fmt.Errorf("dicomweb: multipart part %d: %w", i, err)
 		}
 		if _, err := pw.Write(part); err != nil {
+			return err
+		}
+	}
+	return mw.Close()
+}
+
+// writeFrameParts writes Retrieve Frames as multipart/related of
+// application/octet-stream. Each part is one requested frame in the instance's
+// transfer syntax. Callers must not have written a body before calling this.
+func writeFrameParts(w http.ResponseWriter, frames [][]byte, transferSyntax string) error {
+	mw := multipart.NewWriter(w)
+	w.Header().Set("Content-Type", frameMultipartContentType(mw.Boundary(), transferSyntax))
+	for i, frame := range frames {
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Type", MediaTypeOctetStream)
+		pw, err := mw.CreatePart(h)
+		if err != nil {
+			return fmt.Errorf("dicomweb: frame part %d: %w", i, err)
+		}
+		if _, err := pw.Write(frame); err != nil {
 			return err
 		}
 	}

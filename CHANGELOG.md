@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-10-23
+
+### Added
+- WADO-RS Retrieve Frames: `GET .../instances/{instance}/frames/{frames}` and
+  `Client.RetrieveFrames`. Uncompressed frames are the stored pixel bytes.
+  Compressed frames are the encapsulated bitstream in the instance's transfer
+  syntax, not decoded pixels. The response is `multipart/related` of
+  `application/octet-stream` and names that transfer syntax
+- WADO-RS metadata includes Transfer Syntax UID `(0002,0010)` from the file
+  meta, so a viewer can choose the decoder for those frames
+
+### Changed
+- Depend on [godicom](https://github.com/godicom-dev/godicom) `v0.34.0`. DICOM
+  JSON now inlines a binary value when the BulkDataURI builder declines it, so
+  metadata for an instance with private `UN` or `OB` elements succeeds while
+  Pixel Data stays a BulkDataURI
+
 ## [0.17.1] - 2026-10-20
 
 A dependency release: godicom `v0.30.0` → `v0.33.0`. Nothing in the exported

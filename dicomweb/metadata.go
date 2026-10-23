@@ -32,6 +32,23 @@ func prepareMetadataForJSON(ds *godicom.Dataset) *godicom.Dataset {
 	return out
 }
 
+// metadataDataset returns the dataset with Transfer Syntax UID copied out of
+// file meta. OHIF reads (0002,0010) from WADO-RS metadata to choose the
+// decoder for the frames response. Other file-meta elements stay out: the
+// version tag is binary, and a bulk-data threshold of zero would reject it.
+// The dataset comes from a request-local read, so the added element is not stored.
+func metadataDataset(fd *godicom.FileDataset) *godicom.Dataset {
+	if fd == nil {
+		return nil
+	}
+	if fd.Dataset != nil && fd.FileMeta != nil {
+		if ts, ok := fd.FileMeta.GetString(godicom.MustTag("TransferSyntaxUID")); ok && ts != "" {
+			fd.Dataset.Set(godicom.NewDataElement(godicom.MustTag("TransferSyntaxUID"), godicom.VRUI, ts))
+		}
+	}
+	return fd.Dataset
+}
+
 func marshalInstanceMetadata(ds *godicom.Dataset, bulkURI string) ([]byte, error) {
 	prepared := prepareMetadataForJSON(ds)
 	return dicomjson.MarshalDatasets([]*godicom.Dataset{prepared},
