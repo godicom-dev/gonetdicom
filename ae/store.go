@@ -77,7 +77,7 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 			req.Data = data
 		}
 	}
-	pc, ok := a.contextByAbstract(req.AffectedSOPClassUID)
+	pc, ok := a.contextForStore(req.AffectedSOPClassUID, req.TransferSyntax)
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNoContext, req.AffectedSOPClassUID)
 	}

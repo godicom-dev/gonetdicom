@@ -299,6 +299,49 @@ func (a *Association) contextByAbstract(uid string) (AcceptedContext, bool) {
 	return AcceptedContext{}, false
 }
 
+// contextForStore matches pynetdicom Association._get_valid_context for a
+// C-STORE. An empty transfer syntax keeps the first context for the SOP
+// Class. Otherwise an exact transfer syntax wins. Uncompressed little-endian
+// syntaxes may substitute for each other (implicit VR, explicit VR, deflated);
+// a compressed syntax requires an exact match.
+func (a *Association) contextForStore(sop, ts string) (AcceptedContext, bool) {
+	if ts == "" {
+		return a.contextByAbstract(sop)
+	}
+	var convertible AcceptedContext
+	var haveConvertible bool
+	for _, c := range a.contexts {
+		if c.AbstractSyntax != sop {
+			continue
+		}
+		if c.TransferSyntax == ts {
+			return c, true
+		}
+		if uncompressedLittleEndian(ts) && uncompressedLittleEndian(c.TransferSyntax) && !haveConvertible {
+			convertible = c
+			haveConvertible = true
+		}
+	}
+	if haveConvertible {
+		return convertible, true
+	}
+	return AcceptedContext{}, false
+}
+
+func uncompressedLittleEndian(ts string) bool {
+	switch ts {
+	case pdu.ImplicitVRLittleEndian, explicitVRLittleEndian, deflatedExplicitVRLittleEndian:
+		return true
+	default:
+		return false
+	}
+}
+
+const (
+	explicitVRLittleEndian         = "1.2.840.10008.1.2.1"
+	deflatedExplicitVRLittleEndian = "1.2.840.10008.1.2.1.99"
+)
+
 // nextMessageID hands out the Message ID for one request. IDs start at 1 and
 // skip 0 on wrap, as pynetdicom does.
 func (a *Association) nextMessageID() uint16 {

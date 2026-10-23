@@ -31,13 +31,22 @@ type MoveHandler func(ctx context.Context, req MoveRequest) MovePlan
 
 // MovePlan is the SCP response plan for a C-MOVE-RQ.
 //
-// When Stores is non-empty and ServerConfig.MoveDestinations resolves the
-// Move Destination, the SCP opens a Storage SCU association and performs
-// C-STORE sub-operations. If Responses is empty, pending/final C-MOVE-RSP
-// statuses are derived from store outcomes.
+// Destination is the first yield of pynetdicom's evt.EVT_C_MOVE handler
+// (pynetdicom/_handlers.py doc_handle_move): the address and port of the
+// Move Destination. Nil keeps the ServerConfig.MoveDestinations lookup.
+// A non-nil Destination with an empty Addr is an unknown destination, and
+// the SCP responds with status 0xA801, the same as yielding (None, None).
+//
+// When Stores is non-empty and the destination is known, the SCP opens a
+// Storage SCU association and performs C-STORE sub-operations. Each distinct
+// SOP Class and stored transfer syntax is one presentation context offering
+// only that syntax, as qrscp does with build_context(sop_class_uid,
+// transfer_syntax_uid). If Responses is empty, pending and final C-MOVE-RSP
+// statuses are derived from the store outcomes.
 type MovePlan struct {
-	Stores    []StoreRequest
-	Responses []RetrieveMatch
+	Destination *MoveDestination
+	Stores      []StoreRequest
+	Responses   []RetrieveMatch
 }
 
 // MoveDestination is an outbound Storage SCP endpoint for C-MOVE sub-operations.
@@ -106,7 +115,8 @@ type ServerConfig struct {
 	OnNCreate                NCreateHandler
 	OnNDelete                NDeleteHandler
 	// MoveDestinations maps Move Destination AE Title → Storage SCP endpoint.
-	// Required to perform real C-STORE sub-operations during C-MOVE.
+	// Used when MovePlan.Destination is nil. A handler that looks the peer up
+	// itself sets MovePlan.Destination and leaves this map unused.
 	MoveDestinations map[string]MoveDestination
 	// RoleSelections lists SOP Classes for which this SCP supports non-default
 	// SCP/SCU roles (values are the *acceptor* capabilities). Empty means
@@ -646,8 +656,15 @@ func scpHandleMove(ctx context.Context, conn net.Conn, r *assocReader, cfg Serve
 			Priority:        rq.Priority,
 		})
 	}
+	if plan.Destination != nil && plan.Destination.Addr == "" {
+		// pynetdicom service_class._c_move returns 0xA801 when the first
+		// yield is (None, None), before it asks how many matches there are.
+		return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
+			Status: dcmstatus.MoveDestinationUnknown,
+		}})
+	}
 	if len(plan.Stores) > 0 {
-		if err := scpPerformMoveStores(ctx, conn, r, cfg, peerMax, pcid, ac.TransferSyntax, rq, callingAE, plan.Stores); err != nil {
+		if err := scpPerformMoveStores(ctx, conn, r, cfg, peerMax, pcid, ac.TransferSyntax, rq, callingAE, plan.Destination, plan.Stores); err != nil {
 			fail := []RetrieveMatch{{
 				Status: dcmstatus.MoveDestinationUnknown,
 				SubOperations: dimse.SubOperations{
@@ -683,8 +700,49 @@ func subOpCount(n int) uint16 {
 	return uint16(n)
 }
 
-func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, peerMax uint32, pcid byte, transferSyntax string, rq *dimse.CMoveRQ, moveOriginatorAE string, stores []StoreRequest) error {
-	dest, ok := cfg.MoveDestinations[rq.MoveDestination]
+// movePresentationContexts is qrscp handle_move:
+// contexts = list({build_context(sop_class_uid, transfer_syntax_uid)}).
+// build_context(sop, ts) offers only that transfer syntax. A StoreRequest
+// with no TransferSyntax offers Implicit VR Little Endian, which is the
+// syntax this path proposed before a stored syntax was available.
+func movePresentationContexts(stores []StoreRequest) ([]PresentationContext, error) {
+	type pair struct{ sop, ts string }
+	seen := map[pair]struct{}{}
+	var pcs []PresentationContext
+	for _, store := range stores {
+		if store.AffectedSOPClassUID == "" {
+			continue
+		}
+		ts := store.TransferSyntax
+		if ts == "" {
+			ts = pdu.ImplicitVRLittleEndian
+		}
+		key := pair{store.AffectedSOPClassUID, ts}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		// ID left unset: Dial assigns the free odd IDs.
+		pcs = append(pcs, PresentationContext{
+			AbstractSyntax:   store.AffectedSOPClassUID,
+			TransferSyntaxes: []string{ts},
+		})
+	}
+	if len(pcs) == 0 {
+		return nil, fmt.Errorf("ae: C-MOVE stores missing SOP Class UID")
+	}
+	return pcs, nil
+}
+
+func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, peerMax uint32, pcid byte, transferSyntax string, rq *dimse.CMoveRQ, moveOriginatorAE string, override *MoveDestination, stores []StoreRequest) error {
+	var dest MoveDestination
+	var ok bool
+	if override != nil {
+		dest = *override
+		ok = dest.Addr != ""
+	} else {
+		dest, ok = cfg.MoveDestinations[rq.MoveDestination]
+	}
 	if !ok || dest.Addr == "" {
 		return fmt.Errorf("ae: unknown Move Destination %q", rq.MoveDestination)
 	}
@@ -697,25 +755,9 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cf
 		calling = cfg.AETitle
 	}
 
-	seen := map[string]struct{}{}
-	var pcs []PresentationContext
-	for _, s := range stores {
-		if s.AffectedSOPClassUID == "" {
-			continue
-		}
-		if _, ok := seen[s.AffectedSOPClassUID]; ok {
-			continue
-		}
-		seen[s.AffectedSOPClassUID] = struct{}{}
-		// ID left unset: Dial assigns the free odd IDs. Counting up by two here
-		// wrapped back to 1 past the 128th SOP class.
-		pcs = append(pcs, PresentationContext{
-			AbstractSyntax:   s.AffectedSOPClassUID,
-			TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian},
-		})
-	}
-	if len(pcs) == 0 {
-		return fmt.Errorf("ae: C-MOVE stores missing SOP Class UID")
+	pcs, err := movePresentationContexts(stores)
+	if err != nil {
+		return err
 	}
 
 	prepared := make([]StoreRequest, len(stores))

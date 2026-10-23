@@ -426,3 +426,154 @@ func TestCMoveSubOperationCountSaturates(t *testing.T) {
 	cancel()
 	<-errCh
 }
+
+// The handler yields the destination, which is pynetdicom's first yield of
+// evt.EVT_C_MOVE. The map is empty. The stored transfer syntax is the only
+// one proposed, matching qrscp build_context(sop_class_uid, transfer_syntax_uid).
+func TestCMovePlanDestination(t *testing.T) {
+	t.Parallel()
+
+	ctUID := string(uid.CTImageStorage)
+	explicit := string(uid.ExplicitVRLittleEndian)
+	sopInstance := "1.2.3.4.5.6"
+
+	storeLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storeLn.Close()
+
+	moveLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer moveLn.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var gotTS atomic.Value
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- ae.Serve(ctx, storeLn, ae.ServerConfig{
+			AETitle:                  "STORESCP",
+			AcceptedAbstractSyntaxes: []string{ctUID},
+			OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
+				gotTS.Store(req.TransferSyntax)
+				return dimse.StatusSuccess
+			},
+		})
+	}()
+	go func() {
+		errCh <- ae.Serve(ctx, moveLn, ae.ServerConfig{
+			AETitle:                  "MOVESCP",
+			AcceptedAbstractSyntaxes: []string{ae.PatientRootQueryRetrieveInformationModelMove},
+			OnCMove: func(_ context.Context, _ ae.MoveRequest) ae.MovePlan {
+				ds := godicom.NewDataset()
+				ds.Set(godicom.NewDataElement(godicom.MustTag("SOPClassUID"), godicom.VRUI, ctUID))
+				ds.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, sopInstance))
+				ds.Set(godicom.NewDataElement(godicom.MustTag("PatientName"), godicom.VRPN, "DOE^JOHN"))
+				return ae.MovePlan{
+					Destination: &ae.MoveDestination{Addr: storeLn.Addr().String()},
+					Stores: []ae.StoreRequest{{
+						AffectedSOPClassUID:    ctUID,
+						AffectedSOPInstanceUID: sopInstance,
+						TransferSyntax:         explicit,
+						Data:                   ds,
+					}},
+				}
+			},
+		})
+	}()
+
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dialCancel()
+	assoc, err := ae.Dial(dialCtx, ae.Config{
+		AETitle: "MOVESCU",
+		PresentationContexts: []ae.PresentationContext{{
+			ID:               1,
+			AbstractSyntax:   ae.PatientRootQueryRetrieveInformationModelMove,
+			TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian},
+		}},
+	}, moveLn.Addr().String(), "MOVESCP")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	query := godicom.NewDataset()
+	query.Set(godicom.NewDataElement(godicom.MustTag("QueryRetrieveLevel"), godicom.VRCS, "IMAGE"))
+	matches, err := assoc.CMove(dialCtx, ae.MoveRequest{
+		QueryModel:      ae.PatientRootQueryRetrieveInformationModelMove,
+		MoveDestination: "STORESCP",
+		IdentifierData:  query,
+	})
+	if err != nil {
+		t.Fatalf("C-MOVE: %v", err)
+	}
+	if gotTS.Load() != explicit {
+		t.Fatalf("transfer syntax %v, want %s", gotTS.Load(), explicit)
+	}
+	last := matches[len(matches)-1]
+	if last.Status != dimse.StatusSuccess || last.SubOperations.Completed != 1 {
+		t.Fatalf("final: %+v", last)
+	}
+	if err := assoc.Release(dialCtx); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	cancel()
+	<-errCh
+	<-errCh
+}
+
+// Yielding (None, None) is an unknown destination even when there are no
+// matches yet. pynetdicom returns 0xA801 before the second yield.
+func TestCMovePlanDestinationUnknown(t *testing.T) {
+	t.Parallel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- ae.Serve(ctx, ln, ae.ServerConfig{
+			AETitle:                  "MOVESCP",
+			AcceptedAbstractSyntaxes: []string{ae.PatientRootQueryRetrieveInformationModelMove},
+			OnCMove: func(_ context.Context, _ ae.MoveRequest) ae.MovePlan {
+				return ae.MovePlan{Destination: &ae.MoveDestination{}}
+			},
+		})
+	}()
+
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dialCancel()
+	assoc, err := ae.Dial(dialCtx, ae.Config{
+		AETitle: "MOVESCU",
+		PresentationContexts: []ae.PresentationContext{{
+			ID:               1,
+			AbstractSyntax:   ae.PatientRootQueryRetrieveInformationModelMove,
+			TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian},
+		}},
+	}, ln.Addr().String(), "MOVESCP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := godicom.NewDataset()
+	query.Set(godicom.NewDataElement(godicom.MustTag("QueryRetrieveLevel"), godicom.VRCS, "STUDY"))
+	matches, err := assoc.CMove(dialCtx, ae.MoveRequest{
+		QueryModel:      ae.PatientRootQueryRetrieveInformationModelMove,
+		MoveDestination: "NOWHERE",
+		IdentifierData:  query,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].Status != dcmstatus.MoveDestinationUnknown {
+		t.Fatalf("matches %+v", matches)
+	}
+	_ = assoc.Release(dialCtx)
+	cancel()
+	<-errCh
+}
