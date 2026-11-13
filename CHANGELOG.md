@@ -5,6 +5,42 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.1] - 2026-11-13
+
+A dependency release: [godicom](https://github.com/godicom-dev/godicom)
+`v0.34.0` → `v0.40.0`, plus two behavioural fixes from the commits since
+v0.18.0 that this file had not recorded.
+
+### Added
+- A C-MOVE SCP handler can name the Move Destination itself: `MovePlan`
+  carries a `Destination` (address and port), the first yield of pynetdicom's
+  `EVT_C_MOVE` handler. Nil keeps the `ServerConfig.MoveDestinations` lookup;
+  a non-nil `Destination` with an empty address makes the SCP answer
+  0xA801, the same as yielding `(None, None)` there
+
+### Fixed
+- A C-STORE SCP matches the presentation context the way pynetdicom's
+  `Association._get_valid_context` does for a store: an exact transfer
+  syntax wins, and the uncompressed little-endian syntaxes (implicit VR,
+  explicit VR, deflated) may substitute for one another, while a compressed
+  syntax requires an exact match
+- WADO-RS metadata writes the Transfer Syntax UID `(0002,0010)` into the
+  file meta where it belongs rather than into the dataset
+
+### Changed
+- Depend on [godicom](https://github.com/godicom-dev/godicom) `v0.40.0`, up
+  from `v0.34.0`. The releases in between add enhanced multi-frame
+  functional group reading, atomic writes and write-side refusals (an
+  integer its VR cannot hold, a Go type with no encoding for its VR), the
+  File-set write side, the coded terminology (`sr`) and waveforms, a fix for
+  reading an undefined-length pixel data value whose delimiter scan stopped
+  three bytes short, the encapsulation of frames held in buffers
+  (`EncapsulateBuffer` / `EncapsulatedBuffer`), the raw element hooks
+  (`ReadOptions.Hooks`), and validation modes (`ReadOptions.ValueValidation`
+  / `WriteOptions.ValueValidation`). This module calls none of the new API;
+  the delimiter fix and the write-side refusals are what tighten what a
+  C-STORE SCP accepts and writes
+
 ## [0.18.0] - 2026-10-23
 
 ### Added
