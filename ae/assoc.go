@@ -124,6 +124,11 @@ type Association struct {
 	peerMax              uint32
 	contexts             []AcceptedContext
 	userIdentityResponse []byte
+	// peerImplClassUID / peerImplVersionName are the acceptor's implementation
+	// identification from the A-ASSOCIATE-AC, the SCU-side counterpart of what
+	// AssocInfo carries for an SCP handler (dcm4che's getRemoteImplClassUID).
+	peerImplClassUID    string
+	peerImplVersionName string
 	// nextID is atomic so Message IDs stay unique even when a caller ignores the
 	// contract above: a lost increment puts two outstanding requests under one ID,
 	// and the responses to them can no longer be told apart.
@@ -230,6 +235,8 @@ func (a *Association) negotiate(ctx context.Context) error {
 	switch p := raw.(type) {
 	case *pdu.AAssociateAC:
 		a.peerMax = p.UserInformation.MaxLength
+		a.peerImplClassUID = p.UserInformation.ImplementationClassUID
+		a.peerImplVersionName = p.UserInformation.ImplementationVersionName
 		if p.UserInformation.UserIdentityAC != nil {
 			a.userIdentityResponse = append([]byte(nil), p.UserInformation.UserIdentityAC.ServerResponse...)
 		}

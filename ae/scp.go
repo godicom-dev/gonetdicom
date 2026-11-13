@@ -282,7 +282,7 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 
 	var userIdentityAC *pdu.UserIdentityAC
 	if rq.UserInformation.UserIdentityRQ != nil && cfg.OnUserIdentity != nil {
-		ok, resp := cfg.OnUserIdentity(*rq.UserInformation.UserIdentityRQ)
+		ok, resp := cfg.OnUserIdentity(ctx, *rq.UserInformation.UserIdentityRQ)
 		if !ok {
 			_ = writePDUConn(ctx, conn, &pdu.AAssociateRJ{
 				Result:           pdu.RejectResultTransient,

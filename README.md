@@ -337,7 +337,13 @@ assoc, err := ae.Dial(ctx, ae.Config{
 
 _ = ae.Serve(ctx, ln, ae.ServerConfig{
 	AETitle: "IDSCP",
-	OnUserIdentity: func(req pdu.UserIdentityRQ) (bool, []byte) {
+	OnUserIdentity: func(ctx context.Context, req pdu.UserIdentityRQ) (bool, []byte) {
+		// The association identity is already on ctx here: the calling AE
+		// title, the requestor's address and its implementation Class UID.
+		info, _ := ae.AssocFromContext(ctx)
+		if !trustedHosts[info.RemoteAddr.String()] {
+			return false, nil
+		}
 		return string(req.PrimaryField) == "alice", nil
 	},
 })
