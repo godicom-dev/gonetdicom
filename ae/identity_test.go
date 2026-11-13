@@ -27,7 +27,7 @@ func TestUserIdentityUsernameRoundtrip(t *testing.T) {
 	go func() {
 		errCh <- ae.Serve(ctx, ln, ae.ServerConfig{
 			AETitle: "IDSCP",
-			OnUserIdentity: func(req pdu.UserIdentityRQ) (bool, []byte) {
+			OnUserIdentity: func(ctx context.Context, req pdu.UserIdentityRQ) (bool, []byte) {
 				if req.Type != pdu.UserIdentityUsername {
 					t.Errorf("type=%d", req.Type)
 					return false, nil
@@ -35,6 +35,24 @@ func TestUserIdentityUsernameRoundtrip(t *testing.T) {
 				if string(req.PrimaryField) != "alice" {
 					t.Errorf("primary=%q", req.PrimaryField)
 					return false, nil
+				}
+				// The association identity is already on the context here, so a
+				// handler can refuse by source address or peer software before
+				// the identity item is even considered (pynetdicom's
+				// EVT_USER_IDENTITY gets evt.assoc, dcm4che its Association).
+				info, ok := ae.AssocFromContext(ctx)
+				if !ok {
+					t.Error("AssocFromContext: not attached before user identity")
+					return false, nil
+				}
+				if info.CallingAETitle != "IDSCU" || info.CalledAETitle != "IDSCP" {
+					t.Errorf("AE titles: %q -> %q", info.CallingAETitle, info.CalledAETitle)
+				}
+				if info.RemoteAddr == nil {
+					t.Error("RemoteAddr is nil")
+				}
+				if info.RemoteImplementationClassUID != ae.ImplementationClassUID {
+					t.Errorf("RemoteImplementationClassUID=%q", info.RemoteImplementationClassUID)
 				}
 				return true, nil
 			},
@@ -80,7 +98,7 @@ func TestUserIdentityReject(t *testing.T) {
 	go func() {
 		errCh <- ae.Serve(ctx, ln, ae.ServerConfig{
 			AETitle: "IDSCP",
-			OnUserIdentity: func(req pdu.UserIdentityRQ) (bool, []byte) {
+			OnUserIdentity: func(ctx context.Context, req pdu.UserIdentityRQ) (bool, []byte) {
 				return string(req.PrimaryField) == "ok", nil
 			},
 		})
@@ -117,7 +135,7 @@ func TestUserIdentityJWTServerResponse(t *testing.T) {
 	go func() {
 		errCh <- ae.Serve(ctx, ln, ae.ServerConfig{
 			AETitle: "IDSCP",
-			OnUserIdentity: func(req pdu.UserIdentityRQ) (bool, []byte) {
+			OnUserIdentity: func(ctx context.Context, req pdu.UserIdentityRQ) (bool, []byte) {
 				if req.Type != pdu.UserIdentityJWT {
 					return false, nil
 				}

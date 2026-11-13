@@ -204,11 +204,14 @@ func (a *Association) handleInboundStore(ctx context.Context, pcid byte, rq *dim
 			}
 		}
 		// The SCU temporarily acts as Storage SCP; the same AssocInfo
-		// contract applies, with the association's own identity filled in.
+		// contract applies: the association's own AE titles, and the peer's
+		// address and implementation identification from the AC.
 		info, _ := AssocFromContext(ctx)
 		info.CallingAETitle = a.cfg.AETitle
 		info.CalledAETitle = a.called
 		info.RemoteAddr = a.conn.RemoteAddr()
+		info.RemoteImplementationClassUID = a.peerImplClassUID
+		info.RemoteImplementationVersionName = a.peerImplVersionName
 		info.AbstractSyntax = abstractSyntax
 		info.PresentationContextID = pcid
 		info.TransferSyntax = ts

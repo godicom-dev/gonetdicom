@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 A dependency release ([godicom](https://github.com/godicom-dev/godicom)
 `v0.34.0` → `v0.40.0`), two behavioural fixes from the commits since v0.18.0
-that this file had not recorded, and a breaking API change in the C-STORE
-SCP that fixes issue #52.
+that this file had not recorded, and two breaking API changes: the C-STORE
+SCP that fixes issue #52, and the user identity callback.
 
 ### Added
 - Association context for DIMSE handlers (issue #50): the SCP attaches an
@@ -18,7 +18,9 @@ SCP that fixes issue #52.
   address, the requestor's implementation Class UID and Version Name from its
   A-ASSOCIATE-RQ, and per message the abstract syntax, presentation context
   ID and negotiated transfer syntax — and the SCU-side C-GET / C-MOVE
-  sub-operation store handlers attach it the same way. The shape follows
+  sub-operation store handlers attach it the same way, with the peer's
+  address and implementation identification taken from the A-ASSOCIATE-AC.
+  The shape follows
   pynetdicom's `Event.assoc` plus `Event.context` and dcm4che's
   `DimseRQHandler.onDimseRQ(Association, PresentationContext, ...)` pair.
   Handlers read it with `AssocFromContext` for device checks, per-AE
@@ -32,6 +34,14 @@ SCP that fixes issue #52.
   negotiated transfer syntax and reports failures as a normal error
 
 ### Changed
+- `OnUserIdentity` now receives the handler context:
+  `func(ctx context.Context, req pdu.UserIdentityRQ) (bool, []byte)`. The
+  association identity is attached before negotiation, so the callback can
+  refuse an association by source address or peer implementation Class UID
+  as well as by the identity item — pynetdicom's `EVT_USER_IDENTITY` event
+  carries `event.assoc` and dcm4che hands its negotiator the `Association`
+  for the same reason. Aligning the C-STORE SCP on `StoreEvent` below was
+  the other half of the same release; both break compilation on purpose
 - `OnCStore` (and the C-GET / C-MOVE sub-operation handler) now receives a
   `StoreEvent` instead of a `StoreRequest`. The old inbound path decoded the
   dataset eagerly and, on failure, handed the handler a silent nil `Data` —
