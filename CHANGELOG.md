@@ -14,10 +14,14 @@ SCP that fixes issue #52.
 
 ### Added
 - Association context for DIMSE handlers (issue #50): the SCP attaches an
-  `AssocInfo` (calling and called AE titles, remote address, presentation
-  context ID, negotiated transfer syntax) to the handler context, and the
-  SCU-side C-GET / C-MOVE sub-operation store handlers attach it the same
-  way. Handlers read it with `AssocFromContext` for device checks, per-AE
+  `AssocInfo` to the handler context — calling and called AE titles, remote
+  address, the requestor's implementation Class UID and Version Name from its
+  A-ASSOCIATE-RQ, and per message the abstract syntax, presentation context
+  ID and negotiated transfer syntax — and the SCU-side C-GET / C-MOVE
+  sub-operation store handlers attach it the same way. The shape follows
+  pynetdicom's `Event.assoc` plus `Event.context` and dcm4che's
+  `DimseRQHandler.onDimseRQ(Association, PresentationContext, ...)` pair.
+  Handlers read it with `AssocFromContext` for device checks, per-AE
   authorization and audit logging
 - A C-MOVE SCP handler can name the Move Destination itself: `MovePlan`
   carries a `Destination` (address and port), the first yield of pynetdicom's

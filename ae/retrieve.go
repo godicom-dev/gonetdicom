@@ -195,9 +195,11 @@ func (a *Association) handleInboundStore(ctx context.Context, pcid byte, rq *dim
 	status := dimse.StatusSuccess
 	if onStore != nil {
 		ts := ""
+		abstractSyntax := ""
 		for _, c := range a.contexts {
 			if c.ID == pcid {
 				ts = c.TransferSyntax
+				abstractSyntax = c.AbstractSyntax
 				break
 			}
 		}
@@ -207,6 +209,7 @@ func (a *Association) handleInboundStore(ctx context.Context, pcid byte, rq *dim
 		info.CallingAETitle = a.cfg.AETitle
 		info.CalledAETitle = a.called
 		info.RemoteAddr = a.conn.RemoteAddr()
+		info.AbstractSyntax = abstractSyntax
 		info.PresentationContextID = pcid
 		info.TransferSyntax = ts
 		ctx = WithAssoc(ctx, info)
