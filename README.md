@@ -251,6 +251,21 @@ pays no decode cost. `Decode` reports an undecodable store as a normal error
 and the handler picks the status — an SCP that cannot parse a store answers
 with a service failure (pynetdicom uses 0xC211, *cannot understand*).
 
+Every handler runs with the association context attached. `ae.AssocFromContext(ctx)`
+returns the calling and called AE titles, the requestor's remote address,
+and — per message — the presentation context ID and its negotiated transfer
+syntax, for device checks, per-AE authorization and audit logging:
+
+```go
+OnCStore: func(ctx context.Context, ev ae.StoreEvent) uint16 {
+	info, _ := ae.AssocFromContext(ctx)
+	if !deviceRegistry.Allows(info.RemoteAddr, info.CallingAETitle) {
+		return status.ProcessingFailure
+	}
+	// ...
+},
+```
+
 `ae.AllStorageSOPClasses` is the whole Storage Service Class (pynetdicom's
 `_STORAGE_CLASSES`), built from the *godicom* `uid` constants so each entry is
 named in code rather than in a comment; a test checks the set against the

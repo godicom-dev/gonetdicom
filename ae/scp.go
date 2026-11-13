@@ -257,6 +257,16 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 		return fmt.Errorf("ae: expected A-ASSOCIATE-RQ, got %T", raw)
 	}
 
+	// Peer identity is on the context from here on, so OnUserIdentity and
+	// every DIMSE handler can authenticate and audit the requestor
+	// (AssocFromContext). Message-level fields are layered per message in
+	// scpHandleMessage.
+	ctx = WithAssoc(ctx, AssocInfo{
+		CallingAETitle: rq.CallingAETitle,
+		CalledAETitle:  rq.CalledAETitle,
+		RemoteAddr:     conn.RemoteAddr(),
+	})
+
 	if err := checkProtocolVersion(ctx, conn, cfg, rq); err != nil {
 		return err
 	}
@@ -421,6 +431,15 @@ func scpLoop(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfi
 // Command Field at all satisfies every one of them and would be handled as
 // whichever was tried first.
 func scpHandleMessage(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, cmd, ds []byte, callingAE string) error {
+	// Layer the message-level context onto the association identity already
+	// present, so every handler below sees the complete AssocInfo.
+	info, _ := AssocFromContext(ctx)
+	info.PresentationContextID = pcid
+	if ac, ok := accepted[pcid]; ok {
+		info.TransferSyntax = ac.TransferSyntax
+	}
+	ctx = WithAssoc(ctx, info)
+
 	field, err := dimse.PeekCommandField(cmd)
 	if err != nil {
 		_ = writePDUConn(ctx, conn, &pdu.AAbort{Source: 0x02, ReasonDiagnostic: 0x00})
