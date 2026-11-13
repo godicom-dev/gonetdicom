@@ -7,11 +7,21 @@ import (
 
 // AssocInfo describes the association that carried a DIMSE request, and the
 // presentation context within it. The SCP attaches it to the handler
-// context: association-level fields (peer identity, remote address) when the
-// A-ASSOCIATE-RQ is accepted, the message-level fields (presentation context
-// ID, negotiated transfer syntax) before each handler dispatch. The SCU-side
-// C-GET / C-MOVE sub-operation handlers receive it the same way, with the
-// local AE title as CallingAETitle.
+// context: association-level fields (peer identity, remote address,
+// implementation identification) when the A-ASSOCIATE-RQ is accepted, the
+// message-level fields (abstract syntax, presentation context ID, negotiated
+// transfer syntax) before each handler dispatch. The SCU-side C-GET /
+// C-MOVE sub-operation handlers receive it the same way, with the local AE
+// title as CallingAETitle.
+//
+// The shape follows the two reference implementations: pynetdicom hands its
+// handlers Event.assoc (the Association) and Event.context (a
+// PresentationContextTuple of context ID, abstract syntax and transfer
+// syntax); dcm4che's DimseRQHandler.onDimseRQ receives (Association,
+// PresentationContext, ...) and the Association exposes getCallingAET,
+// getSocket and getAbstractSyntax(pcid). A Go handler has no mutable
+// association object to hold, so this value snapshot carries the same
+// identity fields.
 //
 // A DIMSE handler that authenticates or audits its peer reads it with
 // AssocFromContext. An absent value is safe to treat as untrusted: a handler
@@ -25,6 +35,19 @@ type AssocInfo struct {
 	CalledAETitle string
 	// RemoteAddr is the requestor's network address.
 	RemoteAddr net.Addr
+	// RemoteImplementationClassUID is the Implementation Class UID the
+	// requestor announced in its A-ASSOCIATE-RQ user information, or "" if
+	// it sent none. It identifies the peer's software, the way dcm4che's
+	// Association.getRemoteImplClassUID does.
+	RemoteImplementationClassUID string
+	// RemoteImplementationVersionName is the Implementation Version Name the
+	// requestor announced, or "" if it sent none.
+	RemoteImplementationVersionName string
+	// AbstractSyntax is the SOP Class of the presentation context the
+	// message arrived on. It mirrors the AffectedSOPClassUID of the request
+	// payloads that carry one, and is the only place to read it for the
+	// services whose payload does not.
+	AbstractSyntax string
 	// PresentationContextID is the ID of the presentation context the
 	// message arrived on.
 	PresentationContextID byte

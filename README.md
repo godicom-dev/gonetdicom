@@ -252,9 +252,11 @@ and the handler picks the status — an SCP that cannot parse a store answers
 with a service failure (pynetdicom uses 0xC211, *cannot understand*).
 
 Every handler runs with the association context attached. `ae.AssocFromContext(ctx)`
-returns the calling and called AE titles, the requestor's remote address,
-and — per message — the presentation context ID and its negotiated transfer
-syntax, for device checks, per-AE authorization and audit logging:
+returns the calling and called AE titles, the requestor's remote address and
+implementation identification (Class UID and Version Name from its
+A-ASSOCIATE-RQ), and — per message — the abstract syntax, presentation
+context ID and negotiated transfer syntax of the context it arrived on, for
+device checks, per-AE authorization and audit logging:
 
 ```go
 OnCStore: func(ctx context.Context, ev ae.StoreEvent) uint16 {

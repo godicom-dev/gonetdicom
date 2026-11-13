@@ -64,6 +64,15 @@ func TestServeCStoreAssocContext(t *testing.T) {
 				if info.TransferSyntax != pdu.ImplicitVRLittleEndian {
 					t.Errorf("TransferSyntax=%q", info.TransferSyntax)
 				}
+				if info.AbstractSyntax != secondaryCaptureSOPClass {
+					t.Errorf("AbstractSyntax=%q", info.AbstractSyntax)
+				}
+				if info.RemoteImplementationClassUID != ae.ImplementationClassUID {
+					t.Errorf("RemoteImplementationClassUID=%q", info.RemoteImplementationClassUID)
+				}
+				if info.RemoteImplementationVersionName != ae.ImplementationVersionName {
+					t.Errorf("RemoteImplementationVersionName=%q", info.RemoteImplementationVersionName)
+				}
 				calls.Add(1)
 				return dimse.StatusSuccess
 			},

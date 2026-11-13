@@ -261,11 +261,17 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 	// every DIMSE handler can authenticate and audit the requestor
 	// (AssocFromContext). Message-level fields are layered per message in
 	// scpHandleMessage.
-	ctx = WithAssoc(ctx, AssocInfo{
+	info := AssocInfo{
 		CallingAETitle: rq.CallingAETitle,
 		CalledAETitle:  rq.CalledAETitle,
 		RemoteAddr:     conn.RemoteAddr(),
-	})
+		// The requestor's implementation identification ("" when it sent
+		// none): the software identity dcm4che exposes as
+		// Association.getRemoteImplClassUID / getRemoteImplVersionName.
+		RemoteImplementationClassUID:    rq.UserInformation.ImplementationClassUID,
+		RemoteImplementationVersionName: rq.UserInformation.ImplementationVersionName,
+	}
+	ctx = WithAssoc(ctx, info)
 
 	if err := checkProtocolVersion(ctx, conn, cfg, rq); err != nil {
 		return err
@@ -436,6 +442,7 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, r *assocReader, cfg Se
 	info, _ := AssocFromContext(ctx)
 	info.PresentationContextID = pcid
 	if ac, ok := accepted[pcid]; ok {
+		info.AbstractSyntax = ac.AbstractSyntax
 		info.TransferSyntax = ac.TransferSyntax
 	}
 	ctx = WithAssoc(ctx, info)
