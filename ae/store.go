@@ -8,28 +8,16 @@ import (
 	"github.com/godicom-dev/gonetdicom/dimse"
 )
 
-// StoreRequest is a C-STORE-RQ payload.
+// StoreRequest is an outbound C-STORE-RQ payload.
 //
-// SCU outbound: provide either Dataset (already encoded) or Data (godicom
-// Dataset to encode with the negotiated transfer syntax). Data takes
-// precedence when both are set.
-//
-// SCP inbound (OnCStore) mirrors pynetdicom evt.EVT_C_STORE:
-//
-//	Data     ≈ event.dataset
-//	FileMeta ≈ event.file_meta
-//	Dataset  = raw PDV bytes (event.request.DataSet)
-//
-// Save like the pynetdicom storescp example:
-//
-//	fd := &godicom.FileDataset{Dataset: req.Data, FileMeta: req.FileMeta}
-//	_ = fd.SaveAs(req.AffectedSOPInstanceUID+".dcm", &godicom.WriteOptions{EnforceFileFormat: true})
+// Provide either Dataset (already encoded) or Data (godicom Dataset to
+// encode with the negotiated transfer syntax). Data takes precedence when
+// both are set.
 type StoreRequest struct {
 	AffectedSOPClassUID    string
 	AffectedSOPInstanceUID string
 	Dataset                []byte
 	Data                   *godicom.Dataset
-	FileMeta               *godicom.FileMetaDataset
 	TransferSyntax         string
 	// Priority requests a service priority from the peer, which may ignore it.
 	// The zero value is dimse.PriorityMedium — normal priority.
@@ -43,6 +31,46 @@ type StoreResult struct {
 	Status                 uint16
 	AffectedSOPClassUID    string
 	AffectedSOPInstanceUID string
+}
+
+// StoreEvent is a received C-STORE-RQ, passed to OnCStore (pynetdicom's
+// EVT_C_STORE). It mirrors that event:
+//
+//	Dataset        ≈ event.request.DataSet (raw PDV bytes)
+//	FileMeta       ≈ event.file_meta
+//	TransferSyntax ≈ the accepted presentation context's syntax
+//
+// Dataset is the bytes as received — gonetdicom does not decode them before
+// the handler runs, so a handler that only stores or forwards the bytes pays
+// no decode cost, like pynetdicom's lazy event.dataset and dcm4che's
+// streamed PDVInputStream. Call Decode for the structured Dataset; a decode
+// failure is reported there as a normal error, and the handler picks the
+// response status. Returning 0xC211 (cannot understand) mirrors what
+// pynetdicom answers when a store handler raises.
+type StoreEvent struct {
+	AffectedSOPClassUID    string
+	AffectedSOPInstanceUID string
+	Dataset                []byte
+	FileMeta               *godicom.FileMetaDataset
+	TransferSyntax         string
+	Priority                             uint16
+	MoveOriginatorApplicationEntityTitle string
+	MoveOriginatorMessageID              uint16
+}
+
+// Decode parses Dataset with the negotiated transfer syntax.
+//
+// The error is returned, never hidden: an undecodable store surfaces here,
+// where the one piece of code that can react to it is running. Empty data
+// and a missing negotiated transfer syntax are errors too.
+func (ev StoreEvent) Decode() (*godicom.Dataset, error) {
+	if len(ev.Dataset) == 0 {
+		return nil, fmt.Errorf("ae: C-STORE dataset is empty")
+	}
+	if ev.TransferSyntax == "" {
+		return nil, fmt.Errorf("ae: C-STORE has no negotiated transfer syntax")
+	}
+	return godicom.DecodeDataset(ev.Dataset, godicom.UID(ev.TransferSyntax))
 }
 
 // CStore sends a C-STORE-RQ and waits for the C-STORE-RSP.
@@ -128,10 +156,11 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 	}, nil
 }
 
-// newInboundStoreRequest builds an OnCStore payload from a received C-STORE-RQ
-// (pynetdicom Event.dataset + Event.file_meta).
-func newInboundStoreRequest(rq *dimse.CStoreRQ, dataset []byte, transferSyntax string) StoreRequest {
-	req := StoreRequest{
+// newInboundStoreEvent builds an OnCStore payload from a received
+// C-STORE-RQ (pynetdicom Event.request.DataSet + Event.file_meta). The
+// dataset bytes are handed over undecoded; the handler opts into Decode.
+func newInboundStoreEvent(rq *dimse.CStoreRQ, dataset []byte, transferSyntax string) StoreEvent {
+	return StoreEvent{
 		AffectedSOPClassUID:                  rq.AffectedSOPClassUID,
 		AffectedSOPInstanceUID:               rq.AffectedSOPInstanceUID,
 		Dataset:                              dataset,
@@ -145,15 +174,6 @@ func newInboundStoreRequest(rq *dimse.CStoreRQ, dataset []byte, transferSyntax s
 			transferSyntax,
 		),
 	}
-	if len(dataset) == 0 || transferSyntax == "" {
-		return req
-	}
-	ds, err := godicom.DecodeDataset(dataset, godicom.UID(transferSyntax))
-	if err != nil {
-		return req
-	}
-	req.Data = ds
-	return req
 }
 
 // createFileMeta mirrors pynetdicom.dsutils.create_file_meta / Event.file_meta.

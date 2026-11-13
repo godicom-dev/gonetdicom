@@ -5,11 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.18.1] - 2026-11-13
+## [0.19.0] - 2026-11-13
 
-A dependency release: [godicom](https://github.com/godicom-dev/godicom)
-`v0.34.0` → `v0.40.0`, plus two behavioural fixes from the commits since
-v0.18.0 that this file had not recorded.
+A dependency release ([godicom](https://github.com/godicom-dev/godicom)
+`v0.34.0` → `v0.40.0`), two behavioural fixes from the commits since v0.18.0
+that this file had not recorded, and a breaking API change in the C-STORE
+SCP that fixes issue #52.
 
 ### Added
 - A C-MOVE SCP handler can name the Move Destination itself: `MovePlan`
@@ -17,17 +18,21 @@ v0.18.0 that this file had not recorded.
   `EVT_C_MOVE` handler. Nil keeps the `ServerConfig.MoveDestinations` lookup;
   a non-nil `Destination` with an empty address makes the SCP answer
   0xA801, the same as yielding `(None, None)` there
-
-### Fixed
-- A C-STORE SCP matches the presentation context the way pynetdicom's
-  `Association._get_valid_context` does for a store: an exact transfer
-  syntax wins, and the uncompressed little-endian syntaxes (implicit VR,
-  explicit VR, deflated) may substitute for one another, while a compressed
-  syntax requires an exact match
-- WADO-RS metadata writes the Transfer Syntax UID `(0002,0010)` into the
-  file meta where it belongs rather than into the dataset
+- `StoreEvent.Decode` parses an inbound C-STORE's dataset bytes with the
+  negotiated transfer syntax and reports failures as a normal error
 
 ### Changed
+- `OnCStore` (and the C-GET / C-MOVE sub-operation handler) now receives a
+  `StoreEvent` instead of a `StoreRequest`. The old inbound path decoded the
+  dataset eagerly and, on failure, handed the handler a silent nil `Data` —
+  the worst combination, and one neither pynetdicom (lazy `event.dataset`,
+  handler exceptions answered 0xC211) nor dcm4che (streamed
+  `PDVInputStream`) shares. `StoreEvent.Dataset` carries the raw received
+  bytes; decoding happens only when the handler calls `Decode`, so a
+  handler that stores or forwards bytes pays no decode cost, and an
+  undecodable store surfaces as an error the handler turns into a status
+  (0xC211, *cannot understand*, mirrors pynetdicom). `StoreRequest` itself
+  is now SCU-outbound only
 - Depend on [godicom](https://github.com/godicom-dev/godicom) `v0.40.0`, up
   from `v0.34.0`. The releases in between add enhanced multi-frame
   functional group reading, atomic writes and write-side refusals (an
@@ -40,6 +45,15 @@ v0.18.0 that this file had not recorded.
   / `WriteOptions.ValueValidation`). This module calls none of the new API;
   the delimiter fix and the write-side refusals are what tighten what a
   C-STORE SCP accepts and writes
+
+### Fixed
+- A C-STORE SCP matches the presentation context the way pynetdicom's
+  `Association._get_valid_context` does for a store: an exact transfer
+  syntax wins, and the uncompressed little-endian syntaxes (implicit VR,
+  explicit VR, deflated) may substitute for one another, while a compressed
+  syntax requires an exact match
+- WADO-RS metadata writes the Transfer Syntax UID `(0002,0010)` into the
+  file meta where it belongs rather than into the dataset
 
 ## [0.18.0] - 2026-10-23
 

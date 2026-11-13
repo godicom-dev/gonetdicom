@@ -201,7 +201,7 @@ func (a *Association) handleInboundStore(ctx context.Context, pcid byte, rq *dim
 				break
 			}
 		}
-		status = onStore(ctx, newInboundStoreRequest(rq, dataset, ts))
+		status = onStore(ctx, newInboundStoreEvent(rq, dataset, ts))
 	}
 	rsp, err := (&dimse.CStoreRSP{
 		MessageIDBeingRespondedTo: rq.MessageID,

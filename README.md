@@ -185,8 +185,10 @@ matches, err = assoc.CMove(ctx, ae.MoveRequest{
 matches, err = assoc.CGet(ctx, ae.GetRequest{
 	QueryModel:     ae.PatientRootQueryRetrieveInformationModelGet,
 	IdentifierData: query,
-	OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-		_ = req.Data // decoded Dataset
+	OnCStore: func(_ context.Context, ev ae.StoreEvent) uint16 {
+		if _, err := ev.Decode(); err != nil {
+			return status.ProcessingFailure
+		}
 		return status.Success
 	},
 })
@@ -229,18 +231,25 @@ if err != nil {
 err = ae.Serve(ctx, ln, ae.ServerConfig{
 	AETitle:                  "STORESCP",
 	AcceptedAbstractSyntaxes: ae.AllStorageSOPClasses,
-	OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-		if req.Data == nil || req.FileMeta == nil {
+	OnCStore: func(_ context.Context, ev ae.StoreEvent) uint16 {
+		ds, err := ev.Decode()
+		if err != nil {
 			return status.ProcessingFailure
 		}
-		fd := &godicom.FileDataset{Dataset: req.Data, FileMeta: req.FileMeta}
-		if err := fd.SaveAs(req.AffectedSOPInstanceUID+".dcm", &godicom.WriteOptions{EnforceFileFormat: true}); err != nil {
+		fd := &godicom.FileDataset{Dataset: ds, FileMeta: ev.FileMeta}
+		if err := fd.SaveAs(ev.AffectedSOPInstanceUID+".dcm", &godicom.WriteOptions{EnforceFileFormat: true}); err != nil {
 			return status.ProcessingFailure
 		}
 		return status.Success
 	},
 })
 ```
+
+`ev.Dataset` is the store's bytes as received; nothing decodes them unless
+you call `ev.Decode()`, so a handler that just writes or forwards the bytes
+pays no decode cost. `Decode` reports an undecodable store as a normal error
+and the handler picks the status — an SCP that cannot parse a store answers
+with a service failure (pynetdicom uses 0xC211, *cannot understand*).
 
 `ae.AllStorageSOPClasses` is the whole Storage Service Class (pynetdicom's
 `_STORAGE_CLASSES`), built from the *godicom* `uid` constants so each entry is

@@ -49,7 +49,7 @@ func benchmarkCMoveStores(b *testing.B, maxAssoc, nStores int) {
 		errCh <- ae.Serve(ctx, storeLn, ae.ServerConfig{
 			AETitle:                  "STORESCP",
 			AcceptedAbstractSyntaxes: []string{ctUID},
-			OnCStore: func(_ context.Context, _ ae.StoreRequest) uint16 {
+			OnCStore: func(_ context.Context, _ ae.StoreEvent) uint16 {
 				time.Sleep(2 * time.Millisecond)
 				return dimse.StatusSuccess
 			},

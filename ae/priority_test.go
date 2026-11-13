@@ -60,8 +60,8 @@ func TestPriorityReachesPeerUnchanged(t *testing.T) {
 			AcceptedAbstractSyntaxes: []string{
 				secondaryCaptureSOPClass, findModel, moveModel, getModel,
 			},
-			OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-				rec.record("C-STORE", req.Priority)
+			OnCStore: func(_ context.Context, ev ae.StoreEvent) uint16 {
+				rec.record("C-STORE", ev.Priority)
 				return dimse.StatusSuccess
 			},
 			OnCFind: func(_ context.Context, req ae.FindRequest) []ae.FindMatch {

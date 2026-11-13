@@ -49,11 +49,11 @@ func TestCStoreDoesNotMutateCallerDataset(t *testing.T) {
 		errCh <- ae.Serve(ctx, ln, ae.ServerConfig{
 			AETitle:                  "UIDSCP",
 			AcceptedAbstractSyntaxes: []string{secondaryCaptureSOPClass},
-			OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-				got := storedInstance{commandUID: req.AffectedSOPInstanceUID}
-				if req.Data != nil {
-					got.datasetUID, _ = req.Data.GetString(godicom.MustTag("SOPInstanceUID"))
-					got.patientID, _ = req.Data.GetString(godicom.MustTag("PatientID"))
+			OnCStore: func(_ context.Context, ev ae.StoreEvent) uint16 {
+				got := storedInstance{commandUID: ev.AffectedSOPInstanceUID}
+				if ds, err := ev.Decode(); err == nil {
+					got.datasetUID, _ = ds.GetString(godicom.MustTag("SOPInstanceUID"))
+					got.patientID, _ = ds.GetString(godicom.MustTag("PatientID"))
 				}
 				mu.Lock()
 				stored = append(stored, got)
