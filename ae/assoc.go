@@ -29,6 +29,12 @@ var ErrRejected = errors.New("ae: association rejected")
 // ErrAborted is returned when the peer aborts the association.
 var ErrAborted = errors.New("ae: association aborted")
 
+// ErrReleased is returned when the peer releases the association while a
+// request is outstanding. The release is honoured — an A-RELEASE-RP goes back
+// to the peer — and the operation that was waiting reports this instead of an
+// answer that will never arrive.
+var ErrReleased = errors.New("ae: association released by peer")
+
 // ErrNoContext is returned when no accepted presentation context is available.
 var ErrNoContext = errors.New("ae: no accepted presentation context")
 
@@ -463,6 +469,20 @@ func (a *Association) recvMessagePC(ctx context.Context) (pcid byte, command, da
 			}
 		case *pdu.AAbort:
 			return 0, nil, nil, fmt.Errorf("%w: source=%d reason=%d", ErrAborted, p.Source, p.ReasonDiagnostic)
+		case *pdu.AReleaseRQ:
+			// PS3.8 Table 9-10: A-RELEASE-RQ is valid in the P-DATA state, and
+			// the receiver answers A-RELEASE-RP. Dropping it as an unexpected
+			// PDU left the peer waiting for an RP that never came and the
+			// association dangling until the OS closed the socket.
+			if err := a.writePDU(ctx, &pdu.AReleaseRP{}); err != nil {
+				return 0, nil, nil, fmt.Errorf("%w (replying A-RELEASE-RP: %v)", ErrReleased, err)
+			}
+			_ = a.closeConn()
+			a.cfg.logger(ctx).Info("peer released the association",
+				gonetdicom.AttrCallingAE, a.cfg.AETitle,
+				gonetdicom.AttrCalledAE, a.called,
+			)
+			return 0, nil, nil, ErrReleased
 		default:
 			return 0, nil, nil, fmt.Errorf("ae: unexpected PDU %T while receiving message", p)
 		}
@@ -479,22 +499,33 @@ func (a *Association) Release(ctx context.Context) error {
 	if err := a.writePDU(ctx, &pdu.AReleaseRQ{}); err != nil {
 		return err
 	}
-	raw, err := a.readPDU(ctx)
-	if err != nil {
-		return err
+	// Release collision (PS3.8 9.3.3): both sides sent an A-RELEASE-RQ, so both
+	// answer the other's with an A-RELEASE-RP and both still wait for one. The
+	// peer's RQ turning up here was reported as an unexpected PDU, which failed
+	// the release and left the association to be torn down by the socket.
+	for attempt := 0; attempt < 4; attempt++ {
+		raw, err := a.readPDU(ctx)
+		if err != nil {
+			return err
+		}
+		switch p := raw.(type) {
+		case *pdu.AReleaseRP:
+			a.cfg.logger(ctx).Info("association released",
+				gonetdicom.AttrCallingAE, a.cfg.AETitle,
+				gonetdicom.AttrCalledAE, a.called,
+			)
+			return nil
+		case *pdu.AReleaseRQ:
+			if err := a.writePDU(ctx, &pdu.AReleaseRP{}); err != nil {
+				return err
+			}
+		case *pdu.AAbort:
+			return ErrAborted
+		default:
+			return fmt.Errorf("ae: unexpected PDU %T for release", p)
+		}
 	}
-	switch raw.(type) {
-	case *pdu.AReleaseRP:
-		a.cfg.logger(ctx).Info("association released",
-			gonetdicom.AttrCallingAE, a.cfg.AETitle,
-			gonetdicom.AttrCalledAE, a.called,
-		)
-		return nil
-	case *pdu.AAbort:
-		return ErrAborted
-	default:
-		return fmt.Errorf("ae: unexpected PDU %T for release", raw)
-	}
+	return fmt.Errorf("ae: release did not complete")
 }
 
 // Abort sends A-ABORT and closes the connection.

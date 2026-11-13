@@ -813,39 +813,41 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cf
 		)
 	}
 	var (
-		mu                         sync.Mutex
-		completed, failed, warning int
-		done                       int
-		writeErr                   error
+		mu       sync.Mutex
+		results  = newSubOperations(total)
+		writeErr error
 	)
 
-	writePending := func(remaining, completed, failed, warning int) error {
+	writePending := func() error {
+		s := results.counts()
+		s.Remaining = subOpCount(total - results.attempted())
 		return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
-			Status: dimse.StatusPending,
-			SubOperations: dimse.SubOperations{
-				Remaining: subOpCount(remaining), Completed: subOpCount(completed),
-				Failed: subOpCount(failed), Warning: subOpCount(warning), Present: true,
-			},
+			Status:        dimse.StatusPending,
+			SubOperations: s,
 		}})
 	}
 
-	if err := writePending(total, 0, 0, 0); err != nil {
+	if err := writePending(); err != nil {
 		return err
 	}
 
-	record := func(ok bool) {
+	// record tallies one sub-operation and reports progress. The status is
+	// classified, not merely compared against Success: a warning means the
+	// instance arrived, and counting it as a failure turned a transfer worth
+	// 0xB000 into 0xA702 — telling the SCU nothing was retrieved when in fact
+	// every instance was.
+	record := func(store StoreRequest, res *StoreResult, err error) {
 		mu.Lock()
 		defer mu.Unlock()
 		if writeErr != nil {
 			return
 		}
-		done++
-		if ok {
-			completed++
-		} else {
-			failed++
+		var status uint16
+		if res != nil {
+			status = res.Status
 		}
-		writeErr = writePending(total-done, completed, failed, warning)
+		results.record(store.AffectedSOPInstanceUID, err, status)
+		writeErr = writePending()
 	}
 
 	maxAssoc := dest.MaxAssociations
@@ -871,7 +873,7 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cf
 		defer func() { _ = assoc.Release(ctx) }()
 		for _, store := range prepared {
 			res, err := assoc.CStore(ctx, store)
-			record(err == nil && res != nil && res.Status == dimse.StatusSuccess)
+			record(store, res, err)
 			if writeErr != nil {
 				return writeErr
 			}
@@ -895,7 +897,7 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cf
 				defer func() { _ = assoc.Release(ctx) }()
 				for store := range jobs {
 					res, err := assoc.CStore(ctx, store)
-					record(err == nil && res != nil && res.Status == dimse.StatusSuccess)
+					record(store, res, err)
 				}
 			}()
 		}
@@ -903,32 +905,24 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cf
 		if writeErr != nil {
 			return writeErr
 		}
-		mu.Lock()
-		if remaining := total - done; remaining > 0 {
-			failed += remaining
-		}
-		mu.Unlock()
 	}
 
 	mu.Lock()
-	c, f, w := completed, failed, warning
+	// A worker whose Dial failed never reached its stores; those are failures
+	// too, or the counts would not add up to the number of matches.
+	results.recordMissing()
+	final := results.finalStatus()
+	subOps := results.counts()
+	failedList := results.failedIdentifier()
 	mu.Unlock()
 
-	final := dimse.StatusSuccess
-	if f > 0 && c > 0 {
-		final = dimse.StatusWarning
-	} else if f > 0 {
-		final = dcmstatus.UnableToPerformSubOperations
-	}
 	// The status is decided on the real counts, not the saturated ones: a batch
 	// where everything past 65535 failed is still a warning, whatever the reported
 	// number of failures says.
 	return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
-		Status: final,
-		SubOperations: dimse.SubOperations{
-			Remaining: 0, Completed: subOpCount(c), Failed: subOpCount(f),
-			Warning: subOpCount(w), Present: true,
-		},
+		Status:        final,
+		SubOperations: subOps,
+		Identifier:    failedList,
 	}})
 }
 
@@ -969,6 +963,10 @@ func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg Server
 	}
 
 	var storeMsgID uint16 = 1
+	// Every C-STORE sub-operation's response is tally here; before, the status
+	// was decoded and dropped, so a C-GET whose stores all failed answered the
+	// SCU Success with the handler's sub-operation counts unchanged.
+	results := newSubOperations(len(plan.Stores))
 	for _, store := range plan.Stores {
 		storePCID, storeTS, ok := contextByAbstractAccepted(accepted, store.AffectedSOPClassUID)
 		if !ok {
@@ -1002,10 +1000,14 @@ func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg Server
 		if err != nil {
 			return err
 		}
-		if _, err := dimse.DecodeCStoreRSP(rspCmd); err != nil {
+		rsp, err := dimse.DecodeCStoreRSP(rspCmd)
+		if err != nil {
 			return fmt.Errorf("ae: decode C-STORE-RSP during C-GET: %w", err)
 		}
+		results.record(store.AffectedSOPInstanceUID, nil, rsp.Status)
 	}
+
+	plan.Responses = results.reconcile(plan.Responses)
 
 	return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false, plan.Responses)
 }
