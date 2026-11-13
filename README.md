@@ -466,7 +466,9 @@ GONETDICOM_PACS_ADDR=host:11112 GONETDICOM_PACS_AE=ANY-SCP \
 ## Contributing
 
 Bug reports, fixes, and documentation improvements are welcome. Please open an
-issue or pull request on GitHub.
+issue or pull request on GitHub; [CONTRIBUTING.md](CONTRIBUTING.md) has the
+norms — tests that fail without the change, wire formats pinned against
+pydicom or dcm4che, one logical change per PR.
 
 ## License
 
