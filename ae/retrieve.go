@@ -201,6 +201,15 @@ func (a *Association) handleInboundStore(ctx context.Context, pcid byte, rq *dim
 				break
 			}
 		}
+		// The SCU temporarily acts as Storage SCP; the same AssocInfo
+		// contract applies, with the association's own identity filled in.
+		info, _ := AssocFromContext(ctx)
+		info.CallingAETitle = a.cfg.AETitle
+		info.CalledAETitle = a.called
+		info.RemoteAddr = a.conn.RemoteAddr()
+		info.PresentationContextID = pcid
+		info.TransferSyntax = ts
+		ctx = WithAssoc(ctx, info)
 		status = onStore(ctx, newInboundStoreEvent(rq, dataset, ts))
 	}
 	rsp, err := (&dimse.CStoreRSP{

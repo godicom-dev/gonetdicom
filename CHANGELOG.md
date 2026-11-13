@@ -13,6 +13,12 @@ that this file had not recorded, and a breaking API change in the C-STORE
 SCP that fixes issue #52.
 
 ### Added
+- Association context for DIMSE handlers (issue #50): the SCP attaches an
+  `AssocInfo` (calling and called AE titles, remote address, presentation
+  context ID, negotiated transfer syntax) to the handler context, and the
+  SCU-side C-GET / C-MOVE sub-operation store handlers attach it the same
+  way. Handlers read it with `AssocFromContext` for device checks, per-AE
+  authorization and audit logging
 - A C-MOVE SCP handler can name the Move Destination itself: `MovePlan`
   carries a `Destination` (address and port), the first yield of pynetdicom's
   `EVT_C_MOVE` handler. Nil keeps the `ServerConfig.MoveDestinations` lookup;
