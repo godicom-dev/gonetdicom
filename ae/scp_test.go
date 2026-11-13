@@ -31,9 +31,11 @@ func TestServeCStoreSCP(t *testing.T) {
 		errCh <- ae.Serve(ctx, ln, ae.ServerConfig{
 			AETitle:                  "STORESCP",
 			AcceptedAbstractSyntaxes: []string{secondaryCaptureSOPClass},
-			OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-				if req.AffectedSOPInstanceUID == "1.2.3.4.5" && len(req.Dataset) > 0 && req.Data != nil && req.FileMeta != nil {
-					got.Add(1)
+			OnCStore: func(_ context.Context, ev ae.StoreEvent) uint16 {
+				if ev.AffectedSOPInstanceUID == "1.2.3.4.5" && len(ev.Dataset) > 0 && ev.FileMeta != nil {
+					if _, err := ev.Decode(); err == nil {
+						got.Add(1)
+					}
 				}
 				return dimse.StatusSuccess
 			},
@@ -93,10 +95,12 @@ func TestServeCStoreSCPAcceptAllStorage(t *testing.T) {
 		errCh <- ae.Serve(ctx, ln, ae.ServerConfig{
 			AETitle:                  "STORESCP",
 			AcceptedAbstractSyntaxes: ae.AllStorageSOPClasses,
-			OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-				if req.AffectedSOPClassUID == ctSOPClass && len(req.Dataset) > 0 && req.Data != nil &&
-					req.TransferSyntax == pdu.ImplicitVRLittleEndian {
-					got.Add(1)
+			OnCStore: func(_ context.Context, ev ae.StoreEvent) uint16 {
+				if ev.AffectedSOPClassUID == ctSOPClass && len(ev.Dataset) > 0 &&
+					ev.TransferSyntax == pdu.ImplicitVRLittleEndian {
+					if _, err := ev.Decode(); err == nil {
+						got.Add(1)
+					}
 				}
 				return dimse.StatusSuccess
 			},
@@ -155,7 +159,7 @@ func TestServeCStoreSCPWildcardAbstractSyntax(t *testing.T) {
 		errCh <- ae.Serve(ctx, ln, ae.ServerConfig{
 			AETitle:                  "STORESCP",
 			AcceptedAbstractSyntaxes: []string{"*"},
-			OnCStore: func(_ context.Context, _ ae.StoreRequest) uint16 {
+			OnCStore: func(_ context.Context, _ ae.StoreEvent) uint16 {
 				return dimse.StatusSuccess
 			},
 		})
@@ -198,4 +202,68 @@ func TestAllStorageSOPClassesIncludesCT(t *testing.T) {
 		}
 	}
 	t.Fatalf("CT Image Storage %s missing from AllStorageSOPClasses (len=%d)", ct, len(ae.AllStorageSOPClasses))
+}
+
+// The handler owns decode failures: StoreEvent.Decode reports the error and
+// the handler picks the status, which the SCP sends back unchanged. Nothing
+// in the framework hides an undecodable store (issue #52).
+func TestServeCStoreSCPDecodeFailureStatus(t *testing.T) {
+	t.Parallel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	var decodeErr atomic.Pointer[error]
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- ae.Serve(ctx, ln, ae.ServerConfig{
+			AETitle:                  "STORESCP",
+			AcceptedAbstractSyntaxes: []string{secondaryCaptureSOPClass},
+			OnCStore: func(_ context.Context, ev ae.StoreEvent) uint16 {
+				_, err := ev.Decode()
+				decodeErr.Store(&err)
+				return 0xC211 // cannot understand
+			},
+		})
+	}()
+
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer dialCancel()
+
+	assoc, err := ae.Dial(dialCtx, ae.Config{
+		AETitle: "STORESCU",
+		PresentationContexts: []ae.PresentationContext{
+			{ID: 1, AbstractSyntax: secondaryCaptureSOPClass, TransferSyntaxes: []string{string(uid.DeflatedExplicitVRLittleEndian)}},
+		},
+	}, ln.Addr().String(), "STORESCP")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	// Bytes that are not a deflated bitstream: valid on the wire,
+	// undecodable as a dataset.
+	res, err := assoc.CStore(dialCtx, ae.StoreRequest{
+		AffectedSOPClassUID:    secondaryCaptureSOPClass,
+		AffectedSOPInstanceUID: "1.2.3.4.5.bad",
+		Dataset:                []byte{0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef},
+	})
+	if err != nil {
+		t.Fatalf("C-STORE: %v", err)
+	}
+	if res.Status != 0xC211 {
+		t.Fatalf("status 0x%04x, want 0xC211 from the handler", res.Status)
+	}
+	if perr := decodeErr.Load(); perr == nil || *perr == nil {
+		t.Fatal("handler did not see a decode error")
+	}
+	if err := assoc.Release(dialCtx); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	cancel()
+	<-errCh
 }

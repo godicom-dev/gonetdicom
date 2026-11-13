@@ -19,7 +19,7 @@ import (
 
 // StoreHandler handles an incoming C-STORE-RQ on an SCP association.
 // Return a DIMSE status (dcmstatus.Success / dimse.StatusSuccess on success).
-type StoreHandler func(ctx context.Context, req StoreRequest) uint16
+type StoreHandler func(ctx context.Context, ev StoreEvent) uint16
 
 // FindHandler handles an incoming C-FIND-RQ. Return Pending matches followed by
 // a final Success/Failure/Cancel response (without Identifier).
@@ -450,7 +450,7 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, r *assocReader, cfg Se
 		status := dcmstatus.SOPClassNotSupported
 		if abs, ok := accepted[pcid]; ok && abs.AbstractSyntax == rq.AffectedSOPClassUID {
 			if cfg.OnCStore != nil {
-				status = cfg.OnCStore(ctx, newInboundStoreRequest(rq, ds, abs.TransferSyntax))
+				status = cfg.OnCStore(ctx, newInboundStoreEvent(rq, ds, abs.TransferSyntax))
 			} else {
 				status = dimse.StatusSuccess
 			}

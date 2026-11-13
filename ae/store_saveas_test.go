@@ -11,7 +11,7 @@ import (
 	"github.com/godicom-dev/gonetdicom/pdu"
 )
 
-func TestInboundStoreRequestFileMetaMatchesPynetdicom(t *testing.T) {
+func TestInboundStoreEventFileMetaMatchesPynetdicom(t *testing.T) {
 	t.Parallel()
 
 	const scUID = string(uid.SecondaryCaptureImageStorage)
@@ -24,17 +24,21 @@ func TestInboundStoreRequestFileMetaMatchesPynetdicom(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := newInboundStoreRequest(&dimse.CStoreRQ{
+	ev := newInboundStoreEvent(&dimse.CStoreRQ{
 		MessageID:              1,
 		AffectedSOPClassUID:    scUID,
 		AffectedSOPInstanceUID: "1.2.3.4.5",
 	}, raw, pdu.ImplicitVRLittleEndian)
-	if req.Data == nil || req.FileMeta == nil {
-		t.Fatalf("expected Data and FileMeta, got Data=%v FileMeta=%v", req.Data != nil, req.FileMeta != nil)
+	decoded, err := ev.Decode()
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if ev.FileMeta == nil {
+		t.Fatal("expected FileMeta, got nil")
 	}
 
 	// pynetdicom: ds = event.dataset; ds.file_meta = event.file_meta; ds.save_as(..., enforce_file_format=True)
-	fd := &godicom.FileDataset{Dataset: req.Data, FileMeta: req.FileMeta}
+	fd := &godicom.FileDataset{Dataset: decoded, FileMeta: ev.FileMeta}
 	out := filepath.Join(t.TempDir(), "out.dcm")
 	if err := fd.SaveAs(out, &godicom.WriteOptions{EnforceFileFormat: true}); err != nil {
 		t.Fatalf("SaveAs: %v", err)
@@ -57,7 +61,7 @@ func TestInboundStoreRequestFileMetaMatchesPynetdicom(t *testing.T) {
 	}
 }
 
-func TestInboundStoreRequestPreservesRLEMultiFrame(t *testing.T) {
+func TestInboundStoreEventPreservesRLEMultiFrame(t *testing.T) {
 	t.Parallel()
 
 	src := filepath.Join("..", "godicom", "pydicom", "src", "pydicom", "data", "test_files", "SC_rgb_rle_2frame.dcm")
@@ -76,13 +80,17 @@ func TestInboundStoreRequestPreservesRLEMultiFrame(t *testing.T) {
 	sopClass, _ := orig.GetString(godicom.MustTag("SOPClassUID"))
 	sopInst, _ := orig.GetString(godicom.MustTag("SOPInstanceUID"))
 
-	req := newInboundStoreRequest(&dimse.CStoreRQ{
+	ev := newInboundStoreEvent(&dimse.CStoreRQ{
 		MessageID:              1,
 		AffectedSOPClassUID:    sopClass,
 		AffectedSOPInstanceUID: sopInst,
 	}, raw, ts)
+	ds, err := ev.Decode()
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
 
-	fd := &godicom.FileDataset{Dataset: req.Data, FileMeta: req.FileMeta}
+	fd := &godicom.FileDataset{Dataset: ds, FileMeta: ev.FileMeta}
 	out := filepath.Join(t.TempDir(), "rle.dcm")
 	if err := fd.SaveAs(out, &godicom.WriteOptions{EnforceFileFormat: true}); err != nil {
 		t.Fatalf("SaveAs: %v", err)

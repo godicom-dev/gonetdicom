@@ -154,7 +154,7 @@ func TestCMoveParallelDestinationStores(t *testing.T) {
 		errCh <- ae.Serve(ctx, storeLn, ae.ServerConfig{
 			AETitle:                  "STORESCP",
 			AcceptedAbstractSyntaxes: []string{ctUID},
-			OnCStore: func(_ context.Context, _ ae.StoreRequest) uint16 {
+			OnCStore: func(_ context.Context, _ ae.StoreEvent) uint16 {
 				cur := inflight.Add(1)
 				for {
 					old := peak.Load()

@@ -204,12 +204,12 @@ func TestCGetSCURoundtrip(t *testing.T) {
 	matches, err := assoc.CGet(dialCtx, ae.GetRequest{
 		QueryModel:     ae.PatientRootQueryRetrieveInformationModelGet,
 		IdentifierData: query,
-		OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
+		OnCStore: func(_ context.Context, ev ae.StoreEvent) uint16 {
 			stored.Add(1)
-			if req.AffectedSOPInstanceUID != sopInstance {
-				t.Errorf("store instance=%q", req.AffectedSOPInstanceUID)
+			if ev.AffectedSOPInstanceUID != sopInstance {
+				t.Errorf("store instance=%q", ev.AffectedSOPInstanceUID)
 			}
-			if len(req.Dataset) == 0 {
+			if len(ev.Dataset) == 0 {
 				t.Error("empty store dataset")
 			}
 			return dimse.StatusSuccess
@@ -264,13 +264,13 @@ func TestCMoveDestinationStore(t *testing.T) {
 		errCh <- ae.Serve(ctx, storeLn, ae.ServerConfig{
 			AETitle:                  "STORESCP",
 			AcceptedAbstractSyntaxes: []string{ctUID},
-			OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
+			OnCStore: func(_ context.Context, ev ae.StoreEvent) uint16 {
 				stored.Add(1)
-				if req.MoveOriginatorApplicationEntityTitle != "MOVESCU" {
-					t.Errorf("MoveOriginator=%q", req.MoveOriginatorApplicationEntityTitle)
+				if ev.MoveOriginatorApplicationEntityTitle != "MOVESCU" {
+					t.Errorf("MoveOriginator=%q", ev.MoveOriginatorApplicationEntityTitle)
 				}
-				if req.AffectedSOPInstanceUID != sopInstance {
-					t.Errorf("SOPInstance=%q", req.AffectedSOPInstanceUID)
+				if ev.AffectedSOPInstanceUID != sopInstance {
+					t.Errorf("SOPInstance=%q", ev.AffectedSOPInstanceUID)
 				}
 				return dimse.StatusSuccess
 			},
@@ -458,8 +458,8 @@ func TestCMovePlanDestination(t *testing.T) {
 		errCh <- ae.Serve(ctx, storeLn, ae.ServerConfig{
 			AETitle:                  "STORESCP",
 			AcceptedAbstractSyntaxes: []string{ctUID},
-			OnCStore: func(_ context.Context, req ae.StoreRequest) uint16 {
-				gotTS.Store(req.TransferSyntax)
+			OnCStore: func(_ context.Context, ev ae.StoreEvent) uint16 {
+				gotTS.Store(ev.TransferSyntax)
 				return dimse.StatusSuccess
 			},
 		})
