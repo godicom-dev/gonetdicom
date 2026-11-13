@@ -48,11 +48,11 @@ type StoreResult struct {
 // response status. Returning 0xC211 (cannot understand) mirrors what
 // pynetdicom answers when a store handler raises.
 type StoreEvent struct {
-	AffectedSOPClassUID    string
-	AffectedSOPInstanceUID string
-	Dataset                []byte
-	FileMeta               *godicom.FileMetaDataset
-	TransferSyntax         string
+	AffectedSOPClassUID                  string
+	AffectedSOPInstanceUID               string
+	Dataset                              []byte
+	FileMeta                             *godicom.FileMetaDataset
+	TransferSyntax                       string
 	Priority                             uint16
 	MoveOriginatorApplicationEntityTitle string
 	MoveOriginatorMessageID              uint16
