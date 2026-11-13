@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.19.0] - 2026-11-13
 
 A dependency release ([godicom](https://github.com/godicom-dev/godicom)
-`v0.34.0` → `v0.40.0`), two behavioural fixes from the commits since v0.18.0
+`v0.34.0` → `v0.40.0`), the behavioural fixes from the commits since v0.18.0
 that this file had not recorded, and two breaking API changes: the C-STORE
 SCP that fixes issue #52, and the user identity callback.
 
@@ -32,6 +32,10 @@ SCP that fixes issue #52, and the user identity callback.
   0xA801, the same as yielding `(None, None)` there
 - `StoreEvent.Decode` parses an inbound C-STORE's dataset bytes with the
   negotiated transfer syntax and reports failures as a normal error
+- `ErrReleased` reports that the peer released the association while a request
+  was outstanding. The release is honoured — an A-RELEASE-RP goes back — and
+  the operation returns this instead of blocking for an answer that will never
+  come
 
 ### Changed
 - `OnUserIdentity` now receives the handler context:
@@ -67,6 +71,24 @@ SCP that fixes issue #52, and the user identity callback.
   C-STORE SCP accepts and writes
 
 ### Fixed
+- A C-GET SCP answers with the outcome of its C-STORE sub-operations. The
+  C-STORE-RSP status was decoded and dropped, so a retrieval whose stores all
+  failed answered `0x0000` with whatever counts the handler had supplied. The
+  final status is now `0x0000` / `0xB000` / `0xA702` by the rule in PS3.4
+  C.4.3.1.3.2, the four Sub-Operation counts describe the transfers that
+  happened, and a Warning or Failure carries the Failed SOP Instance UID List
+  `(0008,0058)`
+- A C-MOVE SCP counts a warning sub-operation as a warning rather than a
+  failure. Collapsing them meant a Move Destination that stored every instance
+  as a warning was reported as `0xA702`, *unable to perform sub-operations*,
+  for a transfer that worked; the aggregate status and the Failed SOP Instance
+  UID List follow the same rule as C-GET
+- An SCU that receives an A-RELEASE-RQ while waiting for a response answers
+  A-RELEASE-RP and returns `ErrReleased`. PS3.8 Table 9-10 makes the release
+  valid in the P-DATA state; treating it as an unexpected PDU left the peer
+  waiting for an RP that never came. `Release` also completes a release
+  collision, where both sides send an A-RELEASE-RQ, instead of failing on the
+  peer's RQ
 - A C-STORE SCP matches the presentation context the way pynetdicom's
   `Association._get_valid_context` does for a store: an exact transfer
   syntax wins, and the uncompressed little-endian syntaxes (implicit VR,

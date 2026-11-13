@@ -310,6 +310,14 @@ _ = ae.Serve(ctx, moveLn, ae.ServerConfig{
 })
 ```
 
+The SCP owns the sub-operation counts, not the handler: once the C-STORE
+sub-operations are done it answers with what actually happened — `0x0000` when
+nothing failed, `0xB000` when some failed or warned, `0xA702` when every one
+failed — and a Warning or Failure carries the Failed SOP Instance UID List
+`(0008,0058)`. C-GET reports the same way. `SubOperations` on a `RetrieveMatch`
+the handler returns is replaced for the final response, because only the SCP
+knows how the transfers went.
+
 **Storage Commitment & DIMSE-N**
 
 ```go
