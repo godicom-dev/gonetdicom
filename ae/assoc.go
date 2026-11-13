@@ -475,7 +475,7 @@ func (a *Association) recvMessagePC(ctx context.Context) (pcid byte, command, da
 			// PDU left the peer waiting for an RP that never came and the
 			// association dangling until the OS closed the socket.
 			if err := a.writePDU(ctx, &pdu.AReleaseRP{}); err != nil {
-				return 0, nil, nil, fmt.Errorf("%w (replying A-RELEASE-RP: %v)", ErrReleased, err)
+				return 0, nil, nil, fmt.Errorf("%w (replying A-RELEASE-RP: %w)", ErrReleased, err)
 			}
 			_ = a.closeConn()
 			a.cfg.logger(ctx).Info("peer released the association",
