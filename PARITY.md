@@ -22,7 +22,7 @@ Legend: **covered** — a test would fail if the behaviour regressed;
 | root | 95.8% | logger precedence, nil tolerance |
 | `dimse` | 90.4% | command encode/decode, status helpers |
 | `pdu` | 84.0% | every PDU and user-information item, incl. malformed frames |
-| `ae` | 82.7% | association, DIMSE dispatch, Q/R, N-services |
+| `ae` | 82.9% | association, DIMSE dispatch, Q/R, N-services |
 | `dicomweb` | 78.7% | no pynetdicom counterpart (PS3.18 is not in it) |
 
 `go test ./... -cover` reproduces the table. Cross-package use does not count
@@ -137,6 +137,38 @@ In order of value per line of code:
    needs a decision about what to do with in-flight stores, not just a test.
 4. A per-model key table behind `IdentifierValidator`, if an application asks
    for one; today the hook is where that knowledge lives.
+
+## Performance
+
+pynetdicom ships an asv suite under `pynetdicom/benchmarks/`; dcm4che ships
+only the `dcmbenchmark` tool, which parses a file repeatedly rather than
+driving the network. So the counterpart to match is pynetdicom's, and it maps
+one-to-one onto `go test -bench`:
+
+| pynetdicom | Here |
+|---|---|
+| `bench_pdu.py` | `pdu/bench_test.go` — A-ASSOCIATE-RQ and P-DATA, plus `FragmentMessage` |
+| `bench_dimse_message.py` | `dimse/bench_test.go` — C-ECHO, C-FIND, C-STORE command sets, `CommandHasDataset` |
+| `bench_c_send.py` | `ae/assoc_bench_test.go` — associate, C-ECHO, C-STORE at two sizes |
+| `bench_presentation.py` | `ae/assoc_bench_test.go` (`BenchmarkAssociate` covers the handshake as a whole; per-context negotiation is exercised by `ae/negotiation_test.go`) |
+| — no counterpart | `ae/msgbody_bench_test.go` — `Stream` against `Bytes` against pull |
+
+The last row is the one with no upstream equivalent, and the one worth reading.
+On a 16 MiB store, `Stream` costs 601 B/op and 6 allocs/op regardless of
+payload; `Bytes` costs 36 MB/op because a `bytes.Buffer` doubling to hold it
+contiguous is the price of not streaming. pynetdicom cannot be compared on this
+axis at all — `Event.dataset` is always a `BytesIO` — and dcm4che reaches the
+same place only by handing `PDVInputStream` a buffer the caller had to allocate.
+
+Run them with a fixed time so the numbers are comparable between runs:
+
+```sh
+go test -bench . -benchtime=1s -run XXX ./pdu ./dimse ./ae
+```
+
+They are not wired into CI. A hosted runner's benchmark numbers vary by more
+than the changes worth catching, and a red build caused by a noisy neighbour is
+worse than no signal.
 
 ## Maintaining this file
 
