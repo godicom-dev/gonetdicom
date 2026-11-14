@@ -90,12 +90,20 @@ an acceptor that releases while a peer is mid-P-DATA.
 ### 3. Transport (partial)
 
 Covered: TLS accept and dial, Maximum Length Received advertised and honoured,
-tolerance for PDUs larger than we advertised, IPv4, idle and handshake
+tolerance for PDUs larger than we advertised, IPv4, IPv6, idle and handshake
 timeouts.
 
-Not covered: IPv6 (no test; nothing in the code is address-family specific),
-Unix sockets, and connection reuse across associations (we deliberately open a
-connection per association).
+IPv6 is covered as a property rather than a feature: `Serve` takes a
+`net.Listener` and keeps whatever `net.Addr` it gets, so the family is the
+caller's choice. `TestServeOnIPv6Listener` binds `[::1]` and runs a C-ECHO and
+a C-STORE through it, then checks that a handler sees a bracketed peer address
+that still splits and parses — the failure mode being pinned is a `host:port`
+guess somewhere in the path, which works on IPv4 and misreads `[::1]:port`. The
+tests skip, not fail, where the platform has no IPv6: a build host with it
+disabled cannot say anything about this code.
+
+Not covered: Unix sockets, and connection reuse across associations (we
+deliberately open a connection per association).
 
 ### 4. User identity (partial)
 
@@ -141,12 +149,11 @@ is not the place for a data dictionary.
 
 In order of value per line of code:
 
-1. IPv6 listener test, once a CI image that supports it is pinned.
-2. `Association.Release` in the presence of pending C-GET sub-operations —
+1. `Association.Release` in the presence of pending C-GET sub-operations —
    needs a decision about what to do with in-flight stores, not just a test.
-3. A per-model key table behind `IdentifierValidator`, if an application asks
+2. A per-model key table behind `IdentifierValidator`, if an application asks
    for one; today the hook is where that knowledge lives.
-4. DICOMweb beyond the MVP: PS3.18 Delete, Upsert, Capabilities and non-patient
+3. DICOMweb beyond the MVP: PS3.18 Delete, Upsert, Capabilities and non-patient
    instances are the largest remaining surface, and they are outside
    pynetdicom's scope so they never appear in the comparison above.
 
