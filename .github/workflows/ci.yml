@@ -118,3 +118,46 @@ jobs:
         uses: golangci/golangci-lint-action@v8
         with:
           version: v2.12.2
+
+  # Coverage is one report, so it comes from one job. The matrix above runs the
+  # same tests six times to prove they pass elsewhere; letting each of those
+  # upload would mean six reports racing to describe the same commit.
+  #
+  # -covermode=atomic because these tests drive goroutines and -race is on for
+  # the same run; Go requires atomic mode under the race detector anyway. -race
+  # needs cgo, which is why this job is Linux only and uses go-version-file
+  # rather than pinning a version: the number should describe the module, not
+  # one toolchain in the matrix.
+  coverage:
+    runs-on: ubuntu-latest
+    name: coverage
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          # Codecov diffs against the base commit to report patch coverage, and
+          # one commit of history is not enough to find it.
+          fetch-depth: 2
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test with coverage
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      # No `slug`: in Actions the action reads GITHUB_REPOSITORY, and a
+      # hardcoded owner/repo is a second copy of the same fact that goes stale
+      # the day the repository is renamed.
+      #
+      # No `if: always()`: a run that failed halfway writes a partial profile,
+      # and uploading it would move the baseline down for a reason that is not
+      # about coverage.
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.out
+          # A Codecov outage should not block a merge. Report, do not gate:
+          # the gate that matters is `go test` failing in the jobs above.
+          fail_ci_if_error: false
