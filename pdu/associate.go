@@ -42,11 +42,38 @@ type UserIdentityAC struct {
 	ServerResponse []byte
 }
 
+// AsyncOperationsWindow is an Asynchronous Operations Window Negotiation
+// sub-item (0x53), PS3.8 D.3.3.3.
+//
+// MaxInvoked is how many operations the sender may have outstanding at once,
+// MaxPerformed how many it will execute. Zero means unlimited, which is why the
+// type is a struct with an explicit nil on UserInformation: "not negotiated" and
+// "negotiated with 0" are different answers.
+type AsyncOperationsWindow struct {
+	MaxInvoked   uint16
+	MaxPerformed uint16
+}
+
+// Unlimited reports whether the window is the protocol's "no limit" value.
+func (w AsyncOperationsWindow) Unlimited() bool {
+	return w.MaxInvoked == 0 && w.MaxPerformed == 0
+}
+
+// ExtendedNegotiation is a SOP Class Extended Negotiation sub-item (0x56),
+// PS3.8 D.3.3.5. Info is the Service Class Application Information, whose
+// meaning is defined by the SOP Class rather than by DIMSE.
+type ExtendedNegotiation struct {
+	SOPClassUID string
+	Info        []byte
+}
+
 // UserInformation carries association negotiation user items.
 type UserInformation struct {
 	MaxLength                 uint32
 	ImplementationClassUID    string
 	ImplementationVersionName string
+	AsyncOperationsWindow     *AsyncOperationsWindow
+	ExtendedNegotiations      []ExtendedNegotiation
 	RoleSelections            []RoleSelection
 	UserIdentityRQ            *UserIdentityRQ // A-ASSOCIATE-RQ only
 	UserIdentityAC            *UserIdentityAC // A-ASSOCIATE-AC only
@@ -398,6 +425,33 @@ func encodeUserInformation(ui UserInformation) ([]byte, error) {
 		}
 		data = append(data, item...)
 	}
+	if ui.AsyncOperationsWindow != nil {
+		body := make([]byte, 4)
+		binary.BigEndian.PutUint16(body[0:2], ui.AsyncOperationsWindow.MaxInvoked)
+		binary.BigEndian.PutUint16(body[2:4], ui.AsyncOperationsWindow.MaxPerformed)
+		if data, err = appendItem(data, ItemAsyncOperationsWindow, body); err != nil {
+			return nil, err
+		}
+	}
+	for _, en := range ui.ExtendedNegotiations {
+		if en.SOPClassUID == "" {
+			return nil, fmt.Errorf("pdu: extended negotiation missing SOP Class UID")
+		}
+		sop := []byte(en.SOPClassUID)
+		if len(sop) > maxItemLength {
+			return nil, errTooLong("extended negotiation SOP Class UID", len(sop), maxItemLength)
+		}
+		if len(en.Info) > maxItemLength {
+			return nil, errTooLong("extended negotiation info", len(en.Info), maxItemLength)
+		}
+		body := make([]byte, 2, 2+len(sop)+len(en.Info))
+		binary.BigEndian.PutUint16(body[0:2], uint16(len(sop)))
+		body = append(body, sop...)
+		body = append(body, en.Info...)
+		if data, err = appendItem(data, ItemSOPClassExtendedNegotiation, body); err != nil {
+			return nil, err
+		}
+	}
 	if ui.UserIdentityRQ != nil {
 		item, err := encodeUserIdentityRQ(*ui.UserIdentityRQ)
 		if err != nil {
@@ -432,6 +486,20 @@ func decodeUserInformation(data []byte) (UserInformation, error) {
 			ui.ImplementationClassUID = trimUIDPadding(s.Data)
 		case ItemImplementationVersion:
 			ui.ImplementationVersionName = string(s.Data)
+		case ItemAsyncOperationsWindow:
+			if len(s.Data) != 4 {
+				return ui, fmt.Errorf("pdu: bad asynchronous operations window item: %d bytes", len(s.Data))
+			}
+			ui.AsyncOperationsWindow = &AsyncOperationsWindow{
+				MaxInvoked:   binary.BigEndian.Uint16(s.Data[0:2]),
+				MaxPerformed: binary.BigEndian.Uint16(s.Data[2:4]),
+			}
+		case ItemSOPClassExtendedNegotiation:
+			en, err := decodeExtendedNegotiation(s.Data)
+			if err != nil {
+				return ui, err
+			}
+			ui.ExtendedNegotiations = append(ui.ExtendedNegotiations, en)
 		case ItemRoleSelection:
 			role, err := decodeRoleSelection(s.Data)
 			if err != nil {
@@ -494,6 +562,24 @@ func decodeRoleSelection(data []byte) (RoleSelection, error) {
 		SOPClassUID: uid,
 		SCURole:     data[2+uidLen] != 0,
 		SCPRole:     data[2+uidLen+1] != 0,
+	}, nil
+}
+
+// decodeExtendedNegotiation parses a SOP Class Extended Negotiation sub-item:
+// a two-byte UID length, the UID, then opaque Service Class Application
+// Information.
+func decodeExtendedNegotiation(data []byte) (ExtendedNegotiation, error) {
+	if len(data) < 2 {
+		return ExtendedNegotiation{}, fmt.Errorf("pdu: short extended negotiation item")
+	}
+	uidLen := int(binary.BigEndian.Uint16(data[0:2]))
+	if len(data) < 2+uidLen {
+		return ExtendedNegotiation{}, fmt.Errorf("pdu: truncated extended negotiation UID")
+	}
+	return ExtendedNegotiation{
+		SOPClassUID: trimUIDPadding(data[2 : 2+uidLen]),
+		// Copied: the caller keeps the PDU buffer only as long as it needs to.
+		Info: append([]byte(nil), data[2+uidLen:]...),
 	}, nil
 }
 
