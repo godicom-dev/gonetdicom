@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -37,6 +38,24 @@ var ErrReleased = errors.New("ae: association released by peer")
 
 // ErrNoContext is returned when no accepted presentation context is available.
 var ErrNoContext = errors.New("ae: no accepted presentation context")
+
+// ErrOperationInFlight is returned when an association is asked to start a
+// second operation, or to release, while another one is still waiting for its
+// final response.
+//
+// An *Association has one read side and no message demultiplexer: every
+// operation reads the responses it asked for, in the caller's goroutine. A
+// second reader on the same connection does not conflict politely — it takes
+// whichever PDUs arrive first, so one operation gets the other's answer and the
+// message ids no longer line up. Failing the second caller is the only outcome
+// that leaves the first one correct.
+//
+// Release is included because PS3.8 7.2.2 says a requestor "shall not issue any
+// further primitives other than an A-ABORT request primitive" once it has asked
+// to release: a release is a statement about the association, and an operation
+// that is still running has to be stopped on its own terms first (cancel its
+// context, or C-CANCEL, or Abort).
+var ErrOperationInFlight = errors.New("ae: operation already in flight")
 
 // PresentationContext proposes an abstract syntax and transfer syntaxes.
 type PresentationContext struct {
@@ -166,6 +185,31 @@ type Association struct {
 	// and clearing the field turned a concurrent Abort into a nil-pointer panic
 	// instead of the interruption it was asked for.
 	closed atomic.Bool
+	// opMu guards opInFlight, the name of the operation that owns the read
+	// side. Empty means idle. See beginOp.
+	opMu       sync.Mutex
+	opInFlight string
+}
+
+// beginOp claims the association's read side for one operation and returns the
+// func that gives it back. A caller that gets an error must not touch the
+// connection.
+//
+// The claim is a string rather than a counter because the useful error is "C-GET
+// is already waiting for its response", and because there is nothing to count:
+// nesting never happens, since no operation calls another.
+func (a *Association) beginOp(op string) (func(), error) {
+	a.opMu.Lock()
+	defer a.opMu.Unlock()
+	if a.opInFlight != "" {
+		return nil, fmt.Errorf("%w (%s is in progress)", ErrOperationInFlight, a.opInFlight)
+	}
+	a.opInFlight = op
+	return func() {
+		a.opMu.Lock()
+		a.opInFlight = ""
+		a.opMu.Unlock()
+	}, nil
 }
 
 // Dial associates with addr (host:port) as an SCU.
@@ -445,6 +489,11 @@ func (a *Association) nextMessageID() uint16 {
 
 // CEcho sends a C-ECHO-RQ and waits for a successful C-ECHO-RSP.
 func (a *Association) CEcho(ctx context.Context) error {
+	end, err := a.beginOp("C-ECHO")
+	if err != nil {
+		return err
+	}
+	defer end()
 	pc, ok := a.contextByAbstract(pdu.VerificationSOPClass)
 	if !ok {
 		return fmt.Errorf("%w: verification", ErrNoContext)
@@ -594,10 +643,20 @@ func (a *Association) recvMessagePC(ctx context.Context) (pcid byte, command []b
 }
 
 // Release performs association release and closes the connection.
+//
+// It fails with ErrOperationInFlight while an operation is still waiting for
+// its answer: PS3.8 7.2.2 allows a requestor nothing but A-ABORT after it asks
+// to release, so a release cannot be used to stop a running C-FIND/C-GET.
+// Cancel the operation first (its context, or CCancel), then release.
 func (a *Association) Release(ctx context.Context) error {
 	if a.closed.Load() {
 		return nil
 	}
+	end, err := a.beginOp("A-RELEASE")
+	if err != nil {
+		return err
+	}
+	defer end()
 	ctx = a.logCtx(ctx)
 	defer func() { _ = a.closeConn() }()
 	if err := a.writePDU(ctx, &pdu.AReleaseRQ{}); err != nil {
@@ -607,7 +666,16 @@ func (a *Association) Release(ctx context.Context) error {
 	// answer the other's with an A-RELEASE-RP and both still wait for one. The
 	// peer's RQ turning up here was reported as an unexpected PDU, which failed
 	// the release and left the association to be torn down by the socket.
-	for attempt := 0; attempt < 4; attempt++ {
+	//
+	// P-DATA is skipped rather than fatal. 7.2.2 is explicit that the requestor
+	// "may receive P-DATA Indication primitives" while it waits, and that it
+	// must not answer them — the only primitive it may still issue is A-ABORT.
+	// So a peer that was mid-retrieve when we asked to release keeps sending
+	// for a while, and treating the first fragment as an error turned an
+	// ordinary race into a failed release. Each pass consumes one PDU, and a
+	// peer that goes quiet is bounded by ctx and IdleTimeout, the same bound
+	// every other read in this package has.
+	for {
 		raw, err := a.readPDU(ctx)
 		if err != nil {
 			return err
@@ -625,11 +693,12 @@ func (a *Association) Release(ctx context.Context) error {
 			}
 		case *pdu.AAbort:
 			return ErrAborted
+		case *pdu.PDataTF:
+			continue
 		default:
 			return fmt.Errorf("ae: unexpected PDU %T for release", p)
 		}
 	}
-	return fmt.Errorf("ae: release did not complete")
 }
 
 // Abort sends A-ABORT and closes the connection.

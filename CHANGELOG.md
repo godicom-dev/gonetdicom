@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `GetRequest.MessageID` and `MoveRequest.MessageID`, for the same reason
+  `FindRequest.MessageID` already existed: C-CANCEL names the operation it
+  cancels by Message ID, so a caller that wants to stop a retrieval from
+  another goroutine has to be able to choose the id
+- `ErrOperationInFlight`, returned by any operation started while another is
+  still waiting for its answer, and by `Release` while any is running
+- `docs/adr/0001-association-release-with-operations-in-flight.md` records the
+  reasoning, quoting the PS3.8 7.2.2 requirements it is derived from
 - SOP Class Common Extended Negotiation (PS3.8 D.3.3.6):
   `Config.CommonExtendedNegotiations` states per SOP Class which Service Class
   it is used under and which general classes it may be matched to,
@@ -23,6 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the item is a claim by the peer and is used as an offset
 
 ### Changed
+- `Release` no longer runs alongside an operation. Asking to release while a
+  C-FIND/C-MOVE/C-GET is waiting for its answer returns `ErrOperationInFlight`:
+  PS3.8 7.2.2 leaves a requestor nothing but A-ABORT after it asks, so a release
+  cannot stop a running operation — cancel it, then release. Two operations
+  called at once are refused for the same reason: one read side, one answer
+  each, and the second caller used to steal the first one's responses
+- `Release` skips inbound P-DATA while it waits for A-RELEASE-RP instead of
+  failing. 7.2.2 says the requestor may receive P-DATA and may not answer it,
+  so a peer that was mid-retrieve when the release was requested no longer
+  turns an ordinary race into `unexpected PDU *pdu.PDataTF for release`. The
+  four-iteration cap went with it; the loop is bounded by the caller's context
+  and `IdleTimeout` like every other read
 - `pdu.PDV.Value` decoded by `pdu.DecodePDataTF` is a subslice of the buffer
   that was passed in, not a copy. That buffer must outlive the PDVs and stay
   unmodified while they are in use — which is what `pdu.Read` already
@@ -31,6 +51,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own buffer and then reuses it will now see that reuse through `Value`.
   The copy was the only reason a C-STORE needed the dataset twice in memory
   before the handler saw a byte
+
+### Fixed
+- An A-RELEASE-RQ arriving between two C-GET sub-operations ended the
+  association without the A-RELEASE-RP the peer was waiting for, so the peer
+  could not tell a release from a network fault. The SCP now stops at the next
+  sub-operation boundary and answers the release; the sub-operation already on
+  the wire is still answered, because its response is owed
+- A C-CANCEL-RQ between two C-GET sub-operations was decoded as a C-STORE-RSP,
+  which failed the association and left the SCU with neither a final response
+  nor a usable connection. The store loop now recognises it, consumes the
+  response it is still owed, and ends the operation at the next boundary
+- A C-GET stopped by C-CANCEL answers 0xFE00 with the counts it reached and the
+  untried sub-operations as *remaining*, not failed (PS3.4 Table C.4-3), and
+  carries the Failed SOP Instance UID List when something failed
 
 ### Performance
 - A P-DATA-TF decodes without moving its payload: a 16 KiB PDU takes 44 ns and

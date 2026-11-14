@@ -903,16 +903,21 @@ func scpHandleFind(ctx context.Context, conn net.Conn, r *assocReader, cfg Serve
 	}
 
 	for i, m := range matches {
-		if i > 0 && r.pollStop(rq.MessageID) {
-			rsp, err := (&dimse.CFindRSP{
-				MessageIDBeingRespondedTo: rq.MessageID,
-				AffectedSOPClassUID:       rq.AffectedSOPClassUID,
-				Status:                    dimse.StatusCancel,
-			}).Encode()
-			if err != nil {
-				return err
+		if i > 0 {
+			switch r.pollStop(rq.MessageID) {
+			case stopAssociation:
+				return nil
+			case stopCancelled:
+				rsp, err := (&dimse.CFindRSP{
+					MessageIDBeingRespondedTo: rq.MessageID,
+					AffectedSOPClassUID:       rq.AffectedSOPClassUID,
+					Status:                    dimse.StatusCancel,
+				}).Encode()
+				if err != nil {
+					return err
+				}
+				return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 			}
-			return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 		}
 		hasDS := m.Identifier != nil && dimse.IsPending(m.Status)
 		rsp, err := (&dimse.CFindRSP{
@@ -1265,7 +1270,18 @@ func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg Server
 	// was decoded and dropped, so a C-GET whose stores all failed answered the
 	// SCU Success with the handler's sub-operation counts unchanged.
 	results := newSubOperations(len(plan.Stores))
-	for _, store := range plan.Stores {
+	for i, store := range plan.Stores {
+		// Between two sub-operations is the only place a stop can be honoured:
+		// the C-STORE-RQ already on the wire has to be answered, or the next
+		// read would be one message behind. PS3.4 C.4.3.1.4 calls the untried
+		// ones "remaining", not failed, which is what cancelMatch reports.
+		switch r.pollStop(rq.MessageID) {
+		case stopAssociation:
+			return nil
+		case stopCancelled:
+			return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false,
+				[]RetrieveMatch{results.cancelMatch(len(plan.Stores) - i)})
+		}
 		storePCID, storeTS, ok := contextByAbstractAccepted(accepted, store.AffectedSOPClassUID)
 		if !ok {
 			return fmt.Errorf("ae: C-GET store missing presentation context for %s", store.AffectedSOPClassUID)
@@ -1294,15 +1310,35 @@ func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg Server
 		if err := writeMessage(ctx, conn, storePCID, cmd, payload, peerMax); err != nil {
 			return err
 		}
-		_, rspCmd, _, err := r.message(ctx)
-		if err != nil {
-			return err
+		// The response to this store is owed whatever else arrives first. A
+		// C-CANCEL that overtakes it used to be decoded as a C-STORE-RSP and
+		// fail the association; now it is noted and the read continues, so the
+		// operation ends the way the peer asked — at the next sub-operation
+		// boundary, with a Cancel status.
+		cancelled := false
+		for {
+			_, rspCmd, _, err := r.message(ctx)
+			if err != nil {
+				if errors.Is(err, errAssociationEnding) {
+					return nil
+				}
+				return err
+			}
+			if c, err := dimse.DecodeCCancelRQ(rspCmd); err == nil && c.MessageIDBeingRespondedTo == rq.MessageID {
+				cancelled = true
+				continue
+			}
+			rsp, err := dimse.DecodeCStoreRSP(rspCmd)
+			if err != nil {
+				return fmt.Errorf("ae: decode C-STORE-RSP during C-GET: %w", err)
+			}
+			results.record(store.AffectedSOPInstanceUID, nil, rsp.Status)
+			break
 		}
-		rsp, err := dimse.DecodeCStoreRSP(rspCmd)
-		if err != nil {
-			return fmt.Errorf("ae: decode C-STORE-RSP during C-GET: %w", err)
+		if cancelled {
+			return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false,
+				[]RetrieveMatch{results.cancelMatch(len(plan.Stores) - i - 1)})
 		}
-		results.record(store.AffectedSOPInstanceUID, nil, rsp.Status)
 	}
 
 	plan.Responses = results.reconcile(plan.Responses)
@@ -1312,28 +1348,33 @@ func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg Server
 
 func writeRetrieveResponses(ctx context.Context, conn net.Conn, r *assocReader, pcid byte, peerMax uint32, transferSyntax string, msgID uint16, sopClass string, isMove bool, matches []RetrieveMatch) error {
 	for i, m := range matches {
-		if i > 0 && r.pollStop(msgID) {
-			var (
-				rsp []byte
-				err error
-			)
-			if isMove {
-				rsp, err = (&dimse.CMoveRSP{
-					MessageIDBeingRespondedTo: msgID,
-					AffectedSOPClassUID:       sopClass,
-					Status:                    dimse.StatusCancel,
-				}).Encode()
-			} else {
-				rsp, err = (&dimse.CGetRSP{
-					MessageIDBeingRespondedTo: msgID,
-					AffectedSOPClassUID:       sopClass,
-					Status:                    dimse.StatusCancel,
-				}).Encode()
+		if i > 0 {
+			switch r.pollStop(msgID) {
+			case stopAssociation:
+				return nil
+			case stopCancelled:
+				var (
+					rsp []byte
+					err error
+				)
+				if isMove {
+					rsp, err = (&dimse.CMoveRSP{
+						MessageIDBeingRespondedTo: msgID,
+						AffectedSOPClassUID:       sopClass,
+						Status:                    dimse.StatusCancel,
+					}).Encode()
+				} else {
+					rsp, err = (&dimse.CGetRSP{
+						MessageIDBeingRespondedTo: msgID,
+						AffectedSOPClassUID:       sopClass,
+						Status:                    dimse.StatusCancel,
+					}).Encode()
+				}
+				if err != nil {
+					return err
+				}
+				return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 			}
-			if err != nil {
-				return err
-			}
-			return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
 		}
 		hasDS := m.Identifier != nil
 		var (

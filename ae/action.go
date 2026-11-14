@@ -79,6 +79,11 @@ type NActionHandler func(ctx context.Context, req ActionRequest) (ActionResult, 
 // NAction sends an N-ACTION-RQ and waits for the N-ACTION-RSP.
 // If OnNEventReport is set, it then accepts one N-EVENT-REPORT-RQ (push model).
 func (a *Association) NAction(ctx context.Context, req ActionRequest) (*ActionResult, error) {
+	end, err := a.beginOp("N-ACTION")
+	if err != nil {
+		return nil, err
+	}
+	defer end()
 	if req.RequestedSOPClassUID == "" {
 		return nil, fmt.Errorf("ae: N-ACTION missing Requested SOP Class UID")
 	}
@@ -150,6 +155,11 @@ func (a *Association) NAction(ctx context.Context, req ActionRequest) (*ActionRe
 
 // NEventReport sends an N-EVENT-REPORT-RQ and waits for the N-EVENT-REPORT-RSP.
 func (a *Association) NEventReport(ctx context.Context, req EventReportRequest) (*EventReportResult, error) {
+	end, err := a.beginOp("N-EVENT-REPORT")
+	if err != nil {
+		return nil, err
+	}
+	defer end()
 	if req.AffectedSOPClassUID == "" {
 		return nil, fmt.Errorf("ae: N-EVENT-REPORT missing Affected SOP Class UID")
 	}

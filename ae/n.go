@@ -89,6 +89,11 @@ type NDeleteHandler func(ctx context.Context, req DeleteRequest) DeleteResult
 
 // NGet sends an N-GET-RQ and waits for the N-GET-RSP.
 func (a *Association) NGet(ctx context.Context, req NGetRequest) (*NGetResult, error) {
+	end, err := a.beginOp("N-GET")
+	if err != nil {
+		return nil, err
+	}
+	defer end()
 	if req.RequestedSOPClassUID == "" {
 		return nil, fmt.Errorf("ae: N-GET missing Requested SOP Class UID")
 	}
@@ -141,6 +146,11 @@ func (a *Association) NGet(ctx context.Context, req NGetRequest) (*NGetResult, e
 
 // NSet sends an N-SET-RQ and waits for the N-SET-RSP.
 func (a *Association) NSet(ctx context.Context, req SetRequest) (*SetResult, error) {
+	end, err := a.beginOp("N-SET")
+	if err != nil {
+		return nil, err
+	}
+	defer end()
 	if req.RequestedSOPClassUID == "" {
 		return nil, fmt.Errorf("ae: N-SET missing Requested SOP Class UID")
 	}
@@ -201,6 +211,11 @@ func (a *Association) NSet(ctx context.Context, req SetRequest) (*SetResult, err
 
 // NCreate sends an N-CREATE-RQ and waits for the N-CREATE-RSP.
 func (a *Association) NCreate(ctx context.Context, req CreateRequest) (*CreateResult, error) {
+	end, err := a.beginOp("N-CREATE")
+	if err != nil {
+		return nil, err
+	}
+	defer end()
 	if req.AffectedSOPClassUID == "" {
 		return nil, fmt.Errorf("ae: N-CREATE missing Affected SOP Class UID")
 	}
@@ -258,6 +273,11 @@ func (a *Association) NCreate(ctx context.Context, req CreateRequest) (*CreateRe
 
 // NDelete sends an N-DELETE-RQ and waits for the N-DELETE-RSP.
 func (a *Association) NDelete(ctx context.Context, req DeleteRequest) (*DeleteResult, error) {
+	end, err := a.beginOp("N-DELETE")
+	if err != nil {
+		return nil, err
+	}
+	defer end()
 	if req.RequestedSOPClassUID == "" {
 		return nil, fmt.Errorf("ae: N-DELETE missing Requested SOP Class UID")
 	}

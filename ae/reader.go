@@ -216,7 +216,7 @@ func (r *assocReader) message(ctx context.Context) (pcid byte, command []byte, b
 		return 0, nil, nil, it.Err
 	case it.Control != nil:
 		r.pending = append([]inbound{it}, r.pending...) // keep it for the association loop
-		return 0, nil, nil, fmt.Errorf("ae: unexpected PDU %T while reading message", it.Control)
+		return 0, nil, nil, fmt.Errorf("%w: unexpected PDU %T while reading message", errAssociationEnding, it.Control)
 	}
 	return it.ContextID, it.Command, it.Body, nil
 }
@@ -226,20 +226,45 @@ func (r *assocReader) message(ctx context.Context) (pcid byte, command []byte, b
 // never be completed.
 var errReaderStopped = errors.New("ae: association reader stopped")
 
+// errAssociationEnding marks a read that stopped because the peer released or
+// aborted, or the connection failed. A handler that is part-way through a
+// multi-message operation returns nil on it instead of the error: the
+// association loop owns the teardown, and it is the one that answers an
+// A-RELEASE-RQ the peer is waiting on.
+var errAssociationEnding = errors.New("ae: association ending")
+
+// stopReason is why a response stream should stop sending, as reported by
+// assocReader.pollStop.
+type stopReason int
+
+const (
+	// stopNone: keep going.
+	stopNone stopReason = iota
+	// stopCancelled: a C-CANCEL-RQ for this message arrived. The operation ends
+	// with a Cancel status and the association stays usable.
+	stopCancelled
+	// stopAssociation: the association is gone — release, abort, or a failed
+	// read. Nothing may be written for the operation: PS3.8 7.2.2 lets the
+	// requestor receive P-DATA while it waits for its release response and
+	// requires it to ignore it, so a Cancel status now is a message the peer
+	// would throw away. Returning lets the loop answer the release.
+	stopAssociation
+)
+
 // pollStop reports whether the peer has asked us to stop streaming responses
-// for msgID. It never blocks and never leaves a partially read PDU behind.
+// for msgID, and why. It never blocks and never leaves a partially read PDU
+// behind.
 //
-// True means either a C-CANCEL-RQ for msgID arrived, or the association is
-// ending (control PDU or read error). Anything else already read stays queued
-// in order for the next next/message call, so polling cannot drop a message.
-func (r *assocReader) pollStop(msgID uint16) bool {
+// Anything that is not a stop stays queued in order for the next next/message
+// call, so polling cannot drop a message.
+func (r *assocReader) pollStop(msgID uint16) stopReason {
 	// Take whatever has already arrived, bounded so a flooding peer cannot make
 	// the queue grow without us ever writing a response.
 	for i := 0; i < pollDrainLimit; i++ {
 		select {
 		case got, ok := <-r.ch:
 			if !ok {
-				return true
+				return stopAssociation
 			}
 			r.pending = append(r.pending, got)
 		default:
@@ -249,15 +274,15 @@ func (r *assocReader) pollStop(msgID uint16) bool {
 
 	for i, it := range r.pending {
 		if it.Err != nil || it.Control != nil {
-			return true // left queued; the association loop reports it
+			return stopAssociation // left queued; the association loop reports it
 		}
 		if cancel, err := dimse.DecodeCCancelRQ(it.Command); err == nil &&
 			cancel.MessageIDBeingRespondedTo == msgID {
 			r.pending = append(r.pending[:i:i], r.pending[i+1:]...)
-			return true
+			return stopCancelled
 		}
 	}
-	return false
+	return stopNone
 }
 
 // pollDrainLimit bounds how many already-arrived items one pollStop absorbs.

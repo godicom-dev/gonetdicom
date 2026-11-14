@@ -109,6 +109,11 @@ func (ev StoreEvent) Decode() (*godicom.Dataset, error) {
 // copy of the Dataset carrying it, leaving the caller's Dataset as it was.
 // Supplying the UID skips the copy.
 func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResult, error) {
+	end, err := a.beginOp("C-STORE")
+	if err != nil {
+		return nil, err
+	}
+	defer end()
 	if req.AffectedSOPClassUID == "" {
 		return nil, fmt.Errorf("ae: C-STORE missing Affected SOP Class UID")
 	}

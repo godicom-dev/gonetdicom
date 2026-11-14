@@ -32,7 +32,7 @@ func waitPending(t *testing.T, r *assocReader, msgID uint16) bool {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if r.pollStop(msgID) {
+		if r.pollStop(msgID) != stopNone {
 			return true
 		}
 		if len(r.pending) > 0 {
@@ -66,7 +66,7 @@ func TestAssocReaderPollStopPushesBackOtherMessages(t *testing.T) {
 		t.Fatal("pollStop reported a stop for an unrelated C-ECHO-RQ")
 	}
 	// Polling again must not lose it either.
-	if r.pollStop(5) {
+	if r.pollStop(5) != stopNone {
 		t.Fatal("second pollStop reported a stop")
 	}
 
