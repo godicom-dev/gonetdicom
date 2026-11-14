@@ -347,9 +347,28 @@ ServerConfig{
 
 A non-zero return answers the request with that status (0xA900 *identifier does
 not match SOP class*) and skips the handler; the association stays up, because
-the peer can retry with a corrected identifier. The framework does not carry a
-per-model attribute table — that knowledge belongs to the application, and the
-hook is where it goes.
+the peer can retry with a corrected identifier.
+
+`QueryModelValidator` is the same hook with the model's level table behind it:
+
+```go
+ServerConfig{
+	IdentifierValidator: ae.QueryModelValidator(), // or ae.QueryModelValidator("PATIENT", "STUDY")
+	// ...
+}
+```
+
+It refuses a level the model does not answer (PATIENT on Study Root, SERIES on
+the retired Patient/Study Only model) and a C-MOVE/C-GET that carries no unique
+key for the level it retrieves. C-FIND is exempt from the key rule — a STUDY
+level query by Patient Name is a legal query — and a model the package has no
+table for is passed to the handler instead of refused on a guess.
+`ae.QueryHierarchyFor` exposes the same table if an application wants to build
+its own check.
+
+The framework still does not carry a per-model attribute dictionary — which keys
+a model must return, and under what conditions — because that is dataset
+knowledge, and the hook is where it goes.
 
 The Called AE Title is checked: a requestor asking for anything other than
 `AETitle` (or an entry in `AlternativeAETitles`) gets an A-ASSOCIATE-RJ with

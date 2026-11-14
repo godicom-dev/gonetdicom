@@ -21,8 +21,8 @@ Legend: **covered** — a test would fail if the behaviour regressed;
 | `status` | 100.0% | pure constants and predicates |
 | root | 95.8% | logger precedence, nil tolerance |
 | `dimse` | 90.4% | command encode/decode, status helpers |
-| `pdu` | 84.0% | every PDU and user-information item, incl. malformed frames |
-| `ae` | 82.9% | association, DIMSE dispatch, Q/R, N-services |
+| `pdu` | 85.7% | every PDU and user-information item, incl. malformed frames |
+| `ae` | 84.3% | association, DIMSE dispatch, Q/R, N-services |
 | `dicomweb` | 78.7% | no pynetdicom counterpart (PS3.18 is not in it) |
 
 `go test ./... -cover` reproduces the table. Cross-package use does not count
@@ -39,7 +39,7 @@ control-PDU decoders are also driven through `ae`.
 | `test_service_verification.py` (15) | `ae/handshake_test.go`, `ae/assoc_test.go` | covered |
 | `test_service_storage.py` (24) | `ae/store_*_test.go`, `ae/stream_test.go`, `ae/subops*_test.go` | covered |
 | `test_service_n.py` (51), `test_assoc_n.py` (84) | `ae/n_status_test.go`, `ae/n_test.go`, `ae/action_test.go`, `ae/nevent_test.go` | covered |
-| `test_service_qr.py` (149) | `ae/find_test.go`, `ae/retrieve_test.go`, `ae/move_*_test.go`, `ae/subops_e2e_test.go`, `ae/validate_test.go`, `ae/model_passthrough_test.go` | covered, except per-model attribute tables (see below) |
+| `test_service_qr.py` (149) | `ae/find_test.go`, `ae/retrieve_test.go`, `ae/move_*_test.go`, `ae/subops_e2e_test.go`, `ae/validate_test.go`, `ae/qrmodel_test.go`, `ae/model_passthrough_test.go` | covered — including the per-model level tables (see gap 1) |
 | `test_presentation.py` (99) | `ae/contexts_test.go`, `ae/pc_negotiation_e2e_test.go`, `ae/role_*_test.go` | covered |
 | `test_acse.py` (85) | `ae/handshake_test.go`, `ae/acse_robustness_test.go`, `ae/admit_test.go`, `ae/identity_test.go` | partial — see below |
 | `test_ae.py` (102) | `ae/scp.go`/`Config`/`ServerConfig` + the tests above | partial — see below |
@@ -70,11 +70,25 @@ is the ready-made check (level present, optional allow-list) that replies 0xA900
 (*identifier does not match SOP class*). A refused identifier skips the handler
 and leaves the association usable.
 
-What is still missing is the part pynetdicom generates from its SOP Class
-definitions: a per-model table of required and optional keys. Populating that
-would mean porting a data dictionary into the network stack, which is the split
-this package avoids — the hook is one function call away for an application that
-wants it.
+`ae.QueryModelValidator` adds the part that needs a table: each model's level
+hierarchy and the attribute that identifies an entity at each level (PS3.4
+C.6.2.1.1, exposed as `QueryHierarchyFor`). Three refusals follow, all of them
+mistakes a handler could not recover from: a level the model does not answer
+(PATIENT on Study Root, SERIES on the retired Patient/Study Only model), a level
+excluded by the caller's allow-list, and a C-MOVE or C-GET that carries no
+unique key for the level it retrieves. C-FIND is exempt from the key rule —
+a STUDY level query by Patient Name is legal — and a model with no table (the
+Relevant Patient Information models, the specialised Query/Retrieve models) is
+passed to the handler rather than refused on a guess.
+
+The table is structure, not a data dictionary: one attribute per level, chosen
+because it is the one that identifies the entity being retrieved. What
+pynetdicom's dataset validation also does — the required and optional key sets
+per model and level, including the "required if" conditions, and the VR/value
+multiplicity checks — is a data dictionary, and is still the application's
+business. `QueryModelValidator` is the seam for it: an application that wants
+the full table writes the validator, calls `QueryHierarchyFor` for the shape,
+and answers 0xA900 for the rest.
 
 ### 2. Association lifecycle corners (partial)
 
@@ -149,23 +163,27 @@ command sets, presentation contexts, statuses) and leave dataset semantics to
 godicom and the handler. This is the same split dcm4che makes: the network stack
 is not the place for a data dictionary.
 
+The one table we do keep is the Query/Retrieve level hierarchy — which levels a
+model answers and which attribute identifies an entity at each. It is protocol
+structure (PS3.4 C.6.2.1.1), nine UIDs against three level lists, and it buys
+three refusals a handler cannot recover from. Everything that needs the key
+attributes themselves stays on the application side, behind the same hook.
+
 ## If you want to move the number
 
 In order of value per line of code:
 
-1. A per-model key table behind `IdentifierValidator`, if an application asks
-   for one; today the hook is where that knowledge lives.
-2. C-MOVE stopped mid-batch. `pollStop` covers C-FIND and C-GET, whose responses
+1. C-MOVE stopped mid-batch. `pollStop` covers C-FIND and C-GET, whose responses
    share the association with the request; C-MOVE's sub-operations run on the
    Move Destination's association, so a cancel there is only noticed between
    responses today. Cutting the batch short needs the same
    remaining-versus-failed decision C-GET now makes, applied to instances that
    were never dialled for.
-3. The SCU read side on its own goroutine, so a context deadline that expires
+2. The SCU read side on its own goroutine, so a context deadline that expires
    inside a PDU can be told apart from one that expires between messages. Today
    the former desynchronises the stream and `Abort` is the only exit — see
    `docs/adr/0001`.
-4. DICOMweb beyond the MVP: PS3.18 Delete, Upsert, Capabilities and non-patient
+3. DICOMweb beyond the MVP: PS3.18 Delete, Upsert, Capabilities and non-patient
    instances are the largest remaining surface, and they are outside
    pynetdicom's scope so they never appear in the comparison above.
 

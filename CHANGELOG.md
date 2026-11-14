@@ -29,6 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pdu.CommonExtendedNegotiation` carries the sub-item at the PDU layer, with
   each UID length-checked against the bytes actually present: every length in
   the item is a claim by the peer and is used as an offset
+- `ae.QueryModelValidator` checks an identifier against the level hierarchy of
+  the Query/Retrieve model it was written for, and `ae.QueryHierarchyFor`
+  exposes that table (`QueryHierarchy`, `QueryLevel`, and the `LevelPatient` /
+  `LevelStudy` / `LevelSeries` / `LevelImage` values). Three refusals a handler
+  cannot recover from become 0xA900 without reaching it: a level the model does
+  not answer (PATIENT on the Study Root model, SERIES on the retired
+  Patient/Study Only model), a level outside the caller's allow-list, and a
+  C-MOVE or C-GET that carries no unique key for the level it retrieves.
+  C-FIND is exempt from the key rule — a STUDY level query by Patient Name is a
+  legal query — and a model with no table is passed to the handler rather than
+  refused on a guess, which keeps the long tail of specialised models usable.
+  The table is structure, not a data dictionary: one attribute per level, the
+  one that identifies the entity being retrieved (PS3.4 C.6.2.1.1)
 
 ### Changed
 - `Release` no longer runs alongside an operation. Asking to release while a
@@ -56,8 +69,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An A-RELEASE-RQ arriving between two C-GET sub-operations ended the
   association without the A-RELEASE-RP the peer was waiting for, so the peer
   could not tell a release from a network fault. The SCP now stops at the next
-  sub-operation boundary and answers the release; the sub-operation already on
-  the wire is still answered, because its response is owed
+  sub-operation boundary and answers the release; a sub-operation that arrives
+  after it is read and discarded, because the peer is entitled to ignore it
+  (PS3.8 7.2.2) and a requestor that answers one commits a protocol violation of
+  its own
+- An association closed immediately after its A-RELEASE-RP could reach the peer
+  as a reset rather than a release: closing a socket that still holds unread
+  data makes the stack send RST, and a reset discards the peer's receive buffer
+  — including the release response sitting in it. The SCP now drains whatever
+  has already arrived before closing, with a deadline in the past so a peer that
+  sent nothing costs two non-blocking reads and no latency. It cannot undo a
+  requestor that keeps writing after A-RELEASE-RQ and races the close, but it
+  removes the case where the late bytes were already there
 - A C-CANCEL-RQ between two C-GET sub-operations was decoded as a C-STORE-RSP,
   which failed the association and left the SCU with neither a final response
   nor a usable connection. The store loop now recognises it, consumes the
