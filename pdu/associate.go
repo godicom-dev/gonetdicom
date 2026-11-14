@@ -67,16 +67,38 @@ type ExtendedNegotiation struct {
 	Info        []byte
 }
 
+// CommonExtendedNegotiation is a SOP Class Common Extended Negotiation
+// sub-item (0x57), PS3.8 D.3.3.6.
+//
+// It answers, for one SOP Class, two questions that the presentation contexts
+// cannot: which Service Class the class is used under, and which more general
+// SOP Classes it may stand in for. Storage Commitment is the driving case —
+// the class a peer stores under and the Service Class that commits to it are
+// different, and a requestor needs to know the pairing before it sends
+// anything.
+//
+// ServiceClassUID is required by the encoding even when empty would read as
+// "no service class": the field has a length, and a zero length is not the
+// protocol's way of saying absent — omitting the whole sub-item is.
+type CommonExtendedNegotiation struct {
+	SOPClassUID     string
+	ServiceClassUID string
+	// RelatedGeneralSOPClasses are SOP Classes this one may be matched to
+	// when a peer queries for the general class (PS3.4 C.4.1.1.3).
+	RelatedGeneralSOPClasses []string
+}
+
 // UserInformation carries association negotiation user items.
 type UserInformation struct {
-	MaxLength                 uint32
-	ImplementationClassUID    string
-	ImplementationVersionName string
-	AsyncOperationsWindow     *AsyncOperationsWindow
-	ExtendedNegotiations      []ExtendedNegotiation
-	RoleSelections            []RoleSelection
-	UserIdentityRQ            *UserIdentityRQ // A-ASSOCIATE-RQ only
-	UserIdentityAC            *UserIdentityAC // A-ASSOCIATE-AC only
+	MaxLength                  uint32
+	ImplementationClassUID     string
+	ImplementationVersionName  string
+	AsyncOperationsWindow      *AsyncOperationsWindow
+	ExtendedNegotiations       []ExtendedNegotiation
+	CommonExtendedNegotiations []CommonExtendedNegotiation
+	RoleSelections             []RoleSelection
+	UserIdentityRQ             *UserIdentityRQ // A-ASSOCIATE-RQ only
+	UserIdentityAC             *UserIdentityAC // A-ASSOCIATE-AC only
 }
 
 // ProtocolVersion1 is bit 0 of the Protocol-version field, identifying DICOM
@@ -452,6 +474,13 @@ func encodeUserInformation(ui UserInformation) ([]byte, error) {
 			return nil, err
 		}
 	}
+	for _, ce := range ui.CommonExtendedNegotiations {
+		item, err := encodeCommonExtendedNegotiation(ce)
+		if err != nil {
+			return nil, err
+		}
+		data = append(data, item...)
+	}
 	if ui.UserIdentityRQ != nil {
 		item, err := encodeUserIdentityRQ(*ui.UserIdentityRQ)
 		if err != nil {
@@ -500,6 +529,12 @@ func decodeUserInformation(data []byte) (UserInformation, error) {
 				return ui, err
 			}
 			ui.ExtendedNegotiations = append(ui.ExtendedNegotiations, en)
+		case ItemSOPClassCommonExtendedNegotiation:
+			ce, err := decodeCommonExtendedNegotiation(s.Data)
+			if err != nil {
+				return ui, err
+			}
+			ui.CommonExtendedNegotiations = append(ui.CommonExtendedNegotiations, ce)
 		case ItemRoleSelection:
 			role, err := decodeRoleSelection(s.Data)
 			if err != nil {
@@ -581,6 +616,100 @@ func decodeExtendedNegotiation(data []byte) (ExtendedNegotiation, error) {
 		// Copied: the caller keeps the PDU buffer only as long as it needs to.
 		Info: append([]byte(nil), data[2+uidLen:]...),
 	}, nil
+}
+
+// encodeCommonExtendedNegotiation builds a SOP Class Common Extended
+// Negotiation sub-item (PS3.8 D.3.3.6): the item header, then SOP Class UID,
+// Service Class UID and the related-general list, each preceded by its own
+// two-byte length.
+//
+// The Related General SOP Class Identification field's length covers the whole
+// nested list rather than counting UIDs, so it is built first and measured
+// once. UIDs go in without the trailing null PS3.5 9.1 would add — D.3.3.6
+// asks for the unpadded form — and a peer that pads anyway is handled by
+// trimUIDPadding on the way back in.
+func encodeCommonExtendedNegotiation(ce CommonExtendedNegotiation) ([]byte, error) {
+	if ce.SOPClassUID == "" {
+		return nil, fmt.Errorf("pdu: common extended negotiation missing SOP Class UID")
+	}
+	if ce.ServiceClassUID == "" {
+		return nil, fmt.Errorf("pdu: common extended negotiation missing Service Class UID for %q", ce.SOPClassUID)
+	}
+	sop := []byte(ce.SOPClassUID)
+	svc := []byte(ce.ServiceClassUID)
+	for _, uid := range []struct {
+		name string
+		data []byte
+	}{{"SOP Class UID", sop}, {"Service Class UID", svc}} {
+		if len(uid.data) > maxItemLength {
+			return nil, errTooLong("common extended negotiation "+uid.name, len(uid.data), maxItemLength)
+		}
+	}
+	related := make([]byte, 0, 32)
+	for _, uid := range ce.RelatedGeneralSOPClasses {
+		if uid == "" {
+			return nil, fmt.Errorf("pdu: empty related general SOP Class UID for %q", ce.SOPClassUID)
+		}
+		if len(uid) > maxItemLength {
+			return nil, errTooLong("related general SOP Class UID", len(uid), maxItemLength)
+		}
+		related = binary.BigEndian.AppendUint16(related, uint16(len(uid)))
+		related = append(related, uid...)
+	}
+	if len(related) > maxItemLength {
+		return nil, errTooLong("related general SOP Class list", len(related), maxItemLength)
+	}
+	body := make([]byte, 0, 6+len(sop)+len(svc)+len(related))
+	body = binary.BigEndian.AppendUint16(body, uint16(len(sop)))
+	body = append(body, sop...)
+	body = binary.BigEndian.AppendUint16(body, uint16(len(svc)))
+	body = append(body, svc...)
+	body = binary.BigEndian.AppendUint16(body, uint16(len(related)))
+	body = append(body, related...)
+	return encodeItem(ItemSOPClassCommonExtendedNegotiation, body)
+}
+
+// decodeCommonExtendedNegotiation parses a SOP Class Common Extended
+// Negotiation sub-item. Every length is a claim by the peer, so each one is
+// checked against what is actually there before it is used as an offset; a
+// short item is an error rather than a shorter answer.
+func decodeCommonExtendedNegotiation(data []byte) (CommonExtendedNegotiation, error) {
+	var ce CommonExtendedNegotiation
+	// Two length-prefixed UIDs and one length field, before any UID bytes.
+	if len(data) < 6 {
+		return ce, fmt.Errorf("pdu: short common extended negotiation item: %d bytes", len(data))
+	}
+	sopLen := int(binary.BigEndian.Uint16(data[0:2]))
+	if len(data) < 2+sopLen+2 {
+		return ce, fmt.Errorf("pdu: truncated common extended negotiation SOP Class UID")
+	}
+	ce.SOPClassUID = trimUIDPadding(data[2 : 2+sopLen])
+	off := 2 + sopLen
+	svcLen := int(binary.BigEndian.Uint16(data[off : off+2]))
+	off += 2
+	if len(data) < off+svcLen+2 {
+		return ce, fmt.Errorf("pdu: truncated common extended negotiation Service Class UID")
+	}
+	ce.ServiceClassUID = trimUIDPadding(data[off : off+svcLen])
+	off += svcLen
+	relatedLen := int(binary.BigEndian.Uint16(data[off : off+2]))
+	off += 2
+	if len(data) < off+relatedLen {
+		return ce, fmt.Errorf("pdu: truncated common extended negotiation related general SOP Class list")
+	}
+	related := data[off : off+relatedLen]
+	for len(related) > 0 {
+		if len(related) < 2 {
+			return ce, fmt.Errorf("pdu: short related general SOP Class UID length")
+		}
+		n := int(binary.BigEndian.Uint16(related[0:2]))
+		if len(related) < 2+n {
+			return ce, fmt.Errorf("pdu: truncated related general SOP Class UID")
+		}
+		ce.RelatedGeneralSOPClasses = append(ce.RelatedGeneralSOPClasses, trimUIDPadding(related[2:2+n]))
+		related = related[2+n:]
+	}
+	return ce, nil
 }
 
 func encodeUserIdentityRQ(id UserIdentityRQ) ([]byte, error) {

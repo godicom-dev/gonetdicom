@@ -26,20 +26,21 @@ const (
 
 // Item type values for A-ASSOCIATE variable items.
 const (
-	ItemApplicationContext          = 0x10
-	ItemPresentationContextRQ       = 0x20
-	ItemPresentationContextAC       = 0x21
-	ItemAbstractSyntax              = 0x30
-	ItemTransferSyntax              = 0x40
-	ItemUserInformation             = 0x50
-	ItemMaxLength                   = 0x51
-	ItemImplementationClassUID      = 0x52
-	ItemAsyncOperationsWindow       = 0x53
-	ItemRoleSelection               = 0x54
-	ItemImplementationVersion       = 0x55
-	ItemSOPClassExtendedNegotiation = 0x56
-	ItemUserIdentityRQ              = 0x58
-	ItemUserIdentityAC              = 0x59
+	ItemApplicationContext                = 0x10
+	ItemPresentationContextRQ             = 0x20
+	ItemPresentationContextAC             = 0x21
+	ItemAbstractSyntax                    = 0x30
+	ItemTransferSyntax                    = 0x40
+	ItemUserInformation                   = 0x50
+	ItemMaxLength                         = 0x51
+	ItemImplementationClassUID            = 0x52
+	ItemAsyncOperationsWindow             = 0x53
+	ItemRoleSelection                     = 0x54
+	ItemImplementationVersion             = 0x55
+	ItemSOPClassExtendedNegotiation       = 0x56
+	ItemSOPClassCommonExtendedNegotiation = 0x57
+	ItemUserIdentityRQ                    = 0x58
+	ItemUserIdentityAC                    = 0x59
 )
 
 // User Identity Type values (PS3.7 Annex D.3.3.7).

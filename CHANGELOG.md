@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- SOP Class Common Extended Negotiation (PS3.8 D.3.3.6):
+  `Config.CommonExtendedNegotiations` states per SOP Class which Service Class
+  it is used under and which general classes it may be matched to,
+  `ServerConfig.CommonExtendedNegotiation` confirms or withholds that statement,
+  and `Association.CommonExtendedNegotiation` reads the answer. This is what
+  Storage Commitment needs: the SOP Class a peer stores under and the Service
+  Class that commits to it are different, and a requestor cannot commit to
+  anything until it knows the pairing. Withholding the sub-item is not a
+  refusal — the class stays usable the plain DIMSE way — so an SCP written
+  before this item existed keeps negotiating exactly as it did
+- `pdu.CommonExtendedNegotiation` carries the sub-item at the PDU layer, with
+  each UID length-checked against the bytes actually present: every length in
+  the item is a claim by the peer and is used as an offset
+
 ## [0.20.0] - 2026-11-14
 
 Concurrency control, done the way Go does it: admission and backpressure as

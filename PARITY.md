@@ -113,10 +113,21 @@ the policy, so "start the AE, add a context, stop the AE" is "build a config,
 call Serve, cancel the context" — tested through every `ae` test, not as a
 separate lifecycle API.
 
-Genuine gap inside this group: **SOP Class Extended Negotiation is answered but
-SOP Class Common Extended Negotiation (0x57) is not implemented**. A peer that
-proposes it is ignored, which is legal (unrecognised user items are skipped) but
-means Storage Commitment service-class mapping via 0x57 does not work.
+Genuine gap inside this group: none left at the negotiation layer. Both 0x56
+(`SOP Class Extended Negotiation`) and 0x57 (`SOP Class Common Extended
+Negotiation`) are decoded, answered through a `ServerConfig` hook, proposed
+through `Config`, and readable from the association. The difference from
+pynetdicom is where the *policy* lives, not what is on the wire: pynetdicom
+gives its `EVT_SOP_COMMON` handler a dict of primitives and takes back whatever
+it returns, while `ServerConfig.CommonExtendedNegotiation` answers yes or no
+per proposed class and the confirmed statement is echoed verbatim. A counter-
+offer is not something PS3.8 D.3.3.6 describes, so the narrower signature is
+the honest one.
+
+Still missing from this group, and out of scope by intent: pynetdicom's
+`AE`-level defaults for these items (`AE.add_requested_common_extended_negotiation`
+and friends) land here as struct fields, which is why there is no per-item
+registration API to test.
 
 ## Validation
 
@@ -130,13 +141,14 @@ is not the place for a data dictionary.
 
 In order of value per line of code:
 
-1. SOP Class Common Extended Negotiation (0x57) encode/decode and a
-   `ServerConfig` hook. Small, completes the user-information set.
-2. IPv6 listener test, once a CI image that supports it is pinned.
-3. `Association.Release` in the presence of pending C-GET sub-operations —
+1. IPv6 listener test, once a CI image that supports it is pinned.
+2. `Association.Release` in the presence of pending C-GET sub-operations —
    needs a decision about what to do with in-flight stores, not just a test.
-4. A per-model key table behind `IdentifierValidator`, if an application asks
+3. A per-model key table behind `IdentifierValidator`, if an application asks
    for one; today the hook is where that knowledge lives.
+4. DICOMweb beyond the MVP: PS3.18 Delete, Upsert, Capabilities and non-patient
+   instances are the largest remaining surface, and they are outside
+   pynetdicom's scope so they never appear in the comparison above.
 
 ## Performance
 
