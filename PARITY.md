@@ -179,6 +179,25 @@ contiguous is the price of not streaming. pynetdicom cannot be compared on this
 axis at all — `Event.dataset` is always a `BytesIO` — and dcm4che reaches the
 same place only by handing `PDVInputStream` a buffer the caller had to allocate.
 
+The per-PDU numbers are the other half of the same story, because streaming
+only decides what the *handler* holds. What the stack allocates per PDU is
+fixed by the encoder and decoder:
+
+| Operation | Before | Now |
+|---|---|---|
+| `DecodePDataTF`, 16 KiB PDU | 1966 ns, 16.4 KB/op, 3 allocs | 44 ns, 56 B/op, 2 allocs |
+| `EncodePDataTF`, 16 KiB PDU | 5713 ns, 51.2 KB/op, 3 allocs | 2355 ns, 18.4 KB/op, 1 alloc |
+| C-STORE 1 MiB, end to end | 6.6 MB/op, 3.10 ms | 3.4 MB/op, 2.09 ms |
+
+Decoding is now O(PDV count) rather than O(payload), which is why the 45x on the
+first row is real but the throughput figure it produces is an artefact: there is
+no longer data to move. The 3.4 MB that remain for a 1 MiB store are three
+payload-sized buffers — the MCH prefix `FragmentMessage` prepends, the buffer
+`Encode` writes, and the buffer `ReadLimit` fills. Removing any of them is
+structural: the first needs `PDV` to stop carrying its message control header
+inside `Value`, the third needs a streaming decoder that reads PDV headers as
+they arrive instead of buffering the PDU first.
+
 Run them with a fixed time so the numbers are comparable between runs:
 
 ```sh
