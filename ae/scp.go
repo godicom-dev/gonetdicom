@@ -10,6 +10,7 @@ import (
 	"net"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/godicom-dev/godicom"
@@ -1198,13 +1199,42 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cf
 		Logger:               cfg.Logger,
 	}
 
+	// A C-MOVE's sub-operations run on a different association from the one the
+	// request arrived on, so a C-CANCEL-RQ or an A-RELEASE-RQ lands on `r` while
+	// this function is busy dialling and storing. Between two sub-operations is
+	// the only place one can be honoured: PS3.4 C.4.2.1.4 requires the batch to
+	// stop, not the operation to be abandoned — the C-STORE already on the wire
+	// is finished, and what comes after it is never started.
+	var stopped atomic.Int32
+	stopSeen := func() stopReason { return stopReason(stopped.Load()) }
+	rememberStop := func(reason stopReason) {
+		if reason != stopNone {
+			stopped.CompareAndSwap(0, int32(reason))
+		}
+	}
+	pollStopBeforeStore := func() stopReason {
+		if reason := stopSeen(); reason != stopNone {
+			return reason
+		}
+		reason := r.pollStop(rq.MessageID)
+		rememberStop(reason)
+		return reason
+	}
+
 	if maxAssoc == 1 {
 		assoc, err := Dial(ctx, dialCfg, dest.Addr, called)
 		if err != nil {
 			return fmt.Errorf("ae: dial Move Destination: %w", err)
 		}
 		defer func() { _ = assoc.Release(ctx) }()
+	serial:
 		for _, store := range prepared {
+			switch pollStopBeforeStore() {
+			case stopAssociation:
+				return nil
+			case stopCancelled:
+				break serial
+			}
 			res, err := assoc.CStore(ctx, store)
 			record(store, res, err)
 			if writeErr != nil {
@@ -1212,42 +1242,89 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cf
 			}
 		}
 	} else {
-		jobs := make(chan StoreRequest, len(prepared))
-		for _, store := range prepared {
-			jobs <- store
-		}
-		close(jobs)
-
+		// Handed over one at a time, by a dispatcher that polls before each
+		// hand-off. Pre-filling the channel — which is what this did — puts the
+		// whole remainder beyond the reach of a stop: the workers would take it
+		// from a buffer that was filled before the stop arrived.
+		jobs := make(chan StoreRequest)
 		var wg sync.WaitGroup
+		var live atomic.Int32
+		live.Store(int32(maxAssoc))
+		workersGone := make(chan struct{})
+
 		for w := 0; w < maxAssoc; w++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				defer func() {
+					if live.Add(-1) == 0 {
+						close(workersGone)
+					}
+				}()
 				assoc, err := Dial(ctx, dialCfg, dest.Addr, called)
 				if err != nil {
 					return
 				}
 				defer func() { _ = assoc.Release(ctx) }()
 				for store := range jobs {
+					// The job may have been handed over before the stop
+					// arrived; starting it now would be a sub-operation the
+					// peer asked us not to begin.
+					if stopSeen() != stopNone {
+						return
+					}
 					res, err := assoc.CStore(ctx, store)
 					record(store, res, err)
 				}
 			}()
 		}
-		wg.Wait()
-		if writeErr != nil {
-			return writeErr
+
+	dispatch:
+		for _, store := range prepared {
+			if pollStopBeforeStore() != stopNone {
+				break
+			}
+			select {
+			case jobs <- store:
+			case <-workersGone:
+				break dispatch
+			}
 		}
+		close(jobs)
+		wg.Wait()
 	}
 
 	mu.Lock()
-	// A worker whose Dial failed never reached its stores; those are failures
-	// too, or the counts would not add up to the number of matches.
-	results.recordMissing()
+	reason := stopSeen()
+	if reason == stopNone {
+		// A worker whose Dial failed never reached its stores; those are
+		// failures too, or the counts would not add up to the number of
+		// matches. A batch the requestor stopped is the opposite case: the
+		// sub-operations it never got to are Remaining, not Failed (PS3.4
+		// Table C.4-3), and calling them failures would tell the SCU that
+		// instances it still wants could not be stored.
+		results.recordMissing()
+	}
 	final := results.finalStatus()
 	subOps := results.counts()
 	failedList := results.failedIdentifier()
+	untried := total - results.attempted()
 	mu.Unlock()
+
+	switch reason {
+	case stopAssociation:
+		// The association is going away and the peer is waiting for its
+		// A-RELEASE-RP: the loop owns that, so nothing is written from here —
+		// including the error from a Pending response that failed to go out
+		// because the peer had already stopped reading.
+		return nil
+	case stopCancelled:
+		return writeRetrieveResponses(ctx, conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true,
+			[]RetrieveMatch{results.cancelMatch(untried)})
+	}
+	if writeErr != nil {
+		return writeErr
+	}
 
 	// The status is decided on the real counts, not the saturated ones: a batch
 	// where everything past 65535 failed is still a warning, whatever the reported

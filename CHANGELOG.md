@@ -66,6 +66,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before the handler saw a byte
 
 ### Fixed
+- A C-MOVE batch ran to the end after the requestor stopped it: the
+  sub-operations run on the Move Destination's association, so the
+  C-CANCEL-RQ or A-RELEASE-RQ waiting on the requestor's association was read
+  only after the last instance had been stored, and the cancel was logged as
+  late. The SCP now looks between two sub-operations — the one place it can —
+  and either answers 0xFE00 with the untried instances as *remaining* rather
+  than failed (PS3.4 Table C.4-3), or returns so the association loop can
+  answer the release. The parallel path hands jobs over one at a time for the
+  same reason: a pre-filled channel put the whole remainder beyond the reach of
+  a stop that arrived after it was filled
 - An A-RELEASE-RQ arriving between two C-GET sub-operations ended the
   association without the A-RELEASE-RP the peer was waiting for, so the peer
   could not tell a release from a network fault. The SCP now stops at the next
