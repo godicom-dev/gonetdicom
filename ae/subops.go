@@ -95,11 +95,10 @@ func (s *subOperations) counts() dimse.SubOperations {
 }
 
 // countsWithRemaining is counts for a response that has to say how much work
-// it did not do: a Pending response, and a Cancel one.
+// it did not do: a Pending response, and a Cancel one. remaining is the count
+// of sub-operations never attempted, which callers derive by subtraction and
+// so can only be zero or more.
 func (s *subOperations) countsWithRemaining(remaining int) dimse.SubOperations {
-	if remaining < 0 {
-		remaining = 0
-	}
 	return dimse.SubOperations{
 		Remaining: subOpCount(remaining),
 		Completed: subOpCount(s.completed),

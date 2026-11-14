@@ -985,7 +985,7 @@ func scpHandleMove(ctx context.Context, conn net.Conn, r *assocReader, cfg Serve
 	if plan.Destination != nil && plan.Destination.Addr == "" {
 		// pynetdicom service_class._c_move returns 0xA801 when the first
 		// yield is (None, None), before it asks how many matches there are.
-		return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
+		return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
 			Status: dcmstatus.MoveDestinationUnknown,
 		}})
 	}
@@ -1000,14 +1000,14 @@ func scpHandleMove(ctx context.Context, conn net.Conn, r *assocReader, cfg Serve
 			if len(plan.Responses) > 0 {
 				fail = plan.Responses
 			}
-			return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, fail)
+			return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, fail)
 		}
 		return nil
 	}
 	if len(plan.Responses) == 0 {
 		plan.Responses = []RetrieveMatch{{Status: dimse.StatusSuccess}}
 	}
-	return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, plan.Responses)
+	return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, plan.Responses)
 }
 
 // subOpCount narrows a sub-operation count to the US field that carries it
@@ -1121,7 +1121,7 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cf
 	writePending := func() error {
 		s := results.counts()
 		s.Remaining = subOpCount(total - results.attempted())
-		return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
+		return writeRetrieveResponses(ctx, conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
 			Status:        dimse.StatusPending,
 			SubOperations: s,
 		}})
@@ -1219,7 +1219,7 @@ func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cf
 	// The status is decided on the real counts, not the saturated ones: a batch
 	// where everything past 65535 failed is still a warning, whatever the reported
 	// number of failures says.
-	return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
+	return writeRetrieveResponses(ctx, conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
 		Status:        final,
 		SubOperations: subOps,
 		Identifier:    failedList,
@@ -1279,7 +1279,7 @@ func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg Server
 		case stopAssociation:
 			return nil
 		case stopCancelled:
-			return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false,
+			return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false,
 				[]RetrieveMatch{results.cancelMatch(len(plan.Stores) - i)})
 		}
 		storePCID, storeTS, ok := contextByAbstractAccepted(accepted, store.AffectedSOPClassUID)
@@ -1336,46 +1336,28 @@ func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg Server
 			break
 		}
 		if cancelled {
-			return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false,
+			return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false,
 				[]RetrieveMatch{results.cancelMatch(len(plan.Stores) - i - 1)})
 		}
 	}
 
 	plan.Responses = results.reconcile(plan.Responses)
 
-	return writeRetrieveResponses(ctx, conn, r, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false, plan.Responses)
+	return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false, plan.Responses)
 }
 
-func writeRetrieveResponses(ctx context.Context, conn net.Conn, r *assocReader, pcid byte, peerMax uint32, transferSyntax string, msgID uint16, sopClass string, isMove bool, matches []RetrieveMatch) error {
-	for i, m := range matches {
-		if i > 0 {
-			switch r.pollStop(msgID) {
-			case stopAssociation:
-				return nil
-			case stopCancelled:
-				var (
-					rsp []byte
-					err error
-				)
-				if isMove {
-					rsp, err = (&dimse.CMoveRSP{
-						MessageIDBeingRespondedTo: msgID,
-						AffectedSOPClassUID:       sopClass,
-						Status:                    dimse.StatusCancel,
-					}).Encode()
-				} else {
-					rsp, err = (&dimse.CGetRSP{
-						MessageIDBeingRespondedTo: msgID,
-						AffectedSOPClassUID:       sopClass,
-						Status:                    dimse.StatusCancel,
-					}).Encode()
-				}
-				if err != nil {
-					return err
-				}
-				return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
-			}
-		}
+// writeRetrieveResponses encodes and writes a C-MOVE/C-GET response stream.
+//
+// Stopping is the caller's decision, not this function's: a C-FIND polls
+// between matches, a C-GET between sub-operations, and both have somewhere to
+// put the answer. Here there is no such place — the responses arrive as a
+// materialised slice and go out back to back, in microseconds, so a poll
+// between two of them would be a race rather than an interruption: the peer's
+// cancel cannot arrive in the window between two writes that are already
+// queued. Polling here also had no caller it could fire for, since every
+// caller passes one response at a time.
+func writeRetrieveResponses(ctx context.Context, conn net.Conn, pcid byte, peerMax uint32, transferSyntax string, msgID uint16, sopClass string, isMove bool, matches []RetrieveMatch) error {
+	for _, m := range matches {
 		hasDS := m.Identifier != nil
 		var (
 			rsp []byte

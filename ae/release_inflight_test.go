@@ -135,6 +135,65 @@ func TestConcurrentOperationRefused(t *testing.T) {
 	}
 }
 
+// Every entry point has to check before it touches the connection, not just the
+// ones this file happens to drive. The zero-value requests would fail argument
+// validation if they got that far, so reaching ErrOperationInFlight is also
+// evidence that the claim comes first — nothing is written for a request that
+// cannot be served.
+func TestEveryOperationRefusedWhenBusy(t *testing.T) {
+	t.Parallel()
+
+	saw := make(chan struct{})
+	addr, peerDone := silentEchoPeer(t, saw)
+	assoc := dialEchoSCU(t, addr)
+
+	opCtx, opCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer opCancel()
+	opDone := make(chan error, 1)
+	go func() { opDone <- assoc.CEcho(opCtx) }()
+
+	select {
+	case <-saw:
+	case <-time.After(5 * time.Second):
+		t.Fatal("peer never saw the C-ECHO-RQ")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	queries := map[string]func() error{
+		"C-ECHO":  func() error { return assoc.CEcho(ctx) },
+		"C-STORE": func() error { _, err := assoc.CStore(ctx, ae.StoreRequest{}); return err },
+		"C-FIND":  func() error { _, err := assoc.CFind(ctx, ae.FindRequest{}); return err },
+		"C-MOVE":  func() error { _, err := assoc.CMove(ctx, ae.MoveRequest{}); return err },
+		"C-GET":   func() error { _, err := assoc.CGet(ctx, ae.GetRequest{}); return err },
+		"N-GET":   func() error { _, err := assoc.NGet(ctx, ae.NGetRequest{}); return err },
+		"N-SET":   func() error { _, err := assoc.NSet(ctx, ae.SetRequest{}); return err },
+		"N-CREATE": func() error {
+			_, err := assoc.NCreate(ctx, ae.CreateRequest{})
+			return err
+		},
+		"N-DELETE": func() error { _, err := assoc.NDelete(ctx, ae.DeleteRequest{}); return err },
+		"N-ACTION": func() error { _, err := assoc.NAction(ctx, ae.ActionRequest{}); return err },
+		"N-EVENT-REPORT": func() error {
+			_, err := assoc.NEventReport(ctx, ae.EventReportRequest{})
+			return err
+		},
+	}
+	for name, call := range queries {
+		if err := call(); !errors.Is(err, ae.ErrOperationInFlight) {
+			t.Errorf("%s while C-ECHO outstanding = %v, want ErrOperationInFlight", name, err)
+		}
+	}
+
+	<-opDone
+	if err := assoc.Release(ctx); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if err := <-peerDone; err != nil {
+		t.Fatalf("peer: %v", err)
+	}
+}
+
 // The 7.2.2 Note is explicit that a requestor "may receive P-DATA Indication
 // primitives" while it waits for its release response, and that it must not
 // answer them. A peer that was mid-retrieve when the release was requested

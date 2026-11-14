@@ -130,6 +130,15 @@ what decides whether to keep going.
   question — what to report for instances that were never tried is exactly the
   remaining-vs-failed distinction above — and it is tracked in `PARITY.md`
   rather than half-answered here.
+- A C-GET that has finished its sub-operations writes the rest of its responses
+  back to back. A cancel arriving in that window is not noticed, because the
+  responses are already queued in memory and there is no message boundary at
+  which the request could be read. That is why `writeRetrieveResponses` has no
+  poll of its own: C-FIND polls between matches and C-GET between
+  sub-operations, since those are the points where the operation waits for the
+  peer. The function had a poll before this change and no caller could ever
+  trigger it, which is worth stating because an unreachable branch that looks
+  like a safety net is worse than no branch at all.
 
 ## Alternatives considered
 

@@ -90,6 +90,13 @@ func (s *rawSCU) nextItem(timeout time.Duration) (pdu.PDU, []byte, error) {
 // operation with Success once they are done.
 func getSCP(t *testing.T, n int) string {
 	t.Helper()
+	return getSCPWith(t, n, []ae.RetrieveMatch{{Status: dimse.StatusSuccess}})
+}
+
+// getSCPWith is getSCP with the handler's own responses, for tests that need
+// the operation to still be sending when they interrupt it.
+func getSCPWith(t *testing.T, n int, responses []ae.RetrieveMatch) string {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -115,10 +122,7 @@ func getSCP(t *testing.T, n int) string {
 						Dataset:                []byte{0x08, 0x00, 0x05, 0x00, 0x43, 0x53, 0x00, 0x00},
 					})
 				}
-				return ae.GetPlan{
-					Stores:    stores,
-					Responses: []ae.RetrieveMatch{{Status: dimse.StatusSuccess}},
-				}
+				return ae.GetPlan{Stores: stores, Responses: responses}
 			},
 		})
 	}()
@@ -342,5 +346,41 @@ func TestSCPCancelOvertakesStoreResponse(t *testing.T) {
 	}
 	if final.SubOperations.Remaining != 4 {
 		t.Fatalf("Remaining = %d, want 4", final.SubOperations.Remaining)
+	}
+}
+
+// C-FIND streams pending responses from the handler and polls between them; a
+// release there must be answered the same way as anywhere else.
+func TestSCPReleasesDuringCFind(t *testing.T) {
+	t.Parallel()
+
+	scu := dialRawSCU(t, findSCP(t, 20000), "CANCELSCP", ae.PatientRootQueryRetrieveInformationModelFind)
+	cmd, ident := findRQCommand(t, 47)
+	scu.send(cmd, ident)
+	if _, err := scu.nextCommand(5 * time.Second); err != nil {
+		t.Fatalf("first response: %v", err)
+	}
+
+	if err := pdu.Write(scu.conn, &pdu.AReleaseRQ{}); err != nil {
+		t.Fatalf("send A-RELEASE-RQ: %v", err)
+	}
+	for seen := 0; ; {
+		control, cmd, err := scu.nextItem(10 * time.Second)
+		if err != nil {
+			t.Fatalf("await A-RELEASE-RP: %v", err)
+		}
+		if _, ok := control.(*pdu.AReleaseRP); ok {
+			return
+		}
+		if control != nil {
+			t.Fatalf("got %T, want A-RELEASE-RP", control)
+		}
+		seen++
+		if seen > 20 {
+			t.Fatalf("SCP kept matching after the release (%d responses)", seen)
+		}
+		if status, ok := dimse.PeekStatus(cmd); !ok || !dimse.IsPending(status) {
+			t.Fatalf("response after the release has status 0x%04x, want Pending or silence", status)
+		}
 	}
 }
