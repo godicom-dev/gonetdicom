@@ -259,8 +259,11 @@ func TestSCPCancelBetweenSubOperations(t *testing.T) {
 		}
 		if rq, err := dimse.DecodeCStoreRQ(cmd); err == nil {
 			stored++
-			if stored > 3 {
-				t.Fatalf("SCP kept storing after the cancel (%d)", stored)
+			// A sub-operation already on the wire when the cancel arrived has
+			// to be answered, so one more is legitimate; a fifth would mean the
+			// cancel was ignored.
+			if stored > 4 {
+				t.Fatalf("SCP kept storing after the cancel (%d of 5)", stored)
 			}
 			storeResponse(t, scu, rq)
 			continue
@@ -364,6 +367,11 @@ func TestSCPReleasesDuringCFind(t *testing.T) {
 	if err := pdu.Write(scu.conn, &pdu.AReleaseRQ{}); err != nil {
 		t.Fatalf("send A-RELEASE-RQ: %v", err)
 	}
+	// Responses already written before the release reached the SCP are in the
+	// socket buffer and arrive first: that is not the SCP ignoring us. The
+	// bound is therefore on bytes in flight (2000 responses of ~50 bytes is
+	// more than any socket buffer) rather than on scheduling luck — a smaller
+	// one failed on CI runners that had ~20 queued.
 	for seen := 0; ; {
 		control, cmd, err := scu.nextItem(10 * time.Second)
 		if err != nil {
@@ -376,7 +384,7 @@ func TestSCPReleasesDuringCFind(t *testing.T) {
 			t.Fatalf("got %T, want A-RELEASE-RP", control)
 		}
 		seen++
-		if seen > 20 {
+		if seen > 2000 {
 			t.Fatalf("SCP kept matching after the release (%d responses)", seen)
 		}
 		if status, ok := dimse.PeekStatus(cmd); !ok || !dimse.IsPending(status) {
