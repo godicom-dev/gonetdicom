@@ -303,7 +303,7 @@ cannot read would be a claim the first C-STORE disproves. An SCP that only files
 bytes and never calls `Decode` can widen it with `"*"`, and then stores whatever
 the peer sends.
 
-Two optional user-information items are negotiated and exposed:
+Three optional user-information items are negotiated and exposed:
 
 - **Asynchronous Operations Window** — `Config.AsyncOperationsWindow` proposes
   it, `ServerConfig.AsyncOperationsWindow` sets what an SCP advertises, and
@@ -316,6 +316,15 @@ Two optional user-information items are negotiated and exposed:
   answers it. The information is opaque here; only the service class that
   defined it knows what it means. Declining a class omits the item, which is
   how PS3.8 says "no extended semantics here".
+- **SOP Class Common Extended Negotiation** — `Config.CommonExtendedNegotiations`
+  states, per SOP Class, which Service Class the class is used under and which
+  general classes it may be matched to;
+  `ServerConfig.CommonExtendedNegotiation` confirms or withholds that statement
+  and `assoc.CommonExtendedNegotiation(uid)` reads the answer. This is the item
+  that makes Storage Commitment work: the class a peer stores under and the
+  Service Class that commits to it are different, and the requestor has to know
+  the pairing before it sends anything. Withholding the item is not a refusal —
+  the class stays usable the plain DIMSE way.
 
 A Query/Retrieve identifier can be checked before the handler sees it:
 

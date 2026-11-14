@@ -163,6 +163,17 @@ type ServerConfig struct {
 	// the answer for that class, which is how an SCP declines extended
 	// negotiation for a class it handles the DIMSE way.
 	ExtendedNegotiation func(sopClassUID string, info []byte) ([]byte, bool)
+	// CommonExtendedNegotiation decides, per proposed SOP Class, whether this
+	// SCP confirms the requestor's SOP Class Common Extended Negotiation
+	// statement (PS3.8 D.3.3.6). Returning true echoes the statement back,
+	// which is how a Storage Commitment provider announces that it commits to
+	// the storage classes it serves.
+	//
+	// Nil sends no such item, which the protocol reads as "no common
+	// extensions here" rather than a refusal: the class is still handled the
+	// plain DIMSE way. Called only for classes the requestor named, on the
+	// association's goroutine, before any DIMSE message is read.
+	CommonExtendedNegotiation func(pdu.CommonExtendedNegotiation) bool
 	// TLS, when non-nil, wraps accepted connections with TLS (use with ServeTLS
 	// or a tls.Listener). Ignored by Serve on a plain listener.
 	TLS *tls.Config
@@ -383,7 +394,7 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 
 	// Negotiation answers are decided once, before either the AssocInfo
 	// snapshot or the A-ASSOCIATE-AC is built, so the two can never disagree.
-	acAsyncOps, acExtNeg := answerUserItems(cfg, rq.UserInformation)
+	answers := answerUserItems(cfg, rq.UserInformation)
 
 	// Peer identity is on the context from here on, so OnUserIdentity and
 	// every DIMSE handler can authenticate and audit the requestor
@@ -398,7 +409,7 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 		// Association.getRemoteImplClassUID / getRemoteImplVersionName.
 		RemoteImplementationClassUID:    rq.UserInformation.ImplementationClassUID,
 		RemoteImplementationVersionName: rq.UserInformation.ImplementationVersionName,
-		AsyncOperationsWindow:           acAsyncOps,
+		AsyncOperationsWindow:           answers.AsyncOps,
 	}
 	ctx = WithAssoc(ctx, info)
 
@@ -518,13 +529,14 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 		ApplicationContextName: rq.ApplicationContextName,
 		PresentationContexts:   acContexts,
 		UserInformation: pdu.UserInformation{
-			MaxLength:                 cfg.MaxPDULength,
-			ImplementationClassUID:    cfg.ImplementationClassUID,
-			ImplementationVersionName: cfg.ImplementationVersionName,
-			AsyncOperationsWindow:     acAsyncOps,
-			ExtendedNegotiations:      acExtNeg,
-			RoleSelections:            replyRoles,
-			UserIdentityAC:            userIdentityAC,
+			MaxLength:                  cfg.MaxPDULength,
+			ImplementationClassUID:     cfg.ImplementationClassUID,
+			ImplementationVersionName:  cfg.ImplementationVersionName,
+			AsyncOperationsWindow:      answers.AsyncOps,
+			ExtendedNegotiations:       answers.ExtendedNegotiations,
+			CommonExtendedNegotiations: answers.CommonExtended,
+			RoleSelections:             replyRoles,
+			UserIdentityAC:             userIdentityAC,
 		},
 	}
 	if err := writePDUConn(ctx, conn, ac); err != nil {
@@ -557,18 +569,36 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 // Extended negotiation: an answer exists per SOP Class, and a class the SCP
 // handles without extended semantics simply gets none — absence is the
 // protocol's way of saying "no extended negotiation here".
-func answerUserItems(cfg ServerConfig, ui pdu.UserInformation) (*pdu.AsyncOperationsWindow, []pdu.ExtendedNegotiation) {
-	var async *pdu.AsyncOperationsWindow
+//
+// Common extended negotiation is the same shape: the sub-item is a statement
+// about how the SCP uses the class, so the acceptor either confirms the
+// requestor's statement or says nothing. Nothing is not a refusal — the class
+// stays usable the plain DIMSE way, which is the answer for every SCP that
+// does not care which Service Class its storage classes belong to.
+func answerUserItems(cfg ServerConfig, ui pdu.UserInformation) userItemAnswers {
+	var out userItemAnswers
 	if ui.AsyncOperationsWindow != nil {
 		if cfg.AsyncOperationsWindow != nil {
 			w := *cfg.AsyncOperationsWindow
-			async = &w
+			out.AsyncOps = &w
 		} else {
-			async = &pdu.AsyncOperationsWindow{MaxInvoked: 1, MaxPerformed: 1}
+			out.AsyncOps = &pdu.AsyncOperationsWindow{MaxInvoked: 1, MaxPerformed: 1}
+		}
+	}
+	if cfg.CommonExtendedNegotiation != nil {
+		for _, proposed := range ui.CommonExtendedNegotiations {
+			if !cfg.CommonExtendedNegotiation(proposed) {
+				continue
+			}
+			out.CommonExtended = append(out.CommonExtended, pdu.CommonExtendedNegotiation{
+				SOPClassUID:              proposed.SOPClassUID,
+				ServiceClassUID:          proposed.ServiceClassUID,
+				RelatedGeneralSOPClasses: append([]string(nil), proposed.RelatedGeneralSOPClasses...),
+			})
 		}
 	}
 	if cfg.ExtendedNegotiation == nil || len(ui.ExtendedNegotiations) == 0 {
-		return async, nil
+		return out
 	}
 	answers := make([]pdu.ExtendedNegotiation, 0, len(ui.ExtendedNegotiations))
 	for _, proposed := range ui.ExtendedNegotiations {
@@ -581,7 +611,19 @@ func answerUserItems(cfg ServerConfig, ui pdu.UserInformation) (*pdu.AsyncOperat
 			Info:        info,
 		})
 	}
-	return async, answers
+	out.ExtendedNegotiations = answers
+	return out
+}
+
+// userItemAnswers is the acceptor's answers to the optional user-information
+// negotiation items. It is one struct rather than three return values because
+// all three travel together: they are decided in one pass, used in one
+// A-ASSOCIATE-AC, and the associate-step snapshot of AsyncOps has to agree with
+// what the AC says.
+type userItemAnswers struct {
+	AsyncOps             *pdu.AsyncOperationsWindow
+	ExtendedNegotiations []pdu.ExtendedNegotiation
+	CommonExtended       []pdu.CommonExtendedNegotiation
 }
 
 func scpLoop(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, callingAE string) error {

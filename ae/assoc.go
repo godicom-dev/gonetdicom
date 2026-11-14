@@ -77,6 +77,12 @@ type Config struct {
 	// (pynetdicom add_requested_extended_negotiation). The acceptor's answers
 	// are read with Association.ExtendedNegotiation.
 	ExtendedNegotiations []pdu.ExtendedNegotiation
+	// CommonExtendedNegotiations are proposed as SOP Class Common Extended
+	// Negotiation items (PS3.8 D.3.3.6), one per SOP Class, naming the Service
+	// Class it is used under and the general classes it may be matched to.
+	// The acceptor's answers are read with
+	// Association.CommonExtendedNegotiation.
+	CommonExtendedNegotiations []pdu.CommonExtendedNegotiation
 }
 
 func (c Config) withDefaults() Config {
@@ -144,11 +150,13 @@ type Association struct {
 	// AssocInfo carries for an SCP handler (dcm4che's getRemoteImplClassUID).
 	peerImplClassUID    string
 	peerImplVersionName string
-	// peerAsyncOps / peerExtNeg are the acceptor's answers to the negotiation
-	// items this SCU proposed. Nil and empty mean "not negotiated": the peer
-	// either did not answer or has nothing for that SOP Class.
-	peerAsyncOps *pdu.AsyncOperationsWindow
-	peerExtNeg   map[string][]byte
+	// peerAsyncOps / peerExtNeg / peerCommonExt are the acceptor's answers to
+	// the negotiation items this SCU proposed. Nil and empty mean "not
+	// negotiated": the peer either did not answer or has nothing for that SOP
+	// Class.
+	peerAsyncOps  *pdu.AsyncOperationsWindow
+	peerExtNeg    map[string][]byte
+	peerCommonExt map[string]pdu.CommonExtendedNegotiation
 	// nextID is atomic so Message IDs stay unique even when a caller ignores the
 	// contract above: a lost increment puts two outstanding requests under one ID,
 	// and the responses to them can no longer be told apart.
@@ -238,13 +246,14 @@ func (a *Association) negotiate(ctx context.Context) error {
 		ApplicationContextName: pdu.ApplicationContextName,
 		PresentationContexts:   pcs,
 		UserInformation: pdu.UserInformation{
-			MaxLength:                 a.cfg.MaxPDULength,
-			ImplementationClassUID:    a.cfg.ImplementationClassUID,
-			ImplementationVersionName: a.cfg.ImplementationVersionName,
-			AsyncOperationsWindow:     a.cfg.AsyncOperationsWindow,
-			ExtendedNegotiations:      a.cfg.ExtendedNegotiations,
-			RoleSelections:            a.cfg.RoleSelections,
-			UserIdentityRQ:            a.cfg.UserIdentity,
+			MaxLength:                  a.cfg.MaxPDULength,
+			ImplementationClassUID:     a.cfg.ImplementationClassUID,
+			ImplementationVersionName:  a.cfg.ImplementationVersionName,
+			AsyncOperationsWindow:      a.cfg.AsyncOperationsWindow,
+			ExtendedNegotiations:       a.cfg.ExtendedNegotiations,
+			CommonExtendedNegotiations: a.cfg.CommonExtendedNegotiations,
+			RoleSelections:             a.cfg.RoleSelections,
+			UserIdentityRQ:             a.cfg.UserIdentity,
 		},
 	}
 	if err := a.writePDU(ctx, rq); err != nil {
@@ -265,6 +274,12 @@ func (a *Association) negotiate(ctx context.Context) error {
 				a.peerExtNeg = make(map[string][]byte, len(p.UserInformation.ExtendedNegotiations))
 			}
 			a.peerExtNeg[en.SOPClassUID] = en.Info
+		}
+		for _, ce := range p.UserInformation.CommonExtendedNegotiations {
+			if a.peerCommonExt == nil {
+				a.peerCommonExt = make(map[string]pdu.CommonExtendedNegotiation, len(p.UserInformation.CommonExtendedNegotiations))
+			}
+			a.peerCommonExt[ce.SOPClassUID] = ce
 		}
 		if p.UserInformation.UserIdentityAC != nil {
 			a.userIdentityResponse = append([]byte(nil), p.UserInformation.UserIdentityAC.ServerResponse...)
@@ -337,6 +352,24 @@ func (a *Association) ExtendedNegotiation(sopClassUID string) ([]byte, bool) {
 		return nil, false
 	}
 	return append([]byte(nil), info...), true
+}
+
+// CommonExtendedNegotiation returns the acceptor's SOP Class Common Extended
+// Negotiation for sopClassUID, and false when it answered nothing for that
+// class.
+//
+// An answer here means the acceptor confirmed the class is used under that
+// Service Class; silence means it does not negotiate common extensions for the
+// class at all, which is not a refusal — the class is still usable the plain
+// DIMSE way.
+func (a *Association) CommonExtendedNegotiation(sopClassUID string) (pdu.CommonExtendedNegotiation, bool) {
+	ce, ok := a.peerCommonExt[sopClassUID]
+	if !ok {
+		return pdu.CommonExtendedNegotiation{}, false
+	}
+	// The slice is a copy: the association keeps its own.
+	ce.RelatedGeneralSOPClasses = append([]string(nil), ce.RelatedGeneralSOPClasses...)
+	return ce, true
 }
 
 // UserIdentityResponse returns the Server Response from a User Identity AC item,
