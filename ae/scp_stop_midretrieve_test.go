@@ -172,6 +172,14 @@ func storeResponse(t *testing.T, scu *rawSCU, rq *dimse.CStoreRQ) {
 // be released. Before this, the A-RELEASE-RQ was reported as an unexpected PDU
 // between two sub-operations and the connection was dropped without the
 // A-RELEASE-RP the peer was waiting for.
+//
+// The requestor stops talking once the release is on the wire, which is what
+// PS3.8 7.2.2 requires of it. Answering a sub-operation after that would put
+// bytes on a socket the SCP is closing, and a close with unread data is a reset
+// that can overtake the release response still sitting in the requestor's
+// receive buffer. That race belongs to the peer that broke 7.2.2, so the test
+// does not stake the assertion on it; what is pinned is that a release which
+// arrives mid-retrieve is answered instead of dropped.
 func TestSCPReleasesMidCGet(t *testing.T) {
 	t.Parallel()
 
@@ -195,9 +203,10 @@ func TestSCPReleasesMidCGet(t *testing.T) {
 		t.Fatalf("send A-RELEASE-RQ: %v", err)
 	}
 
-	// Anything already on the wire arrives first — a store the SCP had
-	// committed to sending before it noticed. It is answered, because leaving
-	// it unanswered would leave the SCP's read side one message behind.
+	// Sub-operations already on the wire still arrive — the SCP committed to
+	// sending them before it noticed the release. They are read and ignored,
+	// not answered, because the association is going away and a requestor that
+	// speaks after A-RELEASE-RQ is the one in the wrong.
 	stores := 1
 	for {
 		control, cmd, err := scu.nextItem(10 * time.Second)
@@ -210,15 +219,13 @@ func TestSCPReleasesMidCGet(t *testing.T) {
 		if control != nil {
 			t.Fatalf("got %T, want A-RELEASE-RP", control)
 		}
-		rq, err := dimse.DecodeCStoreRQ(cmd)
-		if err != nil {
+		if _, err := dimse.DecodeCStoreRQ(cmd); err != nil {
 			t.Fatalf("got a non-C-STORE message after the release: %v", err)
 		}
 		stores++
 		if stores > 3 {
 			t.Fatalf("SCP kept sending sub-operations after the release (%d so far)", stores)
 		}
-		storeResponse(t, scu, rq)
 	}
 }
 

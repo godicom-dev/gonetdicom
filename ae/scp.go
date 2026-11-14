@@ -125,7 +125,8 @@ type ServerConfig struct {
 	// PS3.4 C.4.1.1.3 puts the "identifier does not match the SOP Class" answer
 	// on the SCP, but the rule that decides it is model-specific — which is why
 	// this is a hook rather than a framework table. QueryRetrieveLevelValidator
-	// covers the check most services need.
+	// covers the check most services need; QueryModelValidator also knows each
+	// model's levels and that a retrieval has to name the entity it retrieves.
 	IdentifierValidator IdentifierValidator
 	OnCMove             MoveHandler
 	OnCGet              GetHandler
@@ -626,6 +627,34 @@ type userItemAnswers struct {
 	CommonExtended       []pdu.CommonExtendedNegotiation
 }
 
+// drainInbound reads and discards whatever the peer has already sent, without
+// waiting for anything that has not arrived.
+//
+// Closing a socket that still holds unread data makes the stack send RST rather
+// than FIN, and a reset discards the peer's receive buffer — including the
+// A-RELEASE-RP that was just written into it. That is reachable in practice:
+// PS3.8 7.2.2 forbids the requestor from sending anything but A-ABORT after
+// A-RELEASE-RQ, but a requestor that was already answering a sub-operation
+// sends that response anyway, and closing promptly would turn a correct release
+// into "connection reset by peer" at the far end.
+//
+// The read deadline is in the past, so this costs a couple of non-blocking reads
+// and never adds latency: a well-behaved peer has sent nothing, the first read
+// returns a timeout, and the association closes as before.
+func drainInbound(conn net.Conn) {
+	if err := conn.SetReadDeadline(time.Now()); err != nil {
+		return
+	}
+	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
+	buf := make([]byte, 4096)
+	// Bounded so a peer that keeps writing cannot hold the connection open.
+	for i := 0; i < 64; i++ {
+		if _, err := conn.Read(buf); err != nil {
+			return
+		}
+	}
+}
+
 func scpLoop(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, callingAE string) error {
 	for {
 		if err := ctx.Err(); err != nil {
@@ -645,7 +674,11 @@ func scpLoop(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfi
 		case it.Control != nil:
 			switch p := it.Control.(type) {
 			case *pdu.AReleaseRQ:
-				return writePDUConn(ctx, conn, &pdu.AReleaseRP{})
+				if err := writePDUConn(ctx, conn, &pdu.AReleaseRP{}); err != nil {
+					return err
+				}
+				drainInbound(conn)
+				return nil
 			case *pdu.AAbort:
 				return nil
 			default:
