@@ -48,13 +48,19 @@ is no "hold on, I'm busy" on the wire.
 ## The constraint on our side
 
 `Association` has one read side and no message demultiplexer. Every operation
-reads the responses it asked for, in the caller's goroutine, and recognises them
+reads the responses it asked for in the caller's goroutine, and recognises them
 by Message ID. That is what makes the API a set of ordinary blocking calls
 instead of a session object with callbacks, and it is why two operations cannot
 share an association: the second reader takes whichever PDU arrives first, so
 one operation receives the other's answer and the message ids stop lining up.
 The README has said "one operation at a time" all along; until now nothing
 checked it.
+
+The bytes underneath are read by a goroutine, so the caller can stop waiting at
+a message boundary without owning the socket. Reassembly stays in the caller —
+the goroutine hands over whole PDUs — which is what keeps the "one reader" rule
+true while letting a deadline interrupt a wait instead of a `read`. See
+"Goroutine-owned framing" in the consequences.
 
 On the accepting side the shape is different — one goroutine per association,
 one reader goroutine feeding it whole messages — so a release arriving
@@ -92,7 +98,7 @@ what decides whether to keep going.
    wants to cancel from another goroutine has to know the id it is cancelling.
    Cancelling the operation's context is the other route, and it stays the
    caller's job to decide when the association is quiet enough to release
-   (see the limitation below).
+   (see the last consequence below).
 
 5. **An A-RELEASE-RQ that arrives mid-operation ends the operation.** The SCP
    stops at the next sub-operation boundary, does not send a final C-GET-RSP —
@@ -112,18 +118,26 @@ what decides whether to keep going.
 
 ## Consequences
 
-- A deferred `Release` after a failed operation keeps working when the stream is
-  at a message boundary, which is the normal case: the peer sent a complete
-  message and is now waiting.
-- When the operation died from a context deadline that expired *inside* a PDU,
-  the SCU-side stream is desynchronised and no DIMSE exchange can repair it —
-  `Abort` is the only exit, and `Release` will fail. This is a real limitation,
-  not an oversight: `pdu.Read` cannot resume a partially read PDU, and the
-  protocol has no primitive for "forget what I sent". Fixing it means moving the
-  SCU read side onto the same reader goroutine the SCP uses, so that
-  cancellation is noticed between whole PDUs instead of inside one. That is a
-  larger change than this one and has its own migration cost: every SCU method
-  would read from a channel instead of the connection.
+- A deferred `Release` after a failed operation keeps working. When the
+  operation stopped at a message boundary — the normal case, where the peer sent
+  a complete message and is now waiting — the stream is already aligned. When it
+  stopped *inside* a PDU, the goroutine that owns the read side finishes that
+  PDU and queues it, so the stream is aligned too; `Release` skips the P-DATA
+  and reaches the A-RELEASE-RP (see "Goroutine-owned framing").
+- **Goroutine-owned framing.** The SCU read side is one goroutine reading whole
+  PDUs off the connection and handing them to the caller, which is the shape the
+  SCP has had all along. Before, the caller's context deadline became a *socket*
+  deadline, so an expiry mid-PDU consumed part of a PDU and lost the rest: the
+  next read took a length prefix out of payload, every read after it was
+  garbage, and A-ABORT was the only way out. Now the goroutine owns the PDU it
+  started, the caller only stops waiting, and both outcomes are recoverable.
+  Reassembly stays in the caller, so "one operation at a time" still holds and
+  nothing had to be demultiplexed.
+- What this does *not* fix: an abandoned operation's remaining responses are
+  still in the stream, and the next operation on that association would read
+  them as its own. The rule is unchanged — stop the operation (context or
+  C-CANCEL), then `Release`, which drains P-DATA until the RP. `Abort` is still
+  the way out of an association whose peer has stopped making sense.
 - C-MOVE sub-operations run on a *different* association (the Move Destination),
   so a release on the requestor's association is seen by the C-MOVE handler, not
   by the destination association's read side. The batch therefore stops at the

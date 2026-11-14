@@ -224,9 +224,11 @@ instead of reading the first one's responses. `Release` returns it too, and for
 the same reason plus one — PS3.8 7.2.2 allows a requestor nothing but A-ABORT
 after it asks to release, so a release is a statement about the association and
 not a way to stop a running retrieval. Stop the operation first (cancel its
-context, or `CCancel`), then release. Dial one association per worker for
-parallel work. `CCancel`, `Abort` and `Close` exist to reach an operation that is
-already blocked, so those three are safe to call from another goroutine.
+context, or `CCancel`), then release; the read side keeps the stream framed
+across the abandoned operation, so the release still reaches the peer.
+Dial one association per worker for parallel work. `CCancel`, `Abort` and
+`Close` exist to reach an operation that is already blocked, so those three are
+safe to call from another goroutine.
 The reasoning is in
 [`docs/adr/0001`](docs/adr/0001-association-release-with-operations-in-flight.md).
 

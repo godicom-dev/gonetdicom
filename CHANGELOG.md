@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another goroutine has to be able to choose the id
 - `ErrOperationInFlight`, returned by any operation started while another is
   still waiting for its answer, and by `Release` while any is running
+- `ErrIdleTimeout`, returned when no PDU arrives within `Config.IdleTimeout`.
+  It bounds the wait rather than the association: the read side keeps whatever
+  the peer eventually sends, so the next call — or `Release` — can still use
+  the connection
 - `docs/adr/0001-association-release-with-operations-in-flight.md` records the
   reasoning, quoting the PS3.8 7.2.2 requirements it is derived from
 - SOP Class Common Extended Negotiation (PS3.8 D.3.3.6):
@@ -44,6 +48,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one that identifies the entity being retrieved (PS3.4 C.6.2.1.1)
 
 ### Changed
+- The SCU read side runs on its own goroutine, one PDU at a time, where it used
+  to read in the caller's goroutine under a deadline taken from the caller's
+  context. A deadline that expired in the middle of a PDU therefore consumed
+  part of it and lost the rest: the next read took a length prefix out of
+  payload, everything after it was garbage, and `Abort` was the only way out.
+  Now the goroutine owns the PDU it started and finishes it, so the caller only
+  stops waiting — a deadline reports `context.DeadlineExceeded`, the stream
+  stays framed, and `Release` still works (it skips the P-DATA and reaches the
+  A-RELEASE-RP). What is unchanged is that an abandoned operation leaves its
+  remaining responses in the stream: stop the operation, then release
+- `IdleTimeout` bounds the wait for the next PDU instead of the socket read, for
+  the same reason: a deadline on the socket can stop a read halfway through a
+  PDU. The wait now fails with `ErrIdleTimeout` and the association is
+  untouched — a peer that was merely slow can still be read, or released
 - `Release` no longer runs alongside an operation. Asking to release while a
   C-FIND/C-MOVE/C-GET is waiting for its answer returns `ErrOperationInFlight`:
   PS3.8 7.2.2 leaves a requestor nothing but A-ABORT after it asks, so a release

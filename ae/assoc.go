@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"sync"
@@ -38,6 +37,13 @@ var ErrReleased = errors.New("ae: association released by peer")
 
 // ErrNoContext is returned when no accepted presentation context is available.
 var ErrNoContext = errors.New("ae: no accepted presentation context")
+
+// ErrIdleTimeout is returned when no PDU arrived within Config.IdleTimeout.
+//
+// It is a bound on the wait, not a verdict on the association: the socket is
+// untouched, so whatever the peer eventually sends is still framed and can be
+// read by the next call — or skipped by Release.
+var ErrIdleTimeout = errors.New("ae: no PDU within IdleTimeout")
 
 // ErrOperationInFlight is returned when an association is asked to start a
 // second operation, or to release, while another one is still waiting for its
@@ -71,8 +77,11 @@ type Config struct {
 	ImplementationClassUID    string
 	ImplementationVersionName string
 	DialTimeout               time.Duration
-	// IdleTimeout bounds each PDU read/write when the context has no deadline.
-	// Zero means no extra idle deadline (context-only).
+	// IdleTimeout bounds each PDU read and write when the caller's context has
+	// no deadline; ErrIdleTimeout reports the read side. Zero means no extra
+	// idle deadline (context-only). A read that times out does not damage the
+	// association: the read side owns the PDU it was in the middle of, so the
+	// stream stays framed for the next call.
 	IdleTimeout time.Duration
 	// TLS, when non-nil, dials with TLS (DICOM over TLS). ServerName should be set
 	// when verifying certificates.
@@ -189,6 +198,10 @@ type Association struct {
 	// side. Empty means idle. See beginOp.
 	opMu       sync.Mutex
 	opInFlight string
+	// reader owns the socket's read side. It is set before the Association is
+	// handed to the caller and never replaced, so the pointer itself is safe to
+	// read from any goroutine.
+	reader *pduReader
 }
 
 // beginOp claims the association's read side for one operation and returns the
@@ -240,8 +253,9 @@ func Dial(ctx context.Context, cfg Config, addr, calledAE string) (*Association,
 	}
 
 	assoc := &Association{conn: conn, cfg: cfg, called: calledAE}
+	assoc.reader = newPDUReader(ctx, conn)
 	if err := assoc.negotiate(ctx); err != nil {
-		_ = conn.Close()
+		_ = assoc.Close()
 		return nil, err
 	}
 	cfg.logger(ctx).Info("association established",
@@ -262,7 +276,11 @@ func AcceptFromConn(ctx context.Context, cfg Config, conn net.Conn, calledAE str
 		return nil, fmt.Errorf("ae: empty called AE title")
 	}
 	assoc := &Association{conn: conn, cfg: cfg, called: calledAE}
+	assoc.reader = newPDUReader(ctx, conn)
 	if err := assoc.negotiate(ctx); err != nil {
+		// The connection belongs to the caller, but the reader is ours: stop it
+		// so a goroutine parked on a hand-off does not outlive the failure.
+		assoc.reader.Close()
 		return nil, err
 	}
 	return assoc, nil
@@ -724,6 +742,11 @@ func (a *Association) closeConn() error {
 	if !a.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	// Stop the reader before the connection: it may be parked handing a PDU
+	// over, and closing the channel under it would leave that goroutine there.
+	if a.reader != nil {
+		a.reader.Close()
+	}
 	return a.conn.Close()
 }
 
@@ -744,25 +767,36 @@ func (a *Association) writePDU(ctx context.Context, p pdu.PDU) error {
 	return nil
 }
 
+// readPDU returns the next PDU, or an error if ctx or IdleTimeout runs out
+// first.
+//
+// Expiry does not touch the connection. The PDU the reader is part-way through
+// still belongs to the reader, which finishes it and queues it for whoever
+// reads next; that is what keeps the byte stream aligned across a cancelled
+// operation, and why Release — which skips P-DATA — works afterwards.
 func (a *Association) readPDU(ctx context.Context) (pdu.PDU, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	ctx = a.logCtx(ctx)
-	deadline, ok := a.pduDeadline(ctx)
-	if ok {
-		_ = a.conn.SetReadDeadline(deadline)
-		defer func() { _ = a.conn.SetReadDeadline(time.Time{}) }()
+	// A nil channel blocks forever, so the idle case costs nothing when it is
+	// not configured.
+	var expired <-chan time.Time
+	if a.cfg.IdleTimeout > 0 {
+		timer := time.NewTimer(a.cfg.IdleTimeout)
+		defer timer.Stop()
+		expired = timer.C
 	}
-	p, err := pdu.Read(a.conn)
-	if err != nil {
-		if errors.Is(err, io.EOF) {
-			return nil, fmt.Errorf("ae: connection closed: %w", err)
+	select {
+	case p, ok := <-a.reader.ch:
+		if !ok {
+			return nil, a.reader.err
 		}
-		return nil, fmt.Errorf("ae: read PDU: %w", err)
+		return p, nil
+	case <-expired:
+		return nil, ErrIdleTimeout
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	logPDU(ctx, "recv", p)
-	return p, nil
 }
 
 func (a *Association) pduDeadline(ctx context.Context) (time.Time, bool) {
