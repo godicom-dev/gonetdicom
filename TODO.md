@@ -5,7 +5,7 @@ this file tracks deferred work.
 
 ## Status
 
-Unreleased, on [godicom](https://github.com/godicom-dev/godicom) `v0.40.0`:
+`v0.20.0`, on [godicom](https://github.com/godicom-dev/godicom) `v0.40.0`:
 DIMSE (association, C-ECHO / C-STORE / C-FIND / C-MOVE / C-GET / C-CANCEL,
 DIMSE-N, role selection, user identity, asynchronous operations window, SOP
 Class extended negotiation, storage commitment), streamed inbound datasets,
