@@ -1,4 +1,5 @@
 [![CI](https://github.com/godicom-dev/gonetdicom/actions/workflows/ci.yml/badge.svg)](https://github.com/godicom-dev/gonetdicom/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/godicom-dev/gonetdicom/graph/badge.svg)](https://codecov.io/gh/godicom-dev/gonetdicom)
 [![Go Version](https://img.shields.io/badge/Go-%3E%3D%201.26-%23007d9c)](https://go.dev/)
 [![GoDoc](https://pkg.go.dev/badge/github.com/godicom-dev/gonetdicom)](https://pkg.go.dev/github.com/godicom-dev/gonetdicom)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
