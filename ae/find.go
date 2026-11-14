@@ -51,6 +51,11 @@ type FindMatch struct {
 
 // CFind sends a C-FIND-RQ and collects responses until Success/Failure/Cancel.
 func (a *Association) CFind(ctx context.Context, req FindRequest) ([]FindMatch, error) {
+	end, err := a.beginOp("C-FIND")
+	if err != nil {
+		return nil, err
+	}
+	defer end()
 	if req.QueryModel == "" {
 		return nil, fmt.Errorf("ae: C-FIND missing Query Model")
 	}

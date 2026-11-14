@@ -91,12 +91,35 @@ func (s *subOperations) attempted() int {
 
 // counts is the wire form, with each count narrowed to its US field.
 func (s *subOperations) counts() dimse.SubOperations {
+	return s.countsWithRemaining(0)
+}
+
+// countsWithRemaining is counts for a response that has to say how much work
+// it did not do: a Pending response, and a Cancel one. remaining is the count
+// of sub-operations never attempted, which callers derive by subtraction and
+// so can only be zero or more.
+func (s *subOperations) countsWithRemaining(remaining int) dimse.SubOperations {
 	return dimse.SubOperations{
-		Remaining: 0,
+		Remaining: subOpCount(remaining),
 		Completed: subOpCount(s.completed),
 		Failed:    subOpCount(s.failed),
 		Warning:   subOpCount(s.warning),
 		Present:   true,
+	}
+}
+
+// cancelMatch is the terminal response for an operation stopped by
+// C-CANCEL: PS3.4 Table C.4-3 makes the status 0xFE00 and names the untried
+// sub-operations as remaining rather than failed — they were never attempted,
+// so calling them failures would tell the SCU that instances it still wants
+// could not be stored. C.4.3.1.4 makes the Failed SOP Instance UID List
+// conditional on Cancel, so the list rides along and is absent when nothing
+// failed.
+func (s *subOperations) cancelMatch(remaining int) RetrieveMatch {
+	return RetrieveMatch{
+		Status:        dimse.StatusCancel,
+		SubOperations: s.countsWithRemaining(remaining),
+		Identifier:    s.failedIdentifier(),
 	}
 }
 

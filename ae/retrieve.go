@@ -40,6 +40,10 @@ type MoveRequest struct {
 	// Priority requests a service priority from the peer, which may ignore it.
 	// The zero value is dimse.PriorityMedium — normal priority.
 	Priority uint16
+	// MessageID names the request on the wire. Zero allocates one, which is
+	// what nearly every caller wants; set it when another goroutine needs to
+	// C-CANCEL this operation by id while it is running.
+	MessageID uint16
 }
 
 // RetrieveMatch is one C-MOVE/C-GET response.
@@ -51,6 +55,11 @@ type RetrieveMatch struct {
 
 // CMove sends a C-MOVE-RQ and collects responses until a final status.
 func (a *Association) CMove(ctx context.Context, req MoveRequest) ([]RetrieveMatch, error) {
+	end, err := a.beginOp("C-MOVE")
+	if err != nil {
+		return nil, err
+	}
+	defer end()
 	if req.QueryModel == "" {
 		return nil, fmt.Errorf("ae: C-MOVE missing Query Model")
 	}
@@ -65,7 +74,10 @@ func (a *Association) CMove(ctx context.Context, req MoveRequest) ([]RetrieveMat
 	if err != nil {
 		return nil, err
 	}
-	msgID := a.nextMessageID()
+	msgID := req.MessageID
+	if msgID == 0 {
+		msgID = a.nextMessageID()
+	}
 	cmd, err := (&dimse.CMoveRQ{
 		MessageID:           msgID,
 		Priority:            req.Priority,
@@ -92,12 +104,22 @@ type GetRequest struct {
 	// Priority requests a service priority from the peer, which may ignore it.
 	// The zero value is dimse.PriorityMedium — normal priority.
 	Priority uint16
-	OnCStore StoreHandler
+	// MessageID names the request on the wire. Zero allocates one; set it when
+	// another goroutine needs to C-CANCEL this retrieval by id while it runs —
+	// the way to stop a C-GET that is already storing instances, since a
+	// release is not allowed while an operation is outstanding.
+	MessageID uint16
+	OnCStore  StoreHandler
 }
 
 // CGet sends a C-GET-RQ, handles interleaved C-STORE requests, and collects
 // C-GET responses until a final status.
 func (a *Association) CGet(ctx context.Context, req GetRequest) ([]RetrieveMatch, error) {
+	end, err := a.beginOp("C-GET")
+	if err != nil {
+		return nil, err
+	}
+	defer end()
 	if req.QueryModel == "" {
 		return nil, fmt.Errorf("ae: C-GET missing Query Model")
 	}
@@ -109,7 +131,10 @@ func (a *Association) CGet(ctx context.Context, req GetRequest) ([]RetrieveMatch
 	if err != nil {
 		return nil, err
 	}
-	msgID := a.nextMessageID()
+	msgID := req.MessageID
+	if msgID == 0 {
+		msgID = a.nextMessageID()
+	}
 	cmd, err := (&dimse.CGetRQ{
 		MessageID:           msgID,
 		Priority:            req.Priority,

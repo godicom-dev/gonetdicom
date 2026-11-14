@@ -47,6 +47,8 @@ DICOMweb follows DICOM PS3.18.
 - [pkg.go.dev API reference](https://pkg.go.dev/github.com/godicom-dev/gonetdicom)
 - [CHANGELOG](CHANGELOG.md)
 - [PARITY](PARITY.md) — behaviour coverage against pynetdicom, gaps included
+- [ADR 0001](docs/adr/0001-association-release-with-operations-in-flight.md) —
+  what `Release` means while an operation is still running
 - [TODO](TODO.md) — deferred items and known gaps
 
 ## Installation
@@ -209,13 +211,21 @@ cfg := ae.Config{
 }
 ```
 
-Cancel an outstanding FIND / MOVE / GET with `assoc.CCancel(ctx, msgID)`.
+Cancel an outstanding FIND / MOVE / GET with `assoc.CCancel(ctx, msgID)`. The
+request structs take a `MessageID` when another goroutine needs to name the
+operation it is cancelling; leaving it zero allocates one.
 
-An `*ae.Association` carries one DIMSE operation at a time: each method sends its
-request and then reads responses until the final one, so two running at once
-interleave PDUs on the same connection. Dial one association per worker for
+An `*ae.Association` carries one DIMSE operation at a time, and that is now
+enforced rather than assumed: a second call returns `ae.ErrOperationInFlight`
+instead of reading the first one's responses. `Release` returns it too, and for
+the same reason plus one — PS3.8 7.2.2 allows a requestor nothing but A-ABORT
+after it asks to release, so a release is a statement about the association and
+not a way to stop a running retrieval. Stop the operation first (cancel its
+context, or `CCancel`), then release. Dial one association per worker for
 parallel work. `CCancel`, `Abort` and `Close` exist to reach an operation that is
 already blocked, so those three are safe to call from another goroutine.
+The reasoning is in
+[`docs/adr/0001`](docs/adr/0001-association-release-with-operations-in-flight.md).
 
 **Storage SCP (C-STORE)**
 
