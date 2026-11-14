@@ -673,12 +673,12 @@ func scpLoop(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfi
 			return it.Err
 		case it.Control != nil:
 			switch p := it.Control.(type) {
-		case *pdu.AReleaseRQ:
-			if err := writePDUConn(ctx, conn, &pdu.AReleaseRP{}); err != nil {
-				return err
-			}
-			drainInbound(conn)
-			return nil
+			case *pdu.AReleaseRQ:
+				if err := writePDUConn(ctx, conn, &pdu.AReleaseRP{}); err != nil {
+					return err
+				}
+				drainInbound(conn)
+				return nil
 			case *pdu.AAbort:
 				return nil
 			default:
