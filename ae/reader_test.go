@@ -59,7 +59,7 @@ func TestAssocReaderPollStopPushesBackOtherMessages(t *testing.T) {
 	go writeMsg(t, remote, echo)
 
 	ctx := context.Background()
-	r := newAssocReader(ctx, local)
+	r := newAssocReader(ctx, local, 0)
 	defer r.Close()
 
 	if waitPending(t, r, 5) {
@@ -105,7 +105,7 @@ func TestAssocReaderPollStopConsumesMatchingCancel(t *testing.T) {
 	}()
 
 	ctx := context.Background()
-	r := newAssocReader(ctx, local)
+	r := newAssocReader(ctx, local, 0)
 	defer r.Close()
 
 	if !waitPending(t, r, 5) {
@@ -133,7 +133,7 @@ func TestAssocReaderGoroutineExits(t *testing.T) {
 	local, remote := net.Pipe()
 	defer remote.Close()
 
-	r := newAssocReader(context.Background(), local)
+	r := newAssocReader(context.Background(), local, 0)
 	r.Close()
 	_ = local.Close()
 

@@ -10,9 +10,22 @@ import (
 )
 
 // Common Query/Retrieve Information Model Find SOP Classes.
+//
+// The package does not interpret a Query Model: the identifier is passed to the
+// handler and the handler decides what the model means. These constants exist
+// so callers stop spelling UIDs by hand; accepting one is still a
+// ServerConfig.AcceptedAbstractSyntaxes decision.
 const (
 	PatientRootQueryRetrieveInformationModelFind = string(uid.PatientRootQueryRetrieveInformationModelFind)
 	StudyRootQueryRetrieveInformationModelFind   = string(uid.StudyRootQueryRetrieveInformationModelFind)
+	// PatientStudyOnlyQueryRetrieveInformationModelFind is the retired
+	// Patient/Study Only model, kept because peers still send it.
+	PatientStudyOnlyQueryRetrieveInformationModelFind = string(uid.PatientStudyOnlyQueryRetrieveInformationModelFind)
+
+	// Relevant Patient Information Query models (PS3.4 C.4.2), C-FIND only.
+	GeneralRelevantPatientInformationQuery  = string(uid.GeneralRelevantPatientInformationQuery)
+	BreastImagingRelevantPatientInformation = string(uid.BreastImagingRelevantPatientInformationQuery)
+	CardiacRelevantPatientInformation       = string(uid.CardiacRelevantPatientInformationQuery)
 )
 
 // FindRequest is a C-FIND-RQ payload.

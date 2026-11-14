@@ -204,9 +204,13 @@ func (a *Association) NEventReport(ctx context.Context, req EventReportRequest) 
 }
 
 func (a *Association) handleIncomingEventReport(ctx context.Context, h EventReportHandler) error {
-	pcid, rspCmd, rspDS, err := a.recvMessagePC(ctx)
+	pcid, rspCmd, rspBody, err := a.recvMessagePC(ctx)
 	if err != nil {
 		return err
+	}
+	rspDS, err := drainBody(rspBody)
+	if err != nil {
+		return fmt.Errorf("ae: read event information: %w", err)
 	}
 	rq, err := dimse.DecodeNEventReportRQ(rspCmd)
 	if err != nil {

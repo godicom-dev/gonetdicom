@@ -5,6 +5,105 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Concurrency control, done the way Go does it: admission and backpressure as
+first-class mechanisms, rather than a thread pool borrowed from the JVM or a
+worker queue borrowed from nowhere. dcm4che solves "how many at once" with
+`Device.setExecutor` plus `setLimitOpenAssociations`, pynetdicom with one OS
+thread per connection plus `AE.maximum_associations`; both are ways of making a
+scarce resource survive. Goroutines are not that resource here, so the pool is
+gone and what the pool was standing in for is explicit.
+
+### Added
+- Asynchronous Operations Window negotiation (PS3.8 D.3.3.3):
+  `Config.AsyncOperationsWindow` proposes a window, `ServerConfig.AsyncOperationsWindow`
+  sets what an SCP advertises, and `Association.AsyncOperationsWindow` reads the
+  answer. An acceptor that receives a window but configures none answers 1/1 —
+  the honest description of a dispatch loop that takes one message at a time —
+  because PS3.8 requires an answer and silence leaves the requestor unable to
+  tell whether pipelining is allowed. The negotiated value is also on `AssocInfo`
+  for handlers
+- SOP Class Extended Negotiation (PS3.8 D.3.3.5):
+  `Config.ExtendedNegotiations` proposes per-class application information,
+  `ServerConfig.ExtendedNegotiation` answers it per class (returning `ok=false`
+  declines that class, which is how the protocol says "no extended semantics
+  here"), and `Association.ExtendedNegotiation` reads the answer. The info is
+  opaque to this package: only the service class that defines it can interpret
+  it
+- `ServerConfig.IdentifierValidator` and `ae.QueryRetrieveLevelValidator`: a
+  C-FIND / C-MOVE / C-GET identifier is checked before the handler runs, and a
+  non-zero status is answered as-is (0xA900 *identifier does not match SOP
+  class*). PS3.4 puts that answer on the SCP, but what a valid identifier looks
+  like is model-specific, so the rule is a hook and the ready-made check covers
+  the level every model requires
+- `ServerConfig.AcceptedTransferSyntaxes` and `ae.DefaultTransferSyntaxes`:
+  transfer-syntax negotiation is now explicit. The default set is implicit VR
+  little endian, explicit VR little endian, deflated explicit VR little endian
+  and explicit VR big endian — pynetdicom's `DEFAULT_TRANSFER_SYNTAXES`, and
+  what godicom can actually decode. `"*"` accepts whatever the requestor
+  proposes, for a pass-through SCP that files bytes without decoding them
+- `ServerConfig.Admit`: a per-association admission hook that receives
+  `AssocInfo` and returns `(release func(), error)`. Returning a
+  `*ae.RejectError` rejects with the exact A-ASSOCIATE-RJ result / source /
+  reason; any other error rejects as transient / no-reason-given. The release
+  func runs once when the association ends, including after a panic, so a quota
+  taken at admission is given back. Blocking inside `Admit` is supported and is
+  how a caller queues instead of rejecting: it runs on the association's own
+  goroutine, and its context is cancelled at `HandshakeTimeout` or shutdown
+- `ae.RejectError` and `ae.RejectLocalLimit`: the rejection as a value, with
+  `Unwrap` for `errors.Is` / `errors.As`, instead of a call into the stack
+- `ServerConfig.MaxDatasetSize` bounds the bytes one DIMSE message may carry,
+  command set included. With `MaxConcurrentAssociations` it is an exact process
+  memory bound (`associations × size`); there is deliberately no global byte
+  budget, which would let one large sender stall every other association
+- `StoreEvent.Stream`, and the reader behind it: an inbound dataset is no
+  longer assembled into one buffer. Fragments travel from the socket to the
+  handler over a channel with a single slot, so a 500 MB store costs one
+  P-DATA fragment of resident memory per association, and a handler that stops
+  reading stops the reader — backpressure with no queue and no watermark.
+  dcm4che reaches the same place with `PDVInputStream` and a buffer the caller
+  manages; pynetdicom reaches it not at all, reading the dataset into a
+  `BytesIO`. `Bytes` and `Decode` drain the same stream for callers that want
+  it whole. The SCU side streams too: C-GET hands each stored instance to
+  `OnCStore` as it arrives
+
+### Changed
+- **Breaking**: `StoreEvent.Dataset []byte` is gone, replaced by `Stream()
+  io.Reader`, `Bytes() ([]byte, error)` and `Decode() (*godicom.Dataset,
+  error)`. Keeping a materialised buffer alongside a stream would mean paying
+  the memory cost whether or not the handler reads it, which is the cost this
+  change exists to remove. The body is single-use; the library finishes
+  reading it when the handler returns, so a handler that ignores the dataset
+  cannot desynchronise the association
+- `MaxDatasetSize` is no longer what keeps memory bounded — `Stream` is. It
+  remains as a cutoff for an object that is not plausibly real, and over the
+  cap the association ends without a DIMSE response, because no status means
+  "too big"
+- A panic in a DIMSE handler now costs one association, not the process: it is
+  recovered once at the association boundary, logged with its stack, and
+  answered with A-ABORT. Handlers keep signalling expected failures with a
+  DIMSE status; a panic means a bug, and the two are no longer the same thing.
+  Precedent: `net/http`'s per-connection recovery in `conn.serve`
+- `Serve` logs why an association ended at Debug, instead of discarding the
+  error
+- A presentation context is accepted only when one of its proposed transfer
+  syntaxes is one we accept; previously the first proposal was taken whatever it
+  was, so a peer could be told a JPEG 2000 context was usable and then have every
+  store fail in the handler. Refused contexts carry result 4 (*transfer syntaxes
+  not supported*), which is what pynetdicom returns and what tells a requestor to
+  retry with another encoding rather than stop asking
+- A command set that arrives intact but cannot be parsed now ends the
+  association with A-ABORT. Closing the socket left the peer unable to tell a
+  protocol error from a network fault, so it retried the same bytes
+- A failed N-CREATE-RSP no longer has to name an instance: the UID is
+  conditional (PS3.4 Table F.1-3), and inventing one for an object that does not
+  exist is worse than leaving it out
+- C-ECHO on a presentation context the acceptor never accepted now answers
+  0x0122 (*SOP class not supported*) instead of success. The previous answer
+  claimed an association the requestor cannot use was working, which is the one
+  thing a verification request is asked to find out
+
 ## [0.19.0] - 2026-11-13
 
 A dependency release ([godicom](https://github.com/godicom-dev/godicom)

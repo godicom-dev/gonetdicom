@@ -27,7 +27,7 @@ func TestStoreEventDecodeReportsErrors(t *testing.T) {
 			MessageID:              1,
 			AffectedSOPClassUID:    scUID,
 			AffectedSOPInstanceUID: "1.2.3.4.5",
-		}, junk, string(uid.DeflatedExplicitVRLittleEndian))
+		}, bodyFromBytes(junk), string(uid.DeflatedExplicitVRLittleEndian))
 		if _, err := ev.Decode(); err == nil {
 			t.Fatal("expected an error for a corrupt deflated dataset")
 		}
@@ -49,7 +49,7 @@ func TestStoreEventDecodeReportsErrors(t *testing.T) {
 			MessageID:              1,
 			AffectedSOPClassUID:    scUID,
 			AffectedSOPInstanceUID: "1.2.3.4.5",
-		}, junk, "")
+		}, bodyFromBytes(junk), "")
 		if _, err := ev.Decode(); err == nil {
 			t.Fatal("expected an error without a transfer syntax")
 		}
@@ -72,7 +72,7 @@ func TestStoreEventDecodeRoundTrips(t *testing.T) {
 		MessageID:              1,
 		AffectedSOPClassUID:    string(uid.SecondaryCaptureImageStorage),
 		AffectedSOPInstanceUID: "1.2.3.4.5",
-	}, raw, pdu.ImplicitVRLittleEndian)
+	}, bodyFromBytes(raw), pdu.ImplicitVRLittleEndian)
 
 	got, err := ev.Decode()
 	if err != nil {

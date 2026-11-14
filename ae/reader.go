@@ -2,19 +2,31 @@ package ae
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 
+	"github.com/godicom-dev/gonetdicom"
 	"github.com/godicom-dev/gonetdicom/dimse"
 	"github.com/godicom-dev/gonetdicom/pdu"
 )
 
+// errMalformedCommand marks a command set that arrived intact but cannot be
+// parsed. The association cannot continue, and the peer is owed an A-ABORT: a
+// closed socket is indistinguishable from a network failure.
+var errMalformedCommand = errors.New("ae: malformed DIMSE command set")
+
 // inbound is one item from an association's read side: either a complete DIMSE
 // message, or a control PDU that ends the association, or a read error.
+//
+// A message's command set is complete when it arrives — it is small, and
+// dispatch needs it. Its dataset is not: Body is a stream the reader keeps
+// feeding while the handler consumes, so a 500 MB store costs one fragment of
+// memory instead of 500 MB.
 type inbound struct {
 	ContextID byte
 	Command   []byte
-	Dataset   []byte
+	Body      *msgBody
 
 	// Control is non-nil when the item is a PDU rather than a DIMSE message
 	// (A-RELEASE-RQ, A-ABORT, or anything unexpected). Such a PDU always ends
@@ -35,15 +47,22 @@ type inbound struct {
 // however many bytes happened to be in flight, desynchronising the stream: the
 // next read lands mid-PDU and takes a length prefix out of message payload.
 type assocReader struct {
-	ch      <-chan inbound
-	stop    chan struct{}
-	pending []inbound
+	ch         <-chan inbound
+	stop       chan struct{}
+	pending    []inbound
+	maxMessage int // bytes per DIMSE message; 0 = unlimited
 }
 
 // newAssocReader starts reading conn. Call Close before closing conn.
-func newAssocReader(ctx context.Context, conn net.Conn) *assocReader {
+//
+// maxMessage caps the bytes of one reassembled DIMSE message (command set plus
+// dataset). The reader is the only place that sees a message grow, so it is the
+// only place the cap can be enforced: fragments arrive one MaxPDU at a time, and
+// without a ceiling a peer can make the SCP concatenate until it runs out of
+// memory, one legitimate-looking P-DATA at a time.
+func newAssocReader(ctx context.Context, conn net.Conn, maxMessage int) *assocReader {
 	ch := make(chan inbound, 1)
-	r := &assocReader{ch: ch, stop: make(chan struct{})}
+	r := &assocReader{ch: ch, stop: make(chan struct{}), maxMessage: maxMessage}
 	go r.run(ctx, conn, ch)
 	return r
 }
@@ -61,13 +80,28 @@ func (r *assocReader) run(ctx context.Context, conn net.Conn, ch chan<- inbound)
 	}
 
 	var (
-		cmdBuf, dsBuf   []byte
-		cmdDone, dsDone bool
-		pcid            byte
+		cmdBuf   []byte
+		body     *msgBody
+		discard  bool
+		inBody   bool
+		pcid     byte
+		msgBytes int
 	)
+
+	// abort tells whoever is reading the dataset in flight why the message is
+	// not going to finish. Without it a handler blocked in Read waits for an
+	// end that never comes.
+	abort := func(err error) {
+		if body != nil {
+			body.finish(err)
+			body = nil
+		}
+	}
+
 	for {
 		raw, err := readPDUConn(ctx, conn)
 		if err != nil {
+			abort(err)
 			send(inbound{Err: err})
 			return
 		}
@@ -75,43 +109,72 @@ func (r *assocReader) run(ctx context.Context, conn net.Conn, ch chan<- inbound)
 		if !ok {
 			// Release, abort, or a PDU with no meaning mid-association: the
 			// caller ends the association, so stop reading.
+			abort(errReaderStopped)
 			send(inbound{Control: raw})
 			return
 		}
 		for _, pdv := range p.PDVs {
-			if pcid == 0 {
+			if !inBody && len(cmdBuf) == 0 {
 				pcid = pdv.ContextID
 			}
-			if pdv.IsCommand() {
-				cmdBuf = append(cmdBuf, pdv.Fragment()...)
-				if pdv.IsLast() {
-					cmdDone = true
-					hasDS, err := dimse.CommandHasDataset(cmdBuf)
-					if err != nil {
-						send(inbound{Err: err})
+			frag := pdv.Fragment()
+			msgBytes += len(frag)
+			if r.maxMessage > 0 && msgBytes > r.maxMessage {
+				err := fmt.Errorf("ae: message exceeds MaxDatasetSize (%d bytes)", r.maxMessage)
+				gonetdicom.LoggerFromContext(ctx).Warn(
+					"scp: peer exceeded MaxDatasetSize, ending association",
+					gonetdicom.AttrPCID, pcid,
+					"limit", r.maxMessage,
+				)
+				abort(err)
+				send(inbound{Err: err})
+				return
+			}
+
+			if !inBody {
+				cmdBuf = append(cmdBuf, frag...)
+				if !pdv.IsLast() {
+					continue
+				}
+				hasDS, err := dimse.CommandHasDataset(cmdBuf)
+				if err != nil {
+					send(inbound{Err: fmt.Errorf("%w: %w", errMalformedCommand, err)})
+					return
+				}
+				if !hasDS {
+					logDIMSE(ctx, "recv", pcid, cmdBuf)
+					if !send(inbound{ContextID: pcid, Command: cmdBuf}) {
 						return
 					}
-					if !hasDS {
-						dsDone = true
-					}
+					cmdBuf, pcid, msgBytes = nil, 0, 0
+					continue
 				}
-			} else {
-				dsBuf = append(dsBuf, pdv.Fragment()...)
-				if pdv.IsLast() {
-					dsDone = true
+				// Hand over the command set now and stream the dataset
+				// behind it. Dispatch only needs the command set, so the
+				// handler is already running while the first data fragment
+				// is still on the wire.
+				body = newMsgBody()
+				logDIMSE(ctx, "recv", pcid, cmdBuf)
+				if !send(inbound{ContextID: pcid, Command: cmdBuf, Body: body}) {
+					body.finish(errReaderStopped)
+					return
 				}
+				cmdBuf = nil
+				inBody = true
+				continue
+			}
+
+			// Handing a fragment to a closed body means the handler is done
+			// with the dataset. Keep reading to the last fragment — skipping
+			// it would start the next message mid-dataset — but stop copying.
+			if !discard && !body.push(frag) {
+				discard = true
+			}
+			if pdv.IsLast() {
+				body.finish(nil)
+				body, discard, inBody, pcid, msgBytes = nil, false, false, 0, 0
 			}
 		}
-		if !cmdDone || !dsDone {
-			continue
-		}
-		logDIMSE(ctx, "recv", pcid, cmdBuf)
-		if !send(inbound{ContextID: pcid, Command: cmdBuf, Dataset: dsBuf}) {
-			return
-		}
-		cmdBuf, dsBuf = nil, nil
-		cmdDone, dsDone = false, false
-		pcid = 0
 	}
 }
 
@@ -144,8 +207,9 @@ func (r *assocReader) next(ctx context.Context) inbound {
 }
 
 // message returns the next inbound DIMSE message, and fails if the peer sent a
-// control PDU instead.
-func (r *assocReader) message(ctx context.Context) (pcid byte, command, dataset []byte, err error) {
+// control PDU instead. The returned body is the dataset stream; it is nil when
+// the message carries no dataset, and the caller must close it.
+func (r *assocReader) message(ctx context.Context) (pcid byte, command []byte, body *msgBody, err error) {
 	it := r.next(ctx)
 	switch {
 	case it.Err != nil:
@@ -154,8 +218,13 @@ func (r *assocReader) message(ctx context.Context) (pcid byte, command, dataset 
 		r.pending = append([]inbound{it}, r.pending...) // keep it for the association loop
 		return 0, nil, nil, fmt.Errorf("ae: unexpected PDU %T while reading message", it.Control)
 	}
-	return it.ContextID, it.Command, it.Dataset, nil
+	return it.ContextID, it.Command, it.Body, nil
 }
+
+// errReaderStopped ends a dataset stream when the association is going away, so
+// a handler blocked in Read returns instead of waiting for a message that will
+// never be completed.
+var errReaderStopped = errors.New("ae: association reader stopped")
 
 // pollStop reports whether the peer has asked us to stop streaming responses
 // for msgID. It never blocks and never leaves a partially read PDU behind.

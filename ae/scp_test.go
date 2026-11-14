@@ -32,8 +32,8 @@ func TestServeCStoreSCP(t *testing.T) {
 			AETitle:                  "STORESCP",
 			AcceptedAbstractSyntaxes: []string{secondaryCaptureSOPClass},
 			OnCStore: func(_ context.Context, ev ae.StoreEvent) uint16 {
-				if ev.AffectedSOPInstanceUID == "1.2.3.4.5" && len(ev.Dataset) > 0 && ev.FileMeta != nil {
-					if _, err := ev.Decode(); err == nil {
+				if ev.AffectedSOPInstanceUID == "1.2.3.4.5" && ev.FileMeta != nil {
+					if ds, err := ev.Decode(); err == nil && ds != nil {
 						got.Add(1)
 					}
 				}
@@ -96,9 +96,9 @@ func TestServeCStoreSCPAcceptAllStorage(t *testing.T) {
 			AETitle:                  "STORESCP",
 			AcceptedAbstractSyntaxes: ae.AllStorageSOPClasses,
 			OnCStore: func(_ context.Context, ev ae.StoreEvent) uint16 {
-				if ev.AffectedSOPClassUID == ctSOPClass && len(ev.Dataset) > 0 &&
+				if ev.AffectedSOPClassUID == ctSOPClass &&
 					ev.TransferSyntax == pdu.ImplicitVRLittleEndian {
-					if _, err := ev.Decode(); err == nil {
+					if ds, err := ev.Decode(); err == nil && ds != nil {
 						got.Add(1)
 					}
 				}

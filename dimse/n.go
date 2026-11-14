@@ -624,26 +624,30 @@ type NCreateRSP struct {
 }
 
 // Encode returns the Implicit VR LE command set.
+//
+// Affected SOP Instance UID is conditional in an N-CREATE-RSP (PS3.4 Table
+// F.1-3): a response that refuses the request has no instance to name, so an
+// empty value is encoded as an absent element rather than rejected. The SCP
+// still mints a UID before answering Success.
 func (m *NCreateRSP) Encode() ([]byte, error) {
 	if m.AffectedSOPClassUID == "" {
 		return nil, fmt.Errorf("dimse: N-CREATE-RSP missing Affected SOP Class UID")
-	}
-	if m.AffectedSOPInstanceUID == "" {
-		return nil, fmt.Errorf("dimse: N-CREATE-RSP missing Affected SOP Instance UID")
 	}
 	dst := CommandDataSetTypeNone
 	if m.HasDataset {
 		dst = CommandDataSetTypePresent
 	}
-	body := encodeElements(
+	els := []element{
 		elemUI(0x0002, m.AffectedSOPClassUID),
 		elemUS(0x0100, CommandNCreateRSP),
 		elemUS(0x0120, m.MessageIDBeingRespondedTo),
 		elemUS(0x0800, dst),
 		elemUS(0x0900, m.Status),
-		elemUI(0x1000, m.AffectedSOPInstanceUID),
-	)
-	return withCommandGroupLength(body), nil
+	}
+	if m.AffectedSOPInstanceUID != "" {
+		els = append(els, elemUI(0x1000, m.AffectedSOPInstanceUID))
+	}
+	return withCommandGroupLength(encodeElements(els...)), nil
 }
 
 // DecodeNCreateRSP parses an N-CREATE-RSP command set.

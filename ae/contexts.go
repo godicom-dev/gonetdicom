@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/godicom-dev/godicom/uid"
 	"github.com/godicom-dev/gonetdicom/pdu"
 )
 
@@ -11,6 +12,50 @@ import (
 // can carry. Presentation-context-IDs are odd values in 1..255 (PS3.8 9.3.2.2),
 // which leaves exactly 128 of them.
 const MaxPresentationContexts = 128
+
+// DefaultTransferSyntaxes is the acceptor's transfer-syntax preference when
+// ServerConfig.AcceptedTransferSyntaxes is empty, most preferred first.
+//
+// The set is pynetdicom's DEFAULT_TRANSFER_SYNTAXES: the uncompressed forms
+// plus the deflated one, which is exactly what godicom can decode. Accepting a
+// syntax we cannot read would put a lie in the A-ASSOCIATE-AC.
+var DefaultTransferSyntaxes = []string{
+	pdu.ImplicitVRLittleEndian,
+	string(uid.ExplicitVRLittleEndian),
+	string(uid.DeflatedExplicitVRLittleEndian),
+	string(uid.ExplicitVRBigEndian),
+}
+
+// negotiateTransferSyntax returns the most preferred syntax the requestor also
+// proposed. PS3.8 9.1.5.2 lets the acceptor pick, and picking from its own
+// order keeps the choice deterministic when a peer lists several.
+//
+// "*" in preference accepts whatever was proposed first, for a pass-through
+// SCP that stores bytes without decoding them.
+func negotiateTransferSyntax(proposed, preference []string) (string, bool) {
+	for _, want := range preference {
+		if want == "*" {
+			if len(proposed) > 0 {
+				return proposed[0], true
+			}
+			return "", false
+		}
+		for _, got := range proposed {
+			if got == want {
+				return want, true
+			}
+		}
+	}
+	return "", false
+}
+
+// acceptedTransferSyntaxes is the configured preference, or the default set.
+func (c ServerConfig) acceptedTransferSyntaxes() []string {
+	if len(c.AcceptedTransferSyntaxes) > 0 {
+		return c.AcceptedTransferSyntaxes
+	}
+	return DefaultTransferSyntaxes
+}
 
 // ErrPresentationContexts is returned when Config.PresentationContexts cannot be
 // proposed as written.

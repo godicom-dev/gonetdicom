@@ -45,6 +45,7 @@ DICOMweb follows DICOM PS3.18.
 
 - [pkg.go.dev API reference](https://pkg.go.dev/github.com/godicom-dev/gonetdicom)
 - [CHANGELOG](CHANGELOG.md)
+- [PARITY](PARITY.md) — behaviour coverage against pynetdicom, gaps included
 - [TODO](TODO.md) — deferred items and known gaps
 
 ## Installation
@@ -245,11 +246,23 @@ err = ae.Serve(ctx, ln, ae.ServerConfig{
 })
 ```
 
-`ev.Dataset` is the store's bytes as received; nothing decodes them unless
-you call `ev.Decode()`, so a handler that just writes or forwards the bytes
-pays no decode cost. `Decode` reports an undecodable store as a normal error
-and the handler picks the status — an SCP that cannot parse a store answers
-with a service failure (pynetdicom uses 0xC211, *cannot understand*).
+`ev.Stream()` is the store's dataset as an `io.Reader`, and `ev.Bytes()` is the
+same data drained into memory. The stream is fed straight from the association
+reader, one P-DATA fragment at a time, so `io.Copy` to a file moves a series of
+any size through constant memory: the copy buffer grows, never the dataset. A
+500 MB enhanced CT used to cost 500 MB resident per association; it now costs
+one fragment. dcm4che gets there with `PDVInputStream` and a caller-managed
+buffer, pynetdicom by reading the whole thing into a `BytesIO`; here it is a
+channel with a single slot, which is also the backpressure — a handler that
+stops reading stops the reader.
+
+The stream is single-use, and the library finishes reading it when the handler
+returns even if the handler did not, so the next message always parses. Nothing
+decodes the dataset unless you call `ev.Decode()` (which reads it whole first),
+so a handler that only stores or forwards bytes pays no decode cost. `Decode`
+reports an undecodable store as a normal error and the handler picks the
+status — an SCP that cannot parse a store answers with a service failure
+(pynetdicom uses 0xC211, *cannot understand*).
 
 Every handler runs with the association context attached. `ae.AssocFromContext(ctx)`
 returns the calling and called AE titles, the requestor's remote address and
@@ -277,6 +290,46 @@ pynetdicom submodule. For a narrower SCP, name the classes you accept:
 `AcceptedAbstractSyntaxes` may include `"*"` to accept any peer-proposed abstract
 syntax. Named DIMSE status constants live in package
 [`status`](https://pkg.go.dev/github.com/godicom-dev/gonetdicom/status).
+
+Transfer syntaxes are negotiated separately. `AcceptedTransferSyntaxes` lists
+what this SCP accepts, most preferred first; leaving it empty means
+`ae.DefaultTransferSyntaxes` — implicit VR little endian, explicit VR little
+endian, deflated explicit VR little endian, explicit VR big endian, the same set
+pynetdicom offers and exactly what godicom can decode. A context whose syntaxes
+do not intersect is answered with result 4 (*transfer syntaxes not supported*),
+which tells the requestor to retry with another encoding; accepting a syntax we
+cannot read would be a claim the first C-STORE disproves. An SCP that only files
+bytes and never calls `Decode` can widen it with `"*"`, and then stores whatever
+the peer sends.
+
+Two optional user-information items are negotiated and exposed:
+
+- **Asynchronous Operations Window** — `Config.AsyncOperationsWindow` proposes
+  it, `ServerConfig.AsyncOperationsWindow` sets what an SCP advertises, and
+  `assoc.AsyncOperationsWindow()` reads the answer. An SCP that receives a
+  window without configuring one answers `1/1`, which is what this package
+  actually does: the DIMSE loop takes one message at a time. The value is also
+  on `AssocInfo`, so a handler can log or reject on it.
+- **SOP Class Extended Negotiation** — `Config.ExtendedNegotiations` proposes
+  per-class application information and `ServerConfig.ExtendedNegotiation`
+  answers it. The information is opaque here; only the service class that
+  defined it knows what it means. Declining a class omits the item, which is
+  how PS3.8 says "no extended semantics here".
+
+A Query/Retrieve identifier can be checked before the handler sees it:
+
+```go
+ServerConfig{
+	IdentifierValidator: ae.QueryRetrieveLevelValidator("PATIENT", "STUDY"),
+	// ...
+}
+```
+
+A non-zero return answers the request with that status (0xA900 *identifier does
+not match SOP class*) and skips the handler; the association stays up, because
+the peer can retry with a corrected identifier. The framework does not carry a
+per-model attribute table — that knowledge belongs to the application, and the
+hook is where it goes.
 
 The Called AE Title is checked: a requestor asking for anything other than
 `AETitle` (or an entry in `AlternativeAETitles`) gets an A-ASSOCIATE-RJ with
@@ -452,6 +505,69 @@ Optional real-PACS soak (skipped unless env is set):
 GONETDICOM_PACS_ADDR=host:11112 GONETDICOM_PACS_AE=ANY-SCP \
   go test -tags=integration ./ae -run TestIntegrationCEchoPACS -v
 ```
+
+## Concurrency and limits
+
+An SCP is one goroutine per association. There is no worker pool and no job
+queue: goroutines are cheap, the scheduler is already the pool, and parking
+work behind a fixed number of workers adds latency and a place for deadlocks
+without buying anything. The three things a thread pool is expected to provide
+are provided separately, by the layer that should own each one.
+
+| Requirement | Mechanism |
+|---|---|
+| A hard ceiling on concurrent associations | `ServerConfig.MaxConcurrentAssociations`. Over the cap the requestor gets A-ASSOCIATE-RJ (transient / local-limit-exceeded) — the same answer dcm4che's `Device.setLimitOpenAssociations` and pynetdicom's `AE.maximum_associations` send |
+| Per-AE, per-tenant or per-licence policy | `ServerConfig.Admit`, one hook that sees `AssocInfo` and decides |
+| Queue instead of reject | Block inside `Admit`. Its context dies at `HandshakeTimeout` or at shutdown, so a queue cannot outlive the handshake it is queueing for |
+| A memory ceiling | `StoreEvent.Stream()`: peak per association is one P-DATA fragment, whatever the dataset size. No budget, no accounting, no tuning |
+| A blast radius for one absurd object | `ServerConfig.MaxDatasetSize`, per message. With streaming it is no longer what protects memory; it is a blunt "this object is not real" cutoff that ends the association |
+| Surviving a handler bug | Nothing to configure. A panic is caught once at the association boundary, logged with its stack, answered with A-ABORT; the process and every other association carry on |
+
+```go
+slots := make(chan struct{}, 8) // admission, not a work queue
+
+cfg := ae.ServerConfig{
+	AETitle:                  "MYSCP",
+	MaxDatasetSize:           64 << 20,
+	AcceptedAbstractSyntaxes: ae.AllStorageSOPClasses,
+	Admit: func(ctx context.Context, info ae.AssocInfo) (func(), error) {
+		select {
+		case slots <- struct{}{}:
+			// Runs once when the association ends, including after a panic.
+			return func() { <-slots }, nil
+		case <-ctx.Done():
+			return nil, ctx.Err() // handshake deadline or shutdown
+		}
+	},
+	OnCStore: func(ctx context.Context, ev ae.StoreEvent) uint16 {
+		// Constant memory, whatever the dataset size: the fragments go
+		// straight from the socket to the file.
+		f, err := os.CreateTemp("", "store-*.dcm")
+		if err != nil {
+			return status.ProcessingFailure
+		}
+		defer f.Close()
+		if _, err := io.Copy(f, ev.Stream()); err != nil {
+			return status.ProcessingFailure
+		}
+		return status.Success
+	},
+}
+```
+
+`Admit` is a hook rather than a set of configuration fields because who gets in
+is policy, and the application is the only layer that knows about tenants,
+licences and maintenance windows. Returning a `*ae.RejectError` — usually
+`ae.RejectLocalLimit(err)`, which says "busy, retry later" — rejects with the
+exact PS3.8 result/source/reason; any other error rejects as
+transient / no-reason-given. The same hook covers IP ranges, per-peer counts,
+and a rate limiter, without the library growing a field per idea.
+
+Policy that blocks is deliberate, not an oversight: the blocked party is the
+association's own goroutine, so the accept loop and every other association
+keep running. That is the whole difference from a thread pool — in Java or
+Python the pool is what makes blocking affordable; in Go it never was the
+expensive part.
 
 ## Packages
 

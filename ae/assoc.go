@@ -68,6 +68,15 @@ type Config struct {
 	RoleSelections []pdu.RoleSelection
 	// UserIdentity, when non-nil, is proposed as a User Identity Negotiation RQ item.
 	UserIdentity *pdu.UserIdentityRQ
+	// AsyncOperationsWindow, when non-nil, is proposed as an Asynchronous
+	// Operations Window Negotiation item. The acceptor answers with the window
+	// it will honour; read the result with Association.AsyncOperationsWindow.
+	AsyncOperationsWindow *pdu.AsyncOperationsWindow
+	// ExtendedNegotiations are proposed as SOP Class Extended Negotiation
+	// items, one per SOP Class, carrying that class's application information
+	// (pynetdicom add_requested_extended_negotiation). The acceptor's answers
+	// are read with Association.ExtendedNegotiation.
+	ExtendedNegotiations []pdu.ExtendedNegotiation
 }
 
 func (c Config) withDefaults() Config {
@@ -135,6 +144,11 @@ type Association struct {
 	// AssocInfo carries for an SCP handler (dcm4che's getRemoteImplClassUID).
 	peerImplClassUID    string
 	peerImplVersionName string
+	// peerAsyncOps / peerExtNeg are the acceptor's answers to the negotiation
+	// items this SCU proposed. Nil and empty mean "not negotiated": the peer
+	// either did not answer or has nothing for that SOP Class.
+	peerAsyncOps *pdu.AsyncOperationsWindow
+	peerExtNeg   map[string][]byte
 	// nextID is atomic so Message IDs stay unique even when a caller ignores the
 	// contract above: a lost increment puts two outstanding requests under one ID,
 	// and the responses to them can no longer be told apart.
@@ -227,6 +241,8 @@ func (a *Association) negotiate(ctx context.Context) error {
 			MaxLength:                 a.cfg.MaxPDULength,
 			ImplementationClassUID:    a.cfg.ImplementationClassUID,
 			ImplementationVersionName: a.cfg.ImplementationVersionName,
+			AsyncOperationsWindow:     a.cfg.AsyncOperationsWindow,
+			ExtendedNegotiations:      a.cfg.ExtendedNegotiations,
 			RoleSelections:            a.cfg.RoleSelections,
 			UserIdentityRQ:            a.cfg.UserIdentity,
 		},
@@ -243,6 +259,13 @@ func (a *Association) negotiate(ctx context.Context) error {
 		a.peerMax = p.UserInformation.MaxLength
 		a.peerImplClassUID = p.UserInformation.ImplementationClassUID
 		a.peerImplVersionName = p.UserInformation.ImplementationVersionName
+		a.peerAsyncOps = p.UserInformation.AsyncOperationsWindow
+		for _, en := range p.UserInformation.ExtendedNegotiations {
+			if a.peerExtNeg == nil {
+				a.peerExtNeg = make(map[string][]byte, len(p.UserInformation.ExtendedNegotiations))
+			}
+			a.peerExtNeg[en.SOPClassUID] = en.Info
+		}
 		if p.UserInformation.UserIdentityAC != nil {
 			a.userIdentityResponse = append([]byte(nil), p.UserInformation.UserIdentityAC.ServerResponse...)
 		}
@@ -292,6 +315,28 @@ func (a *Association) negotiate(ctx context.Context) error {
 // Contexts returns accepted presentation contexts.
 func (a *Association) Contexts() []AcceptedContext {
 	return append([]AcceptedContext(nil), a.contexts...)
+}
+
+// AsyncOperationsWindow returns the window the acceptor granted, and false when
+// it answered with no window at all. A window whose both values are 0 is the
+// protocol's "unlimited" (pdu.AsyncOperationsWindow.Unlimited); 1/1 is the
+// synchronous default.
+func (a *Association) AsyncOperationsWindow() (pdu.AsyncOperationsWindow, bool) {
+	if a.peerAsyncOps == nil {
+		return pdu.AsyncOperationsWindow{}, false
+	}
+	return *a.peerAsyncOps, true
+}
+
+// ExtendedNegotiation returns the acceptor's Service Class Application
+// Information for sopClassUID, and false when it answered nothing for that
+// class. The slice is a copy: the association keeps its own.
+func (a *Association) ExtendedNegotiation(sopClassUID string) ([]byte, bool) {
+	info, ok := a.peerExtNeg[sopClassUID]
+	if !ok {
+		return nil, false
+	}
+	return append([]byte(nil), info...), true
 }
 
 // UserIdentityResponse returns the Server Response from a User Identity AC item,
@@ -415,21 +460,55 @@ func (a *Association) sendMessage(ctx context.Context, pcid byte, command, datas
 	return nil
 }
 
-func (a *Association) recvMessage(ctx context.Context) (command, dataset []byte, err error) {
-	_, command, dataset, err = a.recvMessagePC(ctx)
-	return command, dataset, err
+// recvMessage is recvMessagePC with the dataset read whole. Responses carry
+// identifiers, which are small; the streaming path exists for C-STORE-RQ.
+func (a *Association) recvMessage(ctx context.Context) ([]byte, []byte, error) {
+	_, command, body, err := a.recvMessagePC(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if body == nil {
+		return command, nil, nil
+	}
+	defer func() { _ = body.Close() }()
+	ds, err := body.Bytes()
+	if err != nil {
+		return nil, nil, err
+	}
+	return command, ds, nil
 }
 
-func (a *Association) recvMessagePC(ctx context.Context) (pcid byte, command, dataset []byte, err error) {
+// recvMessagePC reads one DIMSE message. The command set is returned whole —
+// dispatch needs it — and the dataset comes back as a body that pulls from the
+// socket as the handler reads, so a C-GET that stores a 500 MB series moves it
+// through one fragment of memory instead of assembling it first.
+func (a *Association) recvMessagePC(ctx context.Context) (pcid byte, command []byte, body *msgBody, err error) {
 	ctx = a.logCtx(ctx)
 	var (
-		cmdBuf   []byte
-		dsBuf    []byte
-		gotCmd   bool
-		cmdDone  bool
-		dsDone   bool
-		expectDS bool
+		cmdBuf  []byte
+		pending []pdu.PDV
 	)
+
+	pull := func() ([]byte, bool, error) {
+		for len(pending) == 0 {
+			raw, err := a.readPDU(ctx)
+			if err != nil {
+				return nil, false, err
+			}
+			switch p := raw.(type) {
+			case *pdu.PDataTF:
+				pending = p.PDVs
+			case *pdu.AAbort:
+				return nil, false, fmt.Errorf("%w: source=%d reason=%d", ErrAborted, p.Source, p.ReasonDiagnostic)
+			default:
+				return nil, false, fmt.Errorf("ae: unexpected PDU %T while receiving dataset", raw)
+			}
+		}
+		pdv := pending[0]
+		pending = pending[1:]
+		return pdv.Fragment(), pdv.IsLast(), nil
+	}
+
 	for {
 		raw, err := a.readPDU(ctx)
 		if err != nil {
@@ -437,35 +516,27 @@ func (a *Association) recvMessagePC(ctx context.Context) (pcid byte, command, da
 		}
 		switch p := raw.(type) {
 		case *pdu.PDataTF:
-			for _, pdv := range p.PDVs {
+			for i, pdv := range p.PDVs {
 				if pcid == 0 {
 					pcid = pdv.ContextID
 				}
-				frag := pdv.Fragment()
-				if pdv.IsCommand() {
-					cmdBuf = append(cmdBuf, frag...)
-					gotCmd = true
-					if pdv.IsLast() {
-						cmdDone = true
-						hasDS, err := dimse.CommandHasDataset(cmdBuf)
-						if err != nil {
-							return 0, nil, nil, fmt.Errorf("ae: command set: %w", err)
-						}
-						expectDS = hasDS
-						if !expectDS {
-							dsDone = true
-						}
-					}
-				} else {
-					dsBuf = append(dsBuf, frag...)
-					if pdv.IsLast() {
-						dsDone = true
-					}
+				cmdBuf = append(cmdBuf, pdv.Fragment()...)
+				if !pdv.IsLast() {
+					continue
 				}
-			}
-			if gotCmd && cmdDone && dsDone {
+				hasDS, err := dimse.CommandHasDataset(cmdBuf)
+				if err != nil {
+					return 0, nil, nil, fmt.Errorf("ae: command set: %w", err)
+				}
 				logDIMSE(ctx, "recv", pcid, cmdBuf)
-				return pcid, cmdBuf, dsBuf, nil
+				if !hasDS {
+					return pcid, cmdBuf, nil, nil
+				}
+				// Fragments of the dataset that shared this P-DATA with the
+				// command set are already in hand; queue them so the pull
+				// reads them before touching the socket again.
+				pending = append(pending, p.PDVs[i+1:]...)
+				return pcid, cmdBuf, newPullBody(pull), nil
 			}
 		case *pdu.AAbort:
 			return 0, nil, nil, fmt.Errorf("%w: source=%d reason=%d", ErrAborted, p.Source, p.ReasonDiagnostic)
