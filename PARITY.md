@@ -22,7 +22,7 @@ Legend: **covered** — a test would fail if the behaviour regressed;
 | root | 95.8% | logger precedence, nil tolerance |
 | `dimse` | 90.4% | command encode/decode, status helpers |
 | `pdu` | 85.7% | every PDU and user-information item, incl. malformed frames |
-| `ae` | 84.3% | association, DIMSE dispatch, Q/R, N-services |
+| `ae` | 84.9% | association, DIMSE dispatch, Q/R, N-services |
 | `dicomweb` | 78.7% | no pynetdicom counterpart (PS3.18 is not in it) |
 
 `go test ./... -cover` reproduces the table. Cross-package use does not count
@@ -173,13 +173,14 @@ attributes themselves stays on the application side, behind the same hook.
 
 In order of value per line of code:
 
-1. The SCU read side on its own goroutine, so a context deadline that expires
-   inside a PDU can be told apart from one that expires between messages. Today
-   the former desynchronises the stream and `Abort` is the only exit — see
-   `docs/adr/0001`.
-2. DICOMweb beyond the MVP: PS3.18 Delete, Upsert, Capabilities and non-patient
+1. DICOMweb beyond the MVP: PS3.18 Delete, Upsert, Capabilities and non-patient
    instances are the largest remaining surface, and they are outside
    pynetdicom's scope so they never appear in the comparison above.
+2. Asynchronous operations: the window is negotiated and readable, but DIMSE in
+   this package is synchronous, so more than one operation in flight is refused
+   (`ErrOperationInFlight`) rather than demultiplexed. Implementing it means a
+   pending-request map and a policy for responses nobody is waiting for — the
+   design question ADR 0001 declined on purpose.
 
 ## Performance
 
