@@ -22,6 +22,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each UID length-checked against the bytes actually present: every length in
   the item is a claim by the peer and is used as an offset
 
+### Changed
+- `pdu.PDV.Value` decoded by `pdu.DecodePDataTF` is a subslice of the buffer
+  that was passed in, not a copy. That buffer must outlive the PDVs and stay
+  unmodified while they are in use — which is what `pdu.Read` already
+  guarantees, since it allocates one buffer per PDU and never reuses it, so a
+  caller that decodes from a reader notices nothing. A caller that decodes from
+  its own buffer and then reuses it will now see that reuse through `Value`.
+  The copy was the only reason a C-STORE needed the dataset twice in memory
+  before the handler saw a byte
+
+### Performance
+- A P-DATA-TF decodes without moving its payload: a 16 KiB PDU takes 44 ns and
+  56 B/op where it took 1966 ns and 16 KB, because decoding is now O(PDV count)
+  rather than O(payload)
+- `pdu.PDataTF.Encode` measures the body once and allocates the result once,
+  where it used to build an item buffer per PDV, append them into a body, and
+  copy the body behind a header. A 16 KiB PDU: 5713 ns / 51 KB / 3 allocs →
+  2355 ns / 18 KB / 1 alloc
+- C-STORE of 1 MiB end to end: 6.6 MB/op → 3.4 MB/op, 3.10 ms → 2.09 ms
+  (338 → 503 MB/s). Three payload-sized buffers remain — the MCH prefix
+  `FragmentMessage` prepends, the P-DATA buffer `Encode` writes, and the buffer
+  `ReadLimit` fills — and none of them is written by the handler, which is why a
+  500 MB store still costs one fragment of resident memory
+
 ## [0.20.0] - 2026-11-14
 
 Concurrency control, done the way Go does it: admission and backpressure as

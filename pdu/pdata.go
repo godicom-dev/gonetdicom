@@ -3,6 +3,7 @@ package pdu
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 )
 
 // Message control header bits (PS3.8 Annex E).
@@ -13,6 +14,13 @@ const (
 
 // PDV is a Presentation Data Value item inside a P-DATA-TF PDU.
 // Value is Message Control Header + fragment (command or dataset).
+//
+// Value decoded by DecodePDataTF is a subslice of the buffer that was passed
+// in, not a copy: a P-DATA-TF carries up to the peer's Maximum Length Received
+// of payload, and copying it here doubled the memory a C-STORE needed before
+// the handler saw a byte. The buffer belongs to the caller, so it must stay
+// unchanged while the PDVs are in use — which is what ReadLimit guarantees by
+// allocating one buffer per PDU and never reusing it.
 type PDV struct {
 	ContextID byte
 	Value     []byte // includes MCH as first byte
@@ -44,23 +52,40 @@ type PDataTF struct {
 func (p *PDataTF) Type() byte { return TypePDataTF }
 
 // Encode serializes the PDU.
+//
+// The body is measured first and the result allocated once. Building it by
+// appending per-PDV item buffers cost three passes over the payload — item,
+// body, header — and a C-STORE is nothing but payload, so the extra copies were
+// the whole cost of sending a dataset.
 func (p *PDataTF) Encode() ([]byte, error) {
-	var body []byte
+	bodyLen := 0
 	for _, pdv := range p.PDVs {
 		if len(pdv.Value) == 0 {
 			return nil, fmt.Errorf("pdu: empty PDV value")
 		}
-		itemLen := 1 + len(pdv.Value) // context ID + value
-		item := make([]byte, 4+itemLen)
-		binary.BigEndian.PutUint32(item[0:4], uint32(itemLen))
-		item[4] = pdv.ContextID
-		copy(item[5:], pdv.Value)
-		body = append(body, item...)
+		bodyLen += 4 + 1 + len(pdv.Value) // item length + context ID + value
 	}
-	return encodeHeader(TypePDataTF, body)
+	if uint64(bodyLen) > math.MaxUint32 {
+		return nil, errTooLong("P-DATA-TF body", bodyLen, math.MaxUint32)
+	}
+	out := make([]byte, 6+bodyLen)
+	out[0] = TypePDataTF
+	binary.BigEndian.PutUint32(out[2:6], uint32(bodyLen))
+	off := 6
+	for _, pdv := range p.PDVs {
+		itemLen := 1 + len(pdv.Value)
+		binary.BigEndian.PutUint32(out[off:off+4], uint32(itemLen))
+		out[off+4] = pdv.ContextID
+		copy(out[off+5:off+5+len(pdv.Value)], pdv.Value)
+		off += 4 + itemLen
+	}
+	return out, nil
 }
 
 // DecodePDataTF parses a P-DATA-TF PDU.
+//
+// Each PDV.Value is a subslice of raw rather than a copy — see PDV. The PDV
+// slice itself is this call's own, so appending to it never writes into raw.
 func DecodePDataTF(raw []byte) (*PDataTF, error) {
 	if len(raw) < 6 {
 		return nil, fmt.Errorf("pdu: P-DATA-TF too short")
@@ -87,7 +112,7 @@ func DecodePDataTF(raw []byte) (*PDataTF, error) {
 		}
 		pdv := PDV{
 			ContextID: raw[off+4],
-			Value:     append([]byte(nil), raw[off+5:off+4+int(itemLen)]...),
+			Value:     raw[off+5 : off+4+int(itemLen)],
 		}
 		p.PDVs = append(p.PDVs, pdv)
 		off += 4 + int(itemLen)

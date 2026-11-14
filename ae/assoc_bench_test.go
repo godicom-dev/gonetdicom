@@ -114,8 +114,15 @@ func BenchmarkCEcho(b *testing.B) {
 }
 
 // C-STORE at two sizes. The small one is dominated by the round trip and the
-// command set; the 1 MiB one is the streaming path carrying a real image, and
-// its B/op is the point of the exercise - it should not track the payload.
+// command set; the 1 MiB one is the streaming path carrying a real image.
+//
+// Its B/op is about 3.3x the payload, and that number is worth knowing rather
+// than hiding: one copy is the MCH prefix FragmentMessage puts in front of each
+// fragment, one is the P-DATA buffer the sender encodes into, one is the buffer
+// ReadLimit fills. None of the three is written by the handler, which is what
+// makes a 500 MB store cost one fragment of resident memory rather than 500 MB
+// - but they are per-message allocations, so they track the payload, and the
+// comment here should not claim otherwise.
 func BenchmarkCStore(b *testing.B) {
 	for _, size := range []int{4 << 10, 1 << 20} {
 		b.Run(fmt.Sprintf("%dKiB", size>>10), func(b *testing.B) {

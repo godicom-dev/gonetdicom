@@ -92,6 +92,41 @@ func BenchmarkEncodePDataTF(b *testing.B) {
 	}
 }
 
+// A 16 KiB PDV is what a C-STORE actually sends, because 16 KiB is the
+// Maximum Length Received most stacks propose. The small fixture above cannot
+// show it, but at this size B/op is the whole story: decoding a PDV must not
+// copy its payload, and encoding one must not build it in pieces, so both land
+// near 1x payload instead of 2x and 3x.
+func BenchmarkDecodePDataTFLarge(b *testing.B) {
+	payload := bytes.Repeat([]byte{0x5a}, 16382-6)
+	value := append([]byte{MCHCommand | MCHLastFragment}, payload...)
+	raw, err := (&PDataTF{PDVs: []PDV{{ContextID: 1, Value: value}}}).Encode()
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(raw)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := DecodePDataTF(raw); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkEncodePDataTFLarge(b *testing.B) {
+	payload := bytes.Repeat([]byte{0x5a}, 16382-6)
+	p := &PDataTF{PDVs: []PDV{{ContextID: 1, Value: append([]byte{MCHCommand | MCHLastFragment}, payload...)}}}
+	b.SetBytes(int64(6 + 5 + len(payload)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := p.Encode(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // FragmentMessage is the send-side counterpart of the streaming reader, and the
 // place where a peer's Maximum Length Received turns one dataset into many
 // PDUs. The two sizes bracket what a real negotiation offers: 16 KiB is the
