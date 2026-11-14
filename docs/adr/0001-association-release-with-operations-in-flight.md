@@ -125,11 +125,15 @@ what decides whether to keep going.
   larger change than this one and has its own migration cost: every SCU method
   would read from a channel instead of the connection.
 - C-MOVE sub-operations run on a *different* association (the Move Destination),
-  so a release on the requestor's association does not stop them here: the batch
-  completes and the final response goes nowhere. Cutting it short is a separate
-  question — what to report for instances that were never tried is exactly the
-  remaining-vs-failed distinction above — and it is tracked in `PARITY.md`
-  rather than half-answered here.
+  so a release on the requestor's association is seen by the C-MOVE handler, not
+  by the destination association's read side. The batch therefore stops at the
+  next sub-operation boundary: the C-STORE already on the wire is finished, the
+  instances after it are never dialled for, and the handler returns so the
+  association loop can answer the release. How many of them were tried is the
+  same remaining-vs-failed distinction as above — a C-CANCEL-RQ answered from
+  that boundary reports the untried ones as Remaining (PS3.4 Table C.4-3), while
+  a release writes nothing, because the peer is waiting for A-RELEASE-RP and
+  would discard it.
 - A C-GET that has finished its sub-operations writes the rest of its responses
   back to back. A cancel arriving in that window is not noticed, because the
   responses are already queued in memory and there is no message boundary at

@@ -213,7 +213,10 @@ cfg := ae.Config{
 
 Cancel an outstanding FIND / MOVE / GET with `assoc.CCancel(ctx, msgID)`. The
 request structs take a `MessageID` when another goroutine needs to name the
-operation it is cancelling; leaving it zero allocates one.
+operation it is cancelling; leaving it zero allocates one. A cancel takes effect
+at the next sub-operation boundary, which for C-MOVE means the instance already
+on the wire to the Move Destination is finished and the ones after it are never
+dialled for; the final response says how many were tried.
 
 An `*ae.Association` carries one DIMSE operation at a time, and that is now
 enforced rather than assumed: a second call returns `ae.ErrOperationInFlight`

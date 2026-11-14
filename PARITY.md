@@ -95,15 +95,15 @@ and answers 0xA900 for the rest.
 Covered: accept/reject, release, release collision on the SCU, peer release
 while a request is outstanding, A-ABORT both directions, abort as first PDU,
 truncated RQ, repeated rejections, association with no contexts, release while
-P-DATA is still arriving at the requestor, release requested mid-C-GET, and
-C-CANCEL at a sub-operation boundary in both orders (`ae/release_inflight_test.go`,
-`ae/scp_stop_midretrieve_test.go`). The rules behind the last three are in
+P-DATA is still arriving at the requestor, release requested mid-C-GET, release
+and C-CANCEL mid-C-MOVE, and C-CANCEL at a sub-operation boundary in both orders
+(`ae/release_inflight_test.go`, `ae/scp_stop_midretrieve_test.go`,
+`ae/scp_cancel_move_test.go`). The rules behind the last four are in
 `docs/adr/0001`.
 
 Not covered: `network timeout` on a half-open socket (needs a controllable
-clock), ARTIM timer expiry measured in seconds (we use `HandshakeTimeout`
-deadlines instead, which is the same guarantee by a different mechanism), and a
-C-MOVE batch stopped mid-way — see the list at the end.
+clock) and ARTIM timer expiry measured in seconds (we use `HandshakeTimeout`
+deadlines instead, which is the same guarantee by a different mechanism).
 
 ### 3. Transport (partial)
 
@@ -173,17 +173,11 @@ attributes themselves stays on the application side, behind the same hook.
 
 In order of value per line of code:
 
-1. C-MOVE stopped mid-batch. `pollStop` covers C-FIND and C-GET, whose responses
-   share the association with the request; C-MOVE's sub-operations run on the
-   Move Destination's association, so a cancel there is only noticed between
-   responses today. Cutting the batch short needs the same
-   remaining-versus-failed decision C-GET now makes, applied to instances that
-   were never dialled for.
-2. The SCU read side on its own goroutine, so a context deadline that expires
+1. The SCU read side on its own goroutine, so a context deadline that expires
    inside a PDU can be told apart from one that expires between messages. Today
    the former desynchronises the stream and `Abort` is the only exit — see
    `docs/adr/0001`.
-3. DICOMweb beyond the MVP: PS3.18 Delete, Upsert, Capabilities and non-patient
+2. DICOMweb beyond the MVP: PS3.18 Delete, Upsert, Capabilities and non-patient
    instances are the largest remaining surface, and they are outside
    pynetdicom's scope so they never appear in the comparison above.
 
