@@ -48,6 +48,52 @@ a case where the old shape could hide the truth from the caller. If a PR needs
 to break an API to avoid that, say so in the issue; it is not a reason to
 refuse.
 
+## Concurrency
+
+One goroutine per association, and that is the design, not a placeholder. There
+is no worker pool, no job queue, and no plan to add either: pooling goroutines
+buys latency and deadlock surface, and the scheduler already multiplexes them
+over the CPUs. A PR that introduces `chan job` plus N workers will be asked to
+remove it.
+
+That leaves three separate concerns that a thread pool conflates, and each has
+its owner:
+
+- **Ceilings** the stack owns, because they are protocol answers:
+  `MaxConcurrentAssociations` (RJ local-limit-exceeded) and `MaxDatasetSize`.
+  Both are numbers, not policy, and both default to something a caller can
+  predict.
+- **Policy** the application owns, via hooks that receive plain values:
+  `Admit` for admission, handlers for everything else. If a new requirement
+  needs per-peer, per-tenant or per-licence decisions, extend the hook's
+  arguments — not `ServerConfig` with another field.
+- **Faults**: a handler panic is a bug. It is recovered once at the association
+  boundary, logged with its stack, and answered with A-ABORT. Do not add a
+  `recover()` around individual handlers, and do not turn a panic into a DIMSE
+  status: expected failures return a status, and the two must stay
+  distinguishable.
+
+Blocking is allowed wherever a goroutine is already dedicated to the work —
+`Admit` is the model: it may wait on a semaphore, and its context bounds the
+wait. Prefer blocking with a context over rejecting with a bespoke status.
+
+## Streaming
+
+Anything that can carry an image is a stream, not a `[]byte`. `StoreEvent`
+exposes `Stream() io.Reader` for that reason, and `Bytes`/`Decode` are the
+opt-in shortcuts that the caller pays for, not the default the library pays
+for. A new handler argument, event field or internal buffer that holds a
+dataset must be an `io.Reader` (or read on demand), and any `io.ReadAll`
+inside the library needs a comment explaining why the size is bounded.
+
+The mechanism is a fragment channel with a single slot. Do not add a
+high-water mark, a buffer pool, or a "max buffered bytes" knob: the single
+slot *is* the backpressure, and a handler that stops reading is supposed to
+stop the reader. When a handler returns without draining, the body is finished
+by the library — on the push side by discarding to the last fragment, on the
+pull side by reading it out — because an unterminated dataset makes the next
+message unparseable.
+
 ## Out of tree by policy
 
 Origin-server persistence and authentication (`dicomweb.Store` implementations),

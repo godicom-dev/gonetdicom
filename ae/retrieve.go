@@ -10,11 +10,25 @@ import (
 )
 
 // Query/Retrieve Information Model Move / Get SOP Classes.
+//
+// As with the Find models, none of these is interpreted here: the identifier
+// goes to the handler. The list covers what pynetdicom registers, so a peer
+// that still asks for the retired models is not forced to use raw UID strings.
 const (
 	PatientRootQueryRetrieveInformationModelMove = string(uid.PatientRootQueryRetrieveInformationModelMove)
 	PatientRootQueryRetrieveInformationModelGet  = string(uid.PatientRootQueryRetrieveInformationModelGet)
 	StudyRootQueryRetrieveInformationModelMove   = string(uid.StudyRootQueryRetrieveInformationModelMove)
 	StudyRootQueryRetrieveInformationModelGet    = string(uid.StudyRootQueryRetrieveInformationModelGet)
+
+	PatientStudyOnlyQueryRetrieveInformationModelMove = string(uid.PatientStudyOnlyQueryRetrieveInformationModelMove)
+	PatientStudyOnlyQueryRetrieveInformationModelGet  = string(uid.PatientStudyOnlyQueryRetrieveInformationModelGet)
+
+	// Composite Instance Root retrieval (PS3.4 C.4.3.3).
+	CompositeInstanceRootRetrieveMove = string(uid.CompositeInstanceRootRetrieveMove)
+	CompositeInstanceRootRetrieveGet  = string(uid.CompositeInstanceRootRetrieveGet)
+	// CompositeInstanceRetrieveWithoutBulkDataGet retrieves metadata and
+	// non-pixel attributes for an instance without the bulk data.
+	CompositeInstanceRetrieveWithoutBulkDataGet = string(uid.CompositeInstanceRetrieveWithoutBulkDataGet)
 )
 
 // MoveRequest is a C-MOVE-RQ payload.
@@ -110,18 +124,25 @@ func (a *Association) CGet(ctx context.Context, req GetRequest) ([]RetrieveMatch
 
 	var matches []RetrieveMatch
 	for {
-		pcid, rspCmd, rspDS, err := a.recvMessagePC(ctx)
+		pcid, rspCmd, rspBody, err := a.recvMessagePC(ctx)
 		if err != nil {
 			return matches, err
 		}
 
 		if storeRQ, err := dimse.DecodeCStoreRQ(rspCmd); err == nil {
-			if err := a.handleInboundStore(ctx, pcid, storeRQ, rspDS, req.OnCStore); err != nil {
+			// The body is the stored dataset, possibly the largest thing on
+			// this association. handleInboundStore closes it when the handler
+			// is done, reading it or not.
+			if err := a.handleInboundStore(ctx, pcid, storeRQ, rspBody, req.OnCStore); err != nil {
 				return matches, err
 			}
 			continue
 		}
 
+		rspDS, err := drainBody(rspBody)
+		if err != nil {
+			return matches, fmt.Errorf("ae: read C-GET response dataset: %w", err)
+		}
 		rsp, err := dimse.DecodeCGetRSP(rspCmd)
 		if err != nil {
 			return matches, fmt.Errorf("ae: decode C-GET-RSP: %w", err)
@@ -191,7 +212,21 @@ func (a *Association) collectRetrieve(ctx context.Context, transferSyntax string
 	}
 }
 
-func (a *Association) handleInboundStore(ctx context.Context, pcid byte, rq *dimse.CStoreRQ, dataset []byte, onStore StoreHandler) error {
+func (a *Association) handleInboundStore(ctx context.Context, pcid byte, rq *dimse.CStoreRQ, body *msgBody, onStore StoreHandler) error {
+	// Whatever the handler does with the dataset, the socket has to be left at
+	// the next message: on the pull side that means reading to the last
+	// fragment, which is what Close does. A panicking handler is the one case
+	// that does not wait — the association is no longer trustworthy, and
+	// blocking on a peer that stopped sending would hide the bug.
+	if body != nil {
+		defer func() {
+			if p := recover(); p != nil {
+				body.Discard()
+				panic(p)
+			}
+			_ = body.Close()
+		}()
+	}
 	status := dimse.StatusSuccess
 	if onStore != nil {
 		ts := ""
@@ -216,7 +251,7 @@ func (a *Association) handleInboundStore(ctx context.Context, pcid byte, rq *dim
 		info.PresentationContextID = pcid
 		info.TransferSyntax = ts
 		ctx = WithAssoc(ctx, info)
-		status = onStore(ctx, newInboundStoreEvent(rq, dataset, ts))
+		status = onStore(ctx, newInboundStoreEvent(rq, body, ts))
 	}
 	rsp, err := (&dimse.CStoreRSP{
 		MessageIDBeingRespondedTo: rq.MessageID,

@@ -3,10 +3,12 @@ package ae
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"net"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -104,16 +106,35 @@ type ServerConfig struct {
 	// AllStoragePresentationContexts). Include "*" only when you intentionally
 	// accept any peer-proposed abstract syntax (including private UIDs).
 	AcceptedAbstractSyntaxes []string
+	// AcceptedTransferSyntaxes lists the transfer syntaxes this SCP accepts,
+	// most preferred first. Empty means DefaultTransferSyntaxes, which is what
+	// godicom can decode. A context whose syntaxes do not intersect is answered
+	// with result 4 (transfer syntaxes not supported) — accepting a syntax we
+	// cannot read would be a claim the dataset handler has to disprove.
+	//
+	// Include "*" to accept whatever the requestor proposes. That is the right
+	// setting for a pass-through SCP (StoreEvent.Stream is enough to forward or
+	// file the bytes), and the wrong one for a handler that calls Decode.
+	AcceptedTransferSyntaxes []string
 	OnCStore                 StoreHandler
 	OnCFind                  FindHandler
-	OnCMove                  MoveHandler
-	OnCGet                   GetHandler
-	OnNAction                NActionHandler
-	OnNEventReport           EventReportHandler
-	OnNGet                   NGetHandler
-	OnNSet                   NSetHandler
-	OnNCreate                NCreateHandler
-	OnNDelete                NDeleteHandler
+	// IdentifierValidator checks a C-FIND / C-MOVE / C-GET identifier before
+	// the handler runs and returns a DIMSE status (0 accepts, 0xA900 refuses).
+	// Nil means every identifier reaches the handler unexamined.
+	//
+	// PS3.4 C.4.1.1.3 puts the "identifier does not match the SOP Class" answer
+	// on the SCP, but the rule that decides it is model-specific — which is why
+	// this is a hook rather than a framework table. QueryRetrieveLevelValidator
+	// covers the check most services need.
+	IdentifierValidator IdentifierValidator
+	OnCMove             MoveHandler
+	OnCGet              GetHandler
+	OnNAction           NActionHandler
+	OnNEventReport      EventReportHandler
+	OnNGet              NGetHandler
+	OnNSet              NSetHandler
+	OnNCreate           NCreateHandler
+	OnNDelete           NDeleteHandler
 	// MoveDestinations maps Move Destination AE Title → Storage SCP endpoint.
 	// Used when MovePlan.Destination is nil. A handler that looks the peer up
 	// itself sets MovePlan.Destination and leaves this map unused.
@@ -126,6 +147,22 @@ type ServerConfig struct {
 	// ignored and the association is accepted without an AC response item
 	// (pynetdicom default when no EVT_USER_ID handler is bound).
 	OnUserIdentity UserIdentityHandler
+	// AsyncOperationsWindow is the window this SCP advertises when a requestor
+	// proposes an Asynchronous Operations Window. Nil answers 1/1 — one
+	// operation invoked and performed at a time — because that is exactly what
+	// the dispatch loop does; advertising more would promise concurrency the
+	// server does not deliver.
+	//
+	// Set it only if you know your handlers tolerate overlapping invocations,
+	// and note the loop is still ordered: the value describes the window the
+	// peer may use, not a scheduler this package implements.
+	AsyncOperationsWindow *pdu.AsyncOperationsWindow
+	// ExtendedNegotiation answers a requestor's SOP Class Extended Negotiation
+	// (PS3.8 D.3.3.5). It is called once per proposed SOP Class with that
+	// class's Service Class Application Information; returning ok=false omits
+	// the answer for that class, which is how an SCP declines extended
+	// negotiation for a class it handles the DIMSE way.
+	ExtendedNegotiation func(sopClassUID string, info []byte) ([]byte, bool)
 	// TLS, when non-nil, wraps accepted connections with TLS (use with ServeTLS
 	// or a tls.Listener). Ignored by Serve on a plain listener.
 	TLS *tls.Config
@@ -152,6 +189,61 @@ type ServerConfig struct {
 	// A-ASSOCIATE-RJ (local-limit-exceeded), which tells the requestor to retry
 	// later; closing the connection would leave it guessing.
 	MaxConcurrentAssociations int
+	// MaxDatasetSize caps the bytes one DIMSE message may carry, command set
+	// and dataset together. 0 (the default) means no limit.
+	//
+	// This is a hard ceiling on what a single association can make the SCP
+	// buffer, and the process bound follows from arithmetic the SCP already
+	// owns: MaxConcurrentAssociations × MaxDatasetSize. There is deliberately no
+	// global byte budget — a shared budget lets one large sender stall every
+	// other association, and it would buy nothing the two numbers above do not
+	// already pin down.
+	//
+	// Exceeding it ends the association (the peer is misbehaving or the limit is
+	// wrong); there is no DIMSE status that means "your message was too big".
+	MaxDatasetSize int
+	// Admit decides whether an association may proceed. It runs once per
+	// association, after the A-ASSOCIATE-RQ is read and the AE titles are
+	// checked, with AssocInfo describing the requestor. User identity is not
+	// verified yet: an Admit decision sees what the peer claims, not what it
+	// proved. Return nil to accept. Return a *RejectError to reject with that
+	// result/source/reason; return any other error to reject as transient /
+	// service-provider-ACSE / no-reason-given.
+	//
+	// The returned func, if non-nil, runs once when the association ends — the
+	// same shape as the cancel func from context.WithCancel, and the place a
+	// slot taken during admission is given back. It also runs when a handler
+	// panics.
+	//
+	// This hook replaces the per-AE and per-host limits the other stacks expose
+	// as configuration (dcm4che Device.setLimitAssociationsInitiatedBy,
+	// pynetdicom's AE.maximum_associations): who gets in is policy, and the
+	// application is the only layer that knows about tenants, licences and
+	// maintenance windows. Two shapes cover everything:
+	//
+	//	// Reject fast when a per-AE quota is used up.
+	//	Admit: func(ctx context.Context, info ae.AssocInfo) (func(), error) {
+	//		key := info.CallingAETitle
+	//		if !quota.TryTake(key) {
+	//			return nil, ae.RejectLocalLimit(fmt.Errorf("%s: quota exhausted", key))
+	//		}
+	//		return func() { quota.Put(key) }, nil
+	//	}
+	//
+	//	// Or queue: block until a slot frees up. Nothing is rejected, and no
+	//	// goroutine is parked on a job queue — this one just waits.
+	//	Admit: func(ctx context.Context, info ae.AssocInfo) (func(), error) {
+	//		if err := slots.Acquire(ctx, 1); err != nil { // semaphore.Weighted
+	//			return nil, err
+	//		}
+	//		return func() { slots.Release(1) }, nil
+	//	}
+	//
+	// Blocking is safe: Admit runs on the association's own goroutine, so the
+	// accept loop and every other association keep running. Its context is
+	// cancelled when HandshakeTimeout expires or the server shuts down, so a
+	// queue can never outlive the handshake.
+	Admit func(ctx context.Context, info AssocInfo) (release func(), err error)
 	// Logger receives SCP lifecycle and debug events.
 	// Nil falls back to context (WithLogger) then DiscardHandler (quiet).
 	Logger *slog.Logger
@@ -215,7 +307,12 @@ func Serve(ctx context.Context, ln net.Listener, cfg ServerConfig) error {
 				return
 			}
 			defer limiter.release()
-			_ = handleAssociation(ctx, c, cfg)
+			if err := handleAssociation(ctx, c, cfg); err != nil && ctx.Err() == nil {
+				cfg.logger(ctx).Debug("scp association ended",
+					gonetdicom.AttrRemote, c.RemoteAddr().String(),
+					"err", err,
+				)
+			}
 		}(conn)
 	}
 }
@@ -241,6 +338,33 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 	ctx = gonetdicom.LoggerContext(ctx, cfg.Logger, gonetdicom.ComponentSCP)
 	defer closeOnDone(ctx, conn)()
 
+	// Declared up here so the panic handler below can name the peer; the
+	// closure reads whatever value info holds at the moment of the panic.
+	var info AssocInfo
+	// A panic is a bug, not a DIMSE outcome. Report it with its stack and end
+	// this association: A-ABORT is the only honest answer, because after an
+	// unexpected panic the SCP cannot vouch for its own state, and a DIMSE
+	// failure status would claim the association is still usable. The process
+	// and every other association keep running — the same line net/http takes
+	// per connection in conn.serve.
+	//
+	// This is the whole of our panic handling: one defer at the boundary,
+	// instead of a recover() around every handler. Handlers signal expected
+	// failures by returning a status; panicking through a status code would
+	// merge the two kinds of failure that Go keeps apart.
+	defer func() {
+		p := recover()
+		if p == nil {
+			return
+		}
+		cfg.logger(ctx).Error("scp: recovered panic, aborting association",
+			gonetdicom.AttrRemote, conn.RemoteAddr().String(),
+			gonetdicom.AttrCallingAE, info.CallingAETitle,
+			"panic", p, "stack", string(debug.Stack()),
+		)
+		_ = writePDUConn(ctx, conn, &pdu.AAbort{Source: 0x02})
+	}()
+
 	// Negotiation runs under one deadline covering the whole handshake; it is
 	// cleared before the association proper starts.
 	if cfg.HandshakeTimeout > 0 {
@@ -257,11 +381,15 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 		return fmt.Errorf("ae: expected A-ASSOCIATE-RQ, got %T", raw)
 	}
 
+	// Negotiation answers are decided once, before either the AssocInfo
+	// snapshot or the A-ASSOCIATE-AC is built, so the two can never disagree.
+	acAsyncOps, acExtNeg := answerUserItems(cfg, rq.UserInformation)
+
 	// Peer identity is on the context from here on, so OnUserIdentity and
 	// every DIMSE handler can authenticate and audit the requestor
 	// (AssocFromContext). Message-level fields are layered per message in
 	// scpHandleMessage.
-	info := AssocInfo{
+	info = AssocInfo{
 		CallingAETitle: rq.CallingAETitle,
 		CalledAETitle:  rq.CalledAETitle,
 		RemoteAddr:     conn.RemoteAddr(),
@@ -270,6 +398,7 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 		// Association.getRemoteImplClassUID / getRemoteImplVersionName.
 		RemoteImplementationClassUID:    rq.UserInformation.ImplementationClassUID,
 		RemoteImplementationVersionName: rq.UserInformation.ImplementationVersionName,
+		AsyncOperationsWindow:           acAsyncOps,
 	}
 	ctx = WithAssoc(ctx, info)
 
@@ -278,6 +407,17 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 	}
 	if err := checkAETitles(ctx, conn, cfg, rq); err != nil {
 		return err
+	}
+
+	// Admission runs before user identity verification: quota and licensing
+	// decisions are about whether there is room, and there is no reason to
+	// spend verification work on a peer we are about to bounce anyway.
+	release, err := admit(ctx, conn, cfg, info)
+	if err != nil {
+		return err
+	}
+	if release != nil {
+		defer release()
 	}
 
 	var userIdentityAC *pdu.UserIdentityAC
@@ -328,12 +468,13 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 			})
 			continue
 		}
-		ts := pc.TransferSyntaxes[0]
-		for _, cand := range pc.TransferSyntaxes {
-			if cand == pdu.ImplicitVRLittleEndian {
-				ts = cand
-				break
-			}
+		ts, ok := negotiateTransferSyntax(pc.TransferSyntaxes, cfg.acceptedTransferSyntaxes())
+		if !ok {
+			acContexts = append(acContexts, pdu.PresentationContextAC{
+				ID:     pc.ID,
+				Result: 4, // transfer syntaxes not supported
+			})
+			continue
 		}
 
 		asSCU, asSCP := false, true // default acceptor roles
@@ -380,6 +521,8 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 			MaxLength:                 cfg.MaxPDULength,
 			ImplementationClassUID:    cfg.ImplementationClassUID,
 			ImplementationVersionName: cfg.ImplementationVersionName,
+			AsyncOperationsWindow:     acAsyncOps,
+			ExtendedNegotiations:      acExtNeg,
 			RoleSelections:            replyRoles,
 			UserIdentityAC:            userIdentityAC,
 		},
@@ -398,9 +541,47 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 	peerMax := rq.UserInformation.MaxLength
 	// One reader owns the read side from here on; Close must run before the
 	// deferred conn.Close so the reading goroutine cannot be left blocked.
-	r := newAssocReader(ctx, conn)
+	r := newAssocReader(ctx, conn, cfg.MaxDatasetSize)
 	defer r.Close()
 	return scpLoop(ctx, conn, r, cfg, accepted, peerMax, rq.CallingAETitle)
+}
+
+// answerUserItems builds the acceptor's answers to the optional user-information
+// negotiation items.
+//
+// Asynchronous operations: PS3.8 9.3.3.3.2 requires an acceptor that received a
+// window to answer with its own, and 1/1 is the honest answer for a dispatch
+// loop that takes one message at a time. Answering nothing would leave the
+// requestor unable to tell whether the window applies.
+//
+// Extended negotiation: an answer exists per SOP Class, and a class the SCP
+// handles without extended semantics simply gets none — absence is the
+// protocol's way of saying "no extended negotiation here".
+func answerUserItems(cfg ServerConfig, ui pdu.UserInformation) (*pdu.AsyncOperationsWindow, []pdu.ExtendedNegotiation) {
+	var async *pdu.AsyncOperationsWindow
+	if ui.AsyncOperationsWindow != nil {
+		if cfg.AsyncOperationsWindow != nil {
+			w := *cfg.AsyncOperationsWindow
+			async = &w
+		} else {
+			async = &pdu.AsyncOperationsWindow{MaxInvoked: 1, MaxPerformed: 1}
+		}
+	}
+	if cfg.ExtendedNegotiation == nil || len(ui.ExtendedNegotiations) == 0 {
+		return async, nil
+	}
+	answers := make([]pdu.ExtendedNegotiation, 0, len(ui.ExtendedNegotiations))
+	for _, proposed := range ui.ExtendedNegotiations {
+		info, ok := cfg.ExtendedNegotiation(proposed.SOPClassUID, proposed.Info)
+		if !ok {
+			continue
+		}
+		answers = append(answers, pdu.ExtendedNegotiation{
+			SOPClassUID: proposed.SOPClassUID,
+			Info:        info,
+		})
+	}
+	return async, answers
 }
 
 func scpLoop(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, callingAE string) error {
@@ -411,6 +592,13 @@ func scpLoop(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfi
 		it := r.next(ctx)
 		switch {
 		case it.Err != nil:
+			// A command set that arrived but does not parse is a protocol error,
+			// and A-ABORT is the only way to say so (PS3.8 9.3.4). Closing the
+			// socket instead reads as a network fault, so the peer retries the
+			// same bytes against a server that will reject them identically.
+			if errors.Is(it.Err, errMalformedCommand) {
+				_ = writePDUConn(ctx, conn, &pdu.AAbort{Source: 0x02, ReasonDiagnostic: 0x00})
+			}
 			return it.Err
 		case it.Control != nil:
 			switch p := it.Control.(type) {
@@ -423,7 +611,7 @@ func scpLoop(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfi
 				return fmt.Errorf("ae: unexpected PDU %T", p)
 			}
 		}
-		if err := scpHandleMessage(ctx, conn, r, cfg, accepted, peerMax, it.ContextID, it.Command, it.Dataset, callingAE); err != nil {
+		if err := scpHandleMessage(ctx, conn, r, cfg, accepted, peerMax, it.ContextID, it.Command, it.Body, callingAE); err != nil {
 			return err
 		}
 	}
@@ -436,7 +624,22 @@ func scpLoop(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfi
 // reject a Command Field that is present and wrong, so a command set with no
 // Command Field at all satisfies every one of them and would be handled as
 // whichever was tried first.
-func scpHandleMessage(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, cmd, ds []byte, callingAE string) error {
+func scpHandleMessage(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, cmd []byte, body *msgBody, callingAE string) error {
+	// Closing is unconditional on the way out: a handler that ignored the
+	// dataset, and a handler that panicked, both leave fragments unread, and
+	// the reader has to be told to stop keeping them. On the panic path there
+	// is no waiting — the association is going away anyway, and a peer that
+	// stopped mid-message would turn a crash into a hang.
+	if body != nil {
+		defer func() {
+			if p := recover(); p != nil {
+				body.Discard()
+				panic(p)
+			}
+			_ = body.Close()
+		}()
+	}
+
 	// Layer the message-level context onto the association identity already
 	// present, so every handler below sees the complete AssocInfo.
 	info, _ := AssocFromContext(ctx)
@@ -447,21 +650,53 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, r *assocReader, cfg Se
 	}
 	ctx = WithAssoc(ctx, info)
 
+	// A command set we cannot parse has no Message ID to answer and no status
+	// that means "your bytes made no sense", so the association ends with
+	// A-ABORT (PS3.8 9.3.4, and what pynetdicom does on a decode failure).
+	// Closing the socket instead would leave the peer guessing whether the
+	// problem was ours or the network's.
+	abort := func(err error) error {
+		_ = writePDUConn(ctx, conn, &pdu.AAbort{Source: 0x02, ReasonDiagnostic: 0x00})
+		return fmt.Errorf("ae: malformed DIMSE message: %w", err)
+	}
+
 	field, err := dimse.PeekCommandField(cmd)
 	if err != nil {
-		_ = writePDUConn(ctx, conn, &pdu.AAbort{Source: 0x02, ReasonDiagnostic: 0x00})
-		return fmt.Errorf("ae: %w", err)
+		return abort(err)
+	}
+
+	// C-STORE is the only request whose dataset can be large enough to matter,
+	// so it keeps the stream. Every other command carries an identifier, which
+	// is small, and reading it whole leaves those decoders as they were.
+	var ds []byte
+	if field != dimse.CommandCStoreRQ && body != nil {
+		ds, err = body.Bytes()
+		if err != nil {
+			return fmt.Errorf("ae: read message dataset: %w", err)
+		}
 	}
 
 	switch field {
 	case dimse.CommandCEchoRQ:
 		echoRQ, err := dimse.DecodeCEchoRQ(cmd)
 		if err != nil {
-			return err
+			return abort(err)
+		}
+		// C-ECHO-RQ names no SOP Class: the Verification class is implied by
+		// the presentation context it arrived on. Answering success on a
+		// context the acceptor never accepted would tell the peer that an
+		// association it cannot actually use is working.
+		//
+		// A context accepted for some other class is left alone: pynetdicom's
+		// Verification SCP answers success there too, and the peer's own
+		// binding is the only thing that can be wrong.
+		status := dimse.StatusSuccess
+		if _, ok := accepted[pcid]; !ok {
+			status = dcmstatus.SOPClassNotSupported
 		}
 		rsp, err := (&dimse.CEchoRSP{
 			MessageIDBeingRespondedTo: echoRQ.MessageID,
-			Status:                    dimse.StatusSuccess,
+			Status:                    status,
 		}).Encode()
 		if err != nil {
 			return err
@@ -471,15 +706,27 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, r *assocReader, cfg Se
 	case dimse.CommandCStoreRQ:
 		rq, err := dimse.DecodeCStoreRQ(cmd)
 		if err != nil {
-			return err
+			return abort(err)
 		}
 		status := dcmstatus.SOPClassNotSupported
 		if abs, ok := accepted[pcid]; ok && abs.AbstractSyntax == rq.AffectedSOPClassUID {
 			if cfg.OnCStore != nil {
-				status = cfg.OnCStore(ctx, newInboundStoreEvent(rq, ds, abs.TransferSyntax))
+				status = cfg.OnCStore(ctx, newInboundStoreEvent(rq, body, abs.TransferSyntax))
 			} else {
 				status = dimse.StatusSuccess
 			}
+		}
+		// Finish the dataset before answering: the rest of it is still on the
+		// wire, and only once it has been consumed does the reader know
+		// whether it hit the size cap. Answering first would claim we read a
+		// message that was actually cut short.
+		if body != nil {
+			_ = body.Close()
+		}
+		if err := body.readErr(); err != nil {
+			// No PDU here: the message never completed, so there is no state
+			// to abort from, and the peer must not read a half-conversation.
+			return err
 		}
 		rsp, err := (&dimse.CStoreRSP{
 			MessageIDBeingRespondedTo: rq.MessageID,
@@ -495,21 +742,21 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, r *assocReader, cfg Se
 	case dimse.CommandCFindRQ:
 		rq, err := dimse.DecodeCFindRQ(cmd)
 		if err != nil {
-			return err
+			return abort(err)
 		}
 		return scpHandleFind(ctx, conn, r, cfg, accepted, peerMax, pcid, rq, ds)
 
 	case dimse.CommandCMoveRQ:
 		rq, err := dimse.DecodeCMoveRQ(cmd)
 		if err != nil {
-			return err
+			return abort(err)
 		}
 		return scpHandleMove(ctx, conn, r, cfg, accepted, peerMax, pcid, rq, ds, callingAE)
 
 	case dimse.CommandCGetRQ:
 		rq, err := dimse.DecodeCGetRQ(cmd)
 		if err != nil {
-			return err
+			return abort(err)
 		}
 		return scpHandleGet(ctx, conn, r, cfg, accepted, peerMax, pcid, rq, ds)
 
@@ -527,42 +774,42 @@ func scpHandleMessage(ctx context.Context, conn net.Conn, r *assocReader, cfg Se
 	case dimse.CommandNActionRQ:
 		rq, err := dimse.DecodeNActionRQ(cmd)
 		if err != nil {
-			return err
+			return abort(err)
 		}
 		return scpHandleNAction(ctx, conn, r, cfg, accepted, peerMax, pcid, rq, ds)
 
 	case dimse.CommandNEventReportRQ:
 		rq, err := dimse.DecodeNEventReportRQ(cmd)
 		if err != nil {
-			return err
+			return abort(err)
 		}
 		return scpHandleNEventReport(ctx, conn, cfg, accepted, peerMax, pcid, rq, ds)
 
 	case dimse.CommandNGetRQ:
 		rq, err := dimse.DecodeNGetRQ(cmd)
 		if err != nil {
-			return err
+			return abort(err)
 		}
 		return scpHandleNGet(ctx, conn, cfg, accepted, peerMax, pcid, rq)
 
 	case dimse.CommandNSetRQ:
 		rq, err := dimse.DecodeNSetRQ(cmd)
 		if err != nil {
-			return err
+			return abort(err)
 		}
 		return scpHandleNSet(ctx, conn, cfg, accepted, peerMax, pcid, rq, ds)
 
 	case dimse.CommandNCreateRQ:
 		rq, err := dimse.DecodeNCreateRQ(cmd)
 		if err != nil {
-			return err
+			return abort(err)
 		}
 		return scpHandleNCreate(ctx, conn, cfg, accepted, peerMax, pcid, rq, ds)
 
 	case dimse.CommandNDeleteRQ:
 		rq, err := dimse.DecodeNDeleteRQ(cmd)
 		if err != nil {
-			return err
+			return abort(err)
 		}
 		return scpHandleNDelete(ctx, conn, cfg, accepted, peerMax, pcid, rq)
 
@@ -593,6 +840,9 @@ func scpHandleFind(ctx context.Context, conn net.Conn, r *assocReader, cfg Serve
 			return fmt.Errorf("ae: decode C-FIND identifier: %w", err)
 		}
 		ident = decoded
+	}
+	if status := cfg.validateIdentifier(ctx, OperationFind, rq.AffectedSOPClassUID, ident, ac.TransferSyntax); status != 0 {
+		return refuseFindIdentifier(ctx, conn, pcid, peerMax, rq.MessageID, rq.AffectedSOPClassUID, status)
 	}
 
 	var matches []FindMatch
@@ -670,6 +920,9 @@ func scpHandleMove(ctx context.Context, conn net.Conn, r *assocReader, cfg Serve
 			return fmt.Errorf("ae: decode C-MOVE identifier: %w", err)
 		}
 		ident = decoded
+	}
+	if status := cfg.validateIdentifier(ctx, OperationMove, rq.AffectedSOPClassUID, ident, ac.TransferSyntax); status != 0 {
+		return refuseMoveIdentifier(ctx, conn, pcid, peerMax, rq.MessageID, rq.AffectedSOPClassUID, status)
 	}
 
 	var plan MovePlan
@@ -947,6 +1200,9 @@ func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg Server
 			return fmt.Errorf("ae: decode C-GET identifier: %w", err)
 		}
 		ident = decoded
+	}
+	if status := cfg.validateIdentifier(ctx, OperationGet, rq.AffectedSOPClassUID, ident, ac.TransferSyntax); status != 0 {
+		return refuseGetIdentifier(ctx, conn, pcid, peerMax, rq.MessageID, rq.AffectedSOPClassUID, status)
 	}
 
 	var plan GetPlan
@@ -1405,9 +1661,9 @@ func scpHandleNCreate(ctx context.Context, conn net.Conn, cfg ServerConfig, acce
 			result.AffectedSOPInstanceUID = NewInstanceUID()
 		}
 	}
-	if result.AffectedSOPInstanceUID == "" {
-		return fmt.Errorf("ae: N-CREATE-RSP missing Affected SOP Instance UID")
-	}
+	// Success and warning responses must name the created instance (Part 7);
+	// the branch above mints one when the handler left it empty. A failure
+	// names none: the request was refused, so there is no object to point at.
 	return writeNAttributeRSP(ctx, conn, peerMax, pcid, ok, ac, rq.MessageID, result.Status,
 		result.AffectedSOPClassUID, result.AffectedSOPInstanceUID,
 		result.AttributeList, result.AttributeListData, encodeNCreateRSP)

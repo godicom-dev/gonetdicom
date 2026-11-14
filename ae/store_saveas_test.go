@@ -28,7 +28,7 @@ func TestInboundStoreEventFileMetaMatchesPynetdicom(t *testing.T) {
 		MessageID:              1,
 		AffectedSOPClassUID:    scUID,
 		AffectedSOPInstanceUID: "1.2.3.4.5",
-	}, raw, pdu.ImplicitVRLittleEndian)
+	}, bodyFromBytes(raw), pdu.ImplicitVRLittleEndian)
 	decoded, err := ev.Decode()
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
@@ -84,7 +84,7 @@ func TestInboundStoreEventPreservesRLEMultiFrame(t *testing.T) {
 		MessageID:              1,
 		AffectedSOPClassUID:    sopClass,
 		AffectedSOPInstanceUID: sopInst,
-	}, raw, ts)
+	}, bodyFromBytes(raw), ts)
 	ds, err := ev.Decode()
 	if err != nil {
 		t.Fatalf("Decode: %v", err)

@@ -3,6 +3,8 @@ package ae
 import (
 	"context"
 	"net"
+
+	"github.com/godicom-dev/gonetdicom/pdu"
 )
 
 // AssocInfo describes the association that carried a DIMSE request, and the
@@ -55,6 +57,16 @@ type AssocInfo struct {
 	// presentation context. It mirrors the TransferSyntax field of the
 	// request payloads that carry one.
 	TransferSyntax string
+	// AsyncOperationsWindow is the Asynchronous Operations Window in force for
+	// this association, or nil when the requestor proposed none. On an SCP it
+	// is what this server agreed to execute; on an SCU it is what the peer
+	// granted.
+	//
+	// gonetdicom processes one DIMSE message at a time (PS3.8's default RW=1
+	// behaviour), so an acceptor that does not configure a window answers
+	// 1/1: a value larger than 1 would promise concurrency that the dispatch
+	// loop does not provide.
+	AsyncOperationsWindow *pdu.AsyncOperationsWindow
 }
 
 type assocInfoKey struct{}

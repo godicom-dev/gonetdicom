@@ -209,7 +209,7 @@ func TestCGetSCURoundtrip(t *testing.T) {
 			if ev.AffectedSOPInstanceUID != sopInstance {
 				t.Errorf("store instance=%q", ev.AffectedSOPInstanceUID)
 			}
-			if len(ev.Dataset) == 0 {
+			if raw, err := ev.Bytes(); err != nil || len(raw) == 0 {
 				t.Error("empty store dataset")
 			}
 			return dimse.StatusSuccess

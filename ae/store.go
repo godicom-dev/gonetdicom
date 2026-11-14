@@ -3,6 +3,7 @@ package ae
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/godicom-dev/godicom"
 	"github.com/godicom-dev/gonetdicom/dimse"
@@ -36,41 +37,69 @@ type StoreResult struct {
 // StoreEvent is a received C-STORE-RQ, passed to OnCStore (pynetdicom's
 // EVT_C_STORE). It mirrors that event:
 //
-//	Dataset        ≈ event.request.DataSet (raw PDV bytes)
+//	Stream         ≈ event.request.DataSet, but pulled rather than buffered
 //	FileMeta       ≈ event.file_meta
 //	TransferSyntax ≈ the accepted presentation context's syntax
 //
-// Dataset is the bytes as received — gonetdicom does not decode them before
-// the handler runs, so a handler that only stores or forwards the bytes pays
-// no decode cost, like pynetdicom's lazy event.dataset and dcm4che's
-// streamed PDVInputStream. Call Decode for the structured Dataset; a decode
-// failure is reported there as a normal error, and the handler picks the
-// response status. Returning 0xC211 (cannot understand) mirrors what
+// The dataset is not read before the handler runs, and on the way here it was
+// never assembled into a contiguous buffer: fragments arrive from the
+// association reader one P-DATA at a time, so a 500 MB store costs one
+// fragment of memory for as long as the handler keeps up. That is what
+// pynetdicom's lazy event.dataset buys with a full BytesIO and what dcm4che
+// buys with PDVInputStream and a caller-managed buffer; here it costs a
+// channel with a single slot.
+//
+// The body is single-use: Stream, Bytes and Decode all consume it, and once
+// the handler returns the library discards whatever is left. A decode failure
+// is reported as a normal error from Decode, and the handler picks the
+// response status; returning 0xC211 (cannot understand) mirrors what
 // pynetdicom answers when a store handler raises.
 type StoreEvent struct {
 	AffectedSOPClassUID                  string
 	AffectedSOPInstanceUID               string
-	Dataset                              []byte
 	FileMeta                             *godicom.FileMetaDataset
 	TransferSyntax                       string
 	Priority                             uint16
 	MoveOriginatorApplicationEntityTitle string
 	MoveOriginatorMessageID              uint16
+
+	body *msgBody
 }
 
-// Decode parses Dataset with the negotiated transfer syntax.
+// Stream returns the dataset as an io.Reader over the fragments still on the
+// wire. io.Copy to a file or a socket moves a store of any size through
+// constant memory, and io.Copy's buffer, not the dataset, is what grows.
+func (ev StoreEvent) Stream() io.Reader {
+	return bodyReader(ev.body)
+}
+
+// Bytes drains the dataset into memory. Use it when the dataset is small or
+// when a decoder needs it contiguous; prefer Stream for anything that could
+// be an image.
+func (ev StoreEvent) Bytes() ([]byte, error) {
+	if ev.body == nil {
+		return nil, nil
+	}
+	return ev.body.Bytes()
+}
+
+// Decode parses the dataset with the negotiated transfer syntax.
 //
 // The error is returned, never hidden: an undecodable store surfaces here,
 // where the one piece of code that can react to it is running. Empty data
 // and a missing negotiated transfer syntax are errors too.
 func (ev StoreEvent) Decode() (*godicom.Dataset, error) {
-	if len(ev.Dataset) == 0 {
-		return nil, fmt.Errorf("ae: C-STORE dataset is empty")
-	}
 	if ev.TransferSyntax == "" {
 		return nil, fmt.Errorf("ae: C-STORE has no negotiated transfer syntax")
 	}
-	return godicom.DecodeDataset(ev.Dataset, godicom.UID(ev.TransferSyntax))
+	raw, err := ev.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("ae: C-STORE dataset is empty")
+	}
+	return godicom.DecodeDataset(raw, godicom.UID(ev.TransferSyntax))
 }
 
 // CStore sends a C-STORE-RQ and waits for the C-STORE-RSP.
@@ -157,13 +186,13 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 }
 
 // newInboundStoreEvent builds an OnCStore payload from a received
-// C-STORE-RQ (pynetdicom Event.request.DataSet + Event.file_meta). The
-// dataset bytes are handed over undecoded; the handler opts into Decode.
-func newInboundStoreEvent(rq *dimse.CStoreRQ, dataset []byte, transferSyntax string) StoreEvent {
+// C-STORE-RQ (pynetdicom Event.request.DataSet + Event.file_meta). The dataset
+// arrives undecoded and unread; the handler opts into Stream, Bytes or Decode.
+func newInboundStoreEvent(rq *dimse.CStoreRQ, body *msgBody, transferSyntax string) StoreEvent {
 	return StoreEvent{
 		AffectedSOPClassUID:                  rq.AffectedSOPClassUID,
 		AffectedSOPInstanceUID:               rq.AffectedSOPInstanceUID,
-		Dataset:                              dataset,
+		body:                                 body,
 		TransferSyntax:                       transferSyntax,
 		Priority:                             rq.Priority,
 		MoveOriginatorApplicationEntityTitle: rq.MoveOriginatorApplicationEntityTitle,

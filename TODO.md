@@ -5,10 +5,16 @@ this file tracks deferred work.
 
 ## Status
 
-As of **v0.18.0**, on [godicom](https://github.com/godicom-dev/godicom)
-`v0.34.0`: DIMSE (association, C-ECHO / C-STORE / C-FIND / C-MOVE / C-GET /
-C-CANCEL, DIMSE-N, role selection, user identity, storage commitment) and a
-DICOMweb MVP (WADO-RS including frames, rendered, and bulkdata, STOW-RS, QIDO-RS).
+Unreleased, on [godicom](https://github.com/godicom-dev/godicom) `v0.40.0`:
+DIMSE (association, C-ECHO / C-STORE / C-FIND / C-MOVE / C-GET / C-CANCEL,
+DIMSE-N, role selection, user identity, asynchronous operations window, SOP
+Class extended negotiation, storage commitment), streamed inbound datasets,
+admission control, and a DICOMweb MVP (WADO-RS including frames, rendered, and
+bulkdata, STOW-RS, QIDO-RS).
+
+Where this stands against `pynetdicom/` is tracked in [PARITY.md](PARITY.md),
+which lists the covered, partial and deliberately out-of-scope behaviour groups
+rather than a raw test count.
 
 ## Principles
 
