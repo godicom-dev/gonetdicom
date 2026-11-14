@@ -26,6 +26,14 @@ func serveSCPCancel(t *testing.T, cfg ae.ServerConfig) (string, context.CancelFu
 	if err != nil {
 		t.Fatal(err)
 	}
+	return serveOn(t, ln, cfg)
+}
+
+// serveOn runs cfg on a listener the caller already bound, so a test can pick
+// the address family. Serve itself never does — it takes a net.Listener and
+// keeps whatever net.Addr the OS hands back — which is what the IPv6 tests pin.
+func serveOn(t *testing.T, ln net.Listener, cfg ae.ServerConfig) (string, context.CancelFunc) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()
