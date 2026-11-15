@@ -202,6 +202,14 @@ type Association struct {
 	// handed to the caller and never replaced, so the pointer itself is safe to
 	// read from any goroutine.
 	reader *pduReader
+	// abortOnce keeps the A-ABORT for an undecodable PDU to one per association.
+	// The reader stops at the first one, so every later read reports the same
+	// error and would otherwise send the same abort again.
+	abortOnce sync.Once
+	// aborted records that we ended the association with A-ABORT ourselves.
+	// Teardown methods read it: a release after an abort would be a release
+	// request on an association that no longer exists.
+	aborted atomic.Bool
 }
 
 // beginOp claims the association's read side for one operation and returns the
@@ -670,6 +678,13 @@ func (a *Association) Release(ctx context.Context) error {
 	if a.closed.Load() {
 		return nil
 	}
+	// An association we aborted is over. PS3.8 7.2.2 lists A-ABORT as the last
+	// primitive a requestor may issue, so answering a release request with one
+	// is not a courtesy — there is no association left to release, and the peer
+	// that received the abort is not waiting for an A-RELEASE-RP.
+	if a.aborted.Load() {
+		return ErrAborted
+	}
 	end, err := a.beginOp("A-RELEASE")
 	if err != nil {
 		return err
@@ -789,7 +804,7 @@ func (a *Association) readPDU(ctx context.Context) (pdu.PDU, error) {
 	select {
 	case p, ok := <-a.reader.ch:
 		if !ok {
-			return nil, a.reader.err
+			return nil, a.abortUndecodable(ctx, a.reader.err)
 		}
 		return p, nil
 	case <-expired:
@@ -797,6 +812,30 @@ func (a *Association) readPDU(ctx context.Context) (pdu.PDU, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// abortUndecodable sends one A-ABORT when the read side stopped because the peer
+// sent something that does not decode, and returns the error unchanged.
+//
+// Once only: the reader is finished after a decode failure, so every later read
+// reports the same error, and a second A-ABORT would be a message to a peer that
+// has already been told. Everything else — a closed connection, an expired
+// deadline, a limit we set — is passed through untouched; see abortUndecodable
+// in abort.go for why those are not statements for the peer.
+func (a *Association) abortUndecodable(ctx context.Context, err error) error {
+	if errors.Is(err, pdu.ErrUndecodable) {
+		a.abortOnce.Do(func() {
+			a.aborted.Store(true)
+			// The caller's context may already be the thing that is ending, and
+			// the abort still has to go out: an operation cancelled at the same
+			// moment as the bad PDU would otherwise leave the peer waiting.
+			_ = a.writePDU(context.WithoutCancel(ctx), &pdu.AAbort{
+				Source:           abortSourceProvider,
+				ReasonDiagnostic: abortReasonUnrecognizedPDU,
+			})
+		})
+	}
+	return err
 }
 
 func (a *Association) pduDeadline(ctx context.Context) (time.Time, bool) {

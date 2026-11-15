@@ -92,6 +92,18 @@ func Read(r io.Reader) (PDU, error) {
 	return ReadLimit(r, MaxPDUReadLength)
 }
 
+// ErrUndecodable reports a PDU that arrived in full but does not parse: a type
+// this stack does not know, or a body that does not match the item structure its
+// type promises.
+//
+// It is a separate error from ErrPDUTooLarge and from the I/O errors a read
+// returns, because the three call for different answers. A read that ends early
+// is a connection that ended; a PDU we refuse to read is a limit this package
+// set; a PDU that does not decode is a peer speaking something else, and PS3.8
+// 9.3.4 gives that its own answer — A-ABORT with reason "unrecognized PDU" —
+// which only the association layer can send.
+var ErrUndecodable = errors.New("pdu: undecodable PDU")
+
 // ReadLimit reads one PDU from r, rejecting a declared body length above limit
 // (0 or an over-large limit falls back to MaxPDUReadLength).
 //
@@ -123,22 +135,32 @@ func ReadLimit(r io.Reader, limit uint32) (PDU, error) {
 	}
 	switch typ {
 	case TypeAAssociateRQ:
-		return DecodeAAssociateRQ(raw)
+		return undecodable(DecodeAAssociateRQ(raw))
 	case TypeAAssociateAC:
-		return DecodeAAssociateAC(raw)
+		return undecodable(DecodeAAssociateAC(raw))
 	case TypeAAssociateRJ:
-		return DecodeAAssociateRJ(raw)
+		return undecodable(DecodeAAssociateRJ(raw))
 	case TypePDataTF:
-		return DecodePDataTF(raw)
+		return undecodable(DecodePDataTF(raw))
 	case TypeAReleaseRQ:
-		return DecodeAReleaseRQ(raw)
+		return undecodable(DecodeAReleaseRQ(raw))
 	case TypeAReleaseRP:
-		return DecodeAReleaseRP(raw)
+		return undecodable(DecodeAReleaseRP(raw))
 	case TypeAAbort:
-		return DecodeAAbort(raw)
+		return undecodable(DecodeAAbort(raw))
 	default:
-		return nil, fmt.Errorf("pdu: unknown type 0x%02x", typ)
+		return nil, fmt.Errorf("%w: unknown type 0x%02x", ErrUndecodable, typ)
 	}
+}
+
+// undecodable marks a decode failure as ErrUndecodable while keeping the
+// decoder's own error reachable: both answer "why", one answers "what to do
+// about it".
+func undecodable(p PDU, err error) (PDU, error) {
+	if err == nil {
+		return p, nil
+	}
+	return nil, fmt.Errorf("%w: %w", ErrUndecodable, err)
 }
 
 // Write encodes p and writes it to w.

@@ -92,3 +92,45 @@ func TestReadMultiChunkBody(t *testing.T) {
 		t.Fatalf("payload round-trip mismatch")
 	}
 }
+
+// A PDU that arrives whole but does not parse is ErrUndecodable, and the
+// decoder's own complaint stays reachable through it: the association layer
+// decides what to do about the class of failure, an operator reading a log wants
+// the specific one.
+func TestReadMarksUndecodablePDUs(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string][]byte{
+		"unknown type":                 append(header(0x53, 2), 0x00, 0x00),
+		"release without its reserved": header(TypeAReleaseRQ, 0),
+		"abort with a one-byte body":   {TypeAAbort, 0, 0, 0, 0, 1, 0x00},
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := Read(bytes.NewReader(raw))
+			if !errors.Is(err, ErrUndecodable) {
+				t.Fatalf("err=%v, want ErrUndecodable", err)
+			}
+			if errors.Is(err, ErrPDUTooLarge) {
+				t.Errorf("err=%v is also ErrPDUTooLarge; the two causes are different", err)
+			}
+		})
+	}
+}
+
+// A read that ends early is a connection that ended, not a PDU that does not
+// parse, and the association layer answers the two differently: one closes, the
+// other aborts.
+func TestReadDoesNotMarkTruncationUndecodable(t *testing.T) {
+	t.Parallel()
+
+	raw := append(header(TypePDataTF, 64), 0x01, 0x02)
+	_, err := Read(bytes.NewReader(raw))
+	if err == nil {
+		t.Fatal("Read accepted a truncated PDU")
+	}
+	if errors.Is(err, ErrUndecodable) {
+		t.Fatalf("err=%v marked undecodable; the connection ended mid-PDU, which is not the same statement", err)
+	}
+}

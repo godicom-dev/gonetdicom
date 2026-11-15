@@ -233,6 +233,21 @@ safe to call from another goroutine.
 The reasoning is in
 [`docs/adr/0001`](docs/adr/0001-association-release-with-operations-in-flight.md).
 
+One operation at a time is not a limitation this package invented. pynetdicom
+negotiates the Asynchronous Operations Window and then answers `(1, 1)` whatever
+the requestor proposed — `acse.py::_check_async_ops`, where the numbers are read
+and deliberately discarded — so the two implementations differ only in how a
+second operation is refused: an error here, silence there.
+
+A PDU that arrives whole but does not decode — a type nobody defines, or a body
+its type does not explain — ends the association with A-ABORT (source 0x02,
+reason 0x01, *unrecognized PDU*), on both sides and including before an
+association exists; the error wraps `pdu.ErrUndecodable`. A read that ends early
+is a different statement and is not marked, so a peer that simply disconnects is
+not told it sent garbage. Once that abort has gone out the association is over:
+`Release` returns `ae.ErrAborted` rather than putting an A-RELEASE-RQ on a wire
+the peer has already been told to forget.
+
 **Storage SCP (C-STORE)**
 
 `Serve` blocks until `ctx` is cancelled. Do not reuse a short `WithTimeout`
