@@ -5,7 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.21.0] - 2026-11-15
+
+Failure, said precisely. Three different things used to be reported as one: a
+peer that sent bytes that do not decode was answered by closing the socket,
+which says the network broke — so the peer retried the same bytes against a
+server that would refuse them identically; a release asked for while an
+operation was mid-answer raced that operation for the read side; and a deadline
+that expired inside a PDU ate the rest of the PDU, leaving a length prefix in
+the payload and nothing to do but abort. Now an undecodable PDU is A-ABORT, a
+release is `ErrOperationInFlight` until the operation is answered or cancelled,
+and the SCU reads one PDU at a time on its own goroutine, so a caller that stops
+waiting leaves the stream framed and can still release. The same precision
+reached the tables: `ae/serviceclass.go` states which presentation contexts
+serve a SOP Class and which statuses it may answer with — the two questions a
+peer actually asks — rather than each application keeping its own literal list,
+and a response whose status the class does not define is logged and sent
+unchanged instead of being silently improved. DICOMweb gained the Non-Patient
+Instance Service and the two top-level Search targets, so the archive can be
+read at the level above a study as well as below one.
 
 ### Added
 - The DIMSE service classes as a table: `ae.ServiceClassOf` names the class a SOP
