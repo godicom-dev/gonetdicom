@@ -53,6 +53,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PARITY used to name as the largest absence: a CLI would have to decide an
   argument syntax, a file layout and a configuration format on the user's behalf,
   while an example shows the API doing the work
+- Retrieve Rendered at study and series level: `GET .../studies/{study}/rendered`
+  and `.../studies/{study}/series/{series}/rendered`, with
+  `Client.RetrieveRenderedStudy` and `RetrieveRenderedSeries` to ask for them.
+  The answer is `multipart/related` of one image per instance, and an instance
+  with nothing to render — an SR, a PR, an image whose Pixel Data was never sent
+  — is left out rather than failing the response, because a study is a mixed bag
+  and a 406 for the whole of it because one series holds a report would make the
+  transaction useless on a real archive. A resource where *nothing* renders is
+  406, the same answer an unrenderable single instance gets
 - The Search parameters that are about the answer rather than the match, in
   `dicomweb.MemoryStore`: `limit`, `offset`, `fuzzymatching` and `includefield`
   (`all`, a keyword, a tag, or a comma-separated list of either, repeated across

@@ -530,6 +530,9 @@ func Handler(store Store, prefix string, opts ...HandlerOption) http.Handler {
 		// GET /studies/{study}/metadata
 		case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "metadata":
 			handleWADOManyMetadata(w, r, store, prefix, parts[0], "")
+		// GET /studies/{study}/rendered
+		case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "rendered":
+			handleWADORenderedMany(w, r, store, parts[0], "")
 		// GET /studies/{study}/series
 		case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "series":
 			matches, err := store.SearchSeries(parts[0], r.URL.Query())
@@ -541,6 +544,9 @@ func Handler(store Store, prefix string, opts ...HandlerOption) http.Handler {
 		// GET /studies/{study}/series/{series}
 		case r.Method == http.MethodGet && len(parts) == 3 && parts[1] == "series":
 			handleWADOMany(w, r, store, parts[0], parts[2])
+		// GET /studies/{study}/series/{series}/rendered
+		case r.Method == http.MethodGet && len(parts) == 4 && parts[1] == "series" && parts[3] == "rendered":
+			handleWADORenderedMany(w, r, store, parts[0], parts[2])
 		// GET /studies/{study}/series/{series}/metadata
 		case r.Method == http.MethodGet && len(parts) == 4 && parts[1] == "series" && parts[3] == "metadata":
 			handleWADOManyMetadata(w, r, store, prefix, parts[0], parts[2])
@@ -813,6 +819,65 @@ func handleWADORendered(w http.ResponseWriter, r *http.Request, store Store, stu
 	}
 	w.Header().Set("Content-Type", mediaType)
 	_, _ = w.Write(body)
+}
+
+// handleWADORenderedMany answers Retrieve Rendered for a study (series empty) or
+// a series: one part per instance, in the media type the request asked for.
+//
+// An instance with nothing to render — an SR, an PR, an image whose Pixel Data
+// was never sent — is left out instead of failing the response. A study is a
+// mixed bag by nature, and the requestor asked for pictures of it rather than for
+// it to consist of them; answering 406 for the whole study because one series
+// holds a Structured Report would make the transaction useless on real archives.
+// What is *not* tolerated is having nothing to send: then the answer is 406, and
+// the cause is the first instance's.
+func handleWADORenderedMany(w http.ResponseWriter, r *http.Request, store Store, study, series string) {
+	parts, err := store.ListInstances(study, series)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		respondError(w, r, "wado: list instances", "retrieve failed", http.StatusInternalServerError, err)
+		return
+	}
+	opts := parseRenderOptions(r.Header.Get("Accept"), r.URL.Query())
+	rendered := make([][]byte, 0, len(parts))
+	var (
+		mediaType string
+		firstErr  error
+	)
+	for _, raw := range parts {
+		mt, body, err := RenderInstance(raw, opts)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		mediaType = mt
+		rendered = append(rendered, body)
+	}
+	if len(rendered) == 0 {
+		// Every stored instance was a property of the resource, not of the
+		// request: this is the same 406 an unrenderable single instance gets.
+		respondError(w, r, "wado: render instances", "cannot render this resource as requested", http.StatusNotAcceptable, firstErr)
+		return
+	}
+	if skipped := len(parts) - len(rendered); skipped > 0 {
+		// The answer is a subset of what was asked for, which the requestor
+		// cannot tell from a study that holds this many images. Say so on the
+		// server side; the log is where an operator can find out why.
+		gonetdicom.LoggerFromContext(r.Context()).
+			With(gonetdicom.AttrComponent, gonetdicom.ComponentDICOMweb).
+			DebugContext(r.Context(), "wado: rendered resource",
+				gonetdicom.AttrMethod, r.Method,
+				gonetdicom.AttrURL, r.URL.Path,
+				"instances", len(parts),
+				"skipped", skipped,
+				"err", firstErr)
+	}
+	_ = writeRenderedParts(w, rendered, mediaType)
 }
 
 func handleWADOBulkData(w http.ResponseWriter, r *http.Request, store Store, study, series, instance string) {

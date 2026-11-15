@@ -148,6 +148,60 @@ func (c *Client) RetrieveRenderedInstance(ctx context.Context, studyUID, seriesU
 	return ct, body, nil
 }
 
+// RetrieveRenderedStudy retrieves the study's instances rendered as images
+// (WADO-RS Retrieve Rendered, study level). Instances the server cannot render
+// are absent from the answer, so len(parts) may be smaller than the study's
+// instance count.
+func (c *Client) RetrieveRenderedStudy(ctx context.Context, studyUID string, opts RenderOptions) (mediaType string, parts [][]byte, err error) {
+	if studyUID == "" {
+		return "", nil, fmt.Errorf("dicomweb: study UID required")
+	}
+	url, err := c.resolve("studies", studyUID, "rendered")
+	if err != nil {
+		return "", nil, err
+	}
+	return c.retrieveRendered(ctx, url, opts)
+}
+
+// RetrieveRenderedSeries retrieves one series rendered as images (WADO-RS
+// Retrieve Rendered, series level), with the same caveat as
+// RetrieveRenderedStudy about instances the server cannot render.
+func (c *Client) RetrieveRenderedSeries(ctx context.Context, studyUID, seriesUID string, opts RenderOptions) (mediaType string, parts [][]byte, err error) {
+	if studyUID == "" || seriesUID == "" {
+		return "", nil, fmt.Errorf("dicomweb: study/series UID required")
+	}
+	url, err := c.resolve("studies", studyUID, "series", seriesUID, "rendered")
+	if err != nil {
+		return "", nil, err
+	}
+	return c.retrieveRendered(ctx, url, opts)
+}
+
+func (c *Client) retrieveRendered(ctx context.Context, url string, opts RenderOptions) (mediaType string, parts [][]byte, err error) {
+	opts = opts.withDefaults()
+	if q := urlValuesFrameQuality(opts); q != "" {
+		url += "?" + q
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	// One part per instance is what a study or series level retrieve answers
+	// with; a bare image is also accepted, because a server holding a single
+	// instance is entitled to answer with one.
+	req.Header.Set("Accept", fmt.Sprintf(`%s; type="%s", %s`, MediaTypeMultipart, opts.MediaType, opts.MediaType))
+
+	resp, err := c.do(ctx, req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return "", nil, err
+	}
+	return readRenderedParts(capReader(resp.Body, c.maxResponseBytes()), resp.Header.Get("Content-Type"))
+}
+
 // RetrieveBulkData retrieves Pixel Data bulk bytes for an instance.
 func (c *Client) RetrieveBulkData(ctx context.Context, studyUID, seriesUID, instanceUID string) ([]byte, error) {
 	if studyUID == "" || seriesUID == "" || instanceUID == "" {
