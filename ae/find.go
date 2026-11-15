@@ -45,6 +45,13 @@ type FindRequest struct {
 }
 
 // FindMatch is one C-FIND-RSP (Pending or final).
+//
+// A match — a response that carries an Identifier — must be
+// dimse.StatusPending. The zero status is Success, which is terminal: a handler
+// that yields matches without setting Status ends the query on the first one,
+// and the requestor sees a successful query with no results. The SCP cannot
+// infer the intent, because "Pending with a dataset" and "Success" are different
+// answers rather than two spellings of one.
 type FindMatch struct {
 	Status     uint16
 	Identifier *godicom.Dataset // non-nil for Pending responses with a dataset

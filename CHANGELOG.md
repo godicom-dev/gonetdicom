@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   program
 
 ### Added
+- `examples/`, a runnable program per service: `echo`, `store`, `find`, `get`,
+  `move` and `dicomweb`, each starting its own SCP on a loopback port so that
+  `go run ./examples/find` shows both ends of the association with nothing to
+  configure. This is the answer to pynetdicom's eight command-line tools that
+  PARITY used to name as the largest absence: a CLI would have to decide an
+  argument syntax, a file layout and a configuration format on the user's behalf,
+  while an example shows the API doing the work
 - The Search parameters that are about the answer rather than the match, in
   `dicomweb.MemoryStore`: `limit`, `offset`, `fuzzymatching` and `includefield`
   (`all`, a keyword, a tag, or a comma-separated list of either, repeated across

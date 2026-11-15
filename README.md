@@ -164,6 +164,21 @@ level=WARN msg="status is not defined for this service class; sending it anyway"
 
 ## Examples
 
+Runnable programs live in [`examples/`](examples): one per service, each starting
+its own SCP on a loopback port so that `go run` shows both ends of the
+association without any configuration.
+
+| Program | What it shows |
+|---|---|
+| `go run ./examples/echo` | C-ECHO, the association handshake |
+| `go run ./examples/store` | a Storage SCP writing to disk, and a C-STORE from a Dataset and from a file (`StoreRequest.Source`) |
+| `go run ./examples/find` | a C-FIND SCP whose handler yields matches as it produces them |
+| `go run ./examples/get` | C-GET with the requestor receiving on its own association, and `op.Outcome` read back by the handler |
+| `go run ./examples/move` | C-MOVE with a destination, the plan's contexts, and sub-operation counts |
+| `go run ./examples/dicomweb` | STOW, QIDO with `limit`/`fuzzymatching`/`includefield`, WADO |
+
+The snippets below are the same APIs in less space.
+
 **Verification SCU (C-ECHO)**
 
 ```go
