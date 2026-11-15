@@ -5,6 +5,93 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- A C-STORE whose pre-encoded bytes are not in the syntax of the context that
+  carries them is refused with `ae.ErrTransferSyntaxMismatch`, where it used to
+  go out mislabelled. The two little-endian syntaxes negotiate for each other —
+  they differ only in the VR field — so a peer that accepted Explicit VR Little
+  Endian alone was sent Implicit VR bytes and told they were Explicit VR. The
+  receiver decodes under the context's syntax, so a strict peer fails an
+  instance that was never actually wrong and a lenient decoder (including
+  godicom's) hides the damage until the instance is read back. `StoreRequest.Data`
+  is the conversion: a godicom Dataset is encoded into whatever the context
+  declares, which is also why the check only covers bytes the caller encoded
+- A C-GET sub-operation whose transfer syntax no accepted context carries is
+  counted failed and reported in the failed count, instead of ending the
+  association. PS3.4 Table C.4-3 asks the SCP to report the instances it could
+  not deliver; one instance the peer may retry is a better answer than a
+  retrieval that stops without one
+- Study and series searches walk their instances in UID order. The response may
+  now carry the whole stored dataset (`includefield=all`), and which instance's
+  copy a study or series reported used to be whichever a Go map yielded first
+- C-GET stores and N-EVENT-REPORT payloads pick their presentation context by
+  context ID among the candidates. The choice used to be whichever entry a Go
+  map yielded first, so an association proposing one SOP Class in two storage
+  syntaxes sent the stores in a syntax that varied between runs of the same
+  program
+
+### Added
+- `pdu.FuzzFragmentReader`, which asserts what a fragmenter must not get wrong —
+  the payloads reassembled from the emitted PDVs are the input, every PDV fits
+  the length the peer stated, and the two encoders produce the same bytes — over
+  generated command, dataset and PDU lengths. It joins the four targets the fuzz
+  job runs, on the encoder every store now goes through
+- `TestRetrieveSoak`, three two-hundred-instance retrievals on one association,
+  asserting the counts are identical every round and that the goroutines are back
+  where they started. The failures this kind of loop has — a drifting count, a
+  goroutine left behind per operation, a response one store late — are the ones a
+  single pass cannot see. It is skipped under `-short`
+- A `bench` job in CI: every benchmark runs once, and nothing is asserted about
+  the numbers. PARITY quotes timings and allocations, and a benchmark that stops
+  compiling is how those claims go stale without anyone noticing
+- `examples/`, a runnable program per service: `echo`, `store`, `find`, `get`,
+  `move` and `dicomweb`, each starting its own SCP on a loopback port so that
+  `go run ./examples/find` shows both ends of the association with nothing to
+  configure. This is the answer to pynetdicom's eight command-line tools that
+  PARITY used to name as the largest absence: a CLI would have to decide an
+  argument syntax, a file layout and a configuration format on the user's behalf,
+  while an example shows the API doing the work
+- Retrieve Rendered at study and series level: `GET .../studies/{study}/rendered`
+  and `.../studies/{study}/series/{series}/rendered`, with
+  `Client.RetrieveRenderedStudy` and `RetrieveRenderedSeries` to ask for them.
+  The answer is `multipart/related` of one image per instance, and an instance
+  with nothing to render — an SR, a PR, an image whose Pixel Data was never sent
+  — is left out rather than failing the response, because a study is a mixed bag
+  and a 406 for the whole of it because one series holds a report would make the
+  transaction useless on a real archive. A resource where *nothing* renders is
+  406, the same answer an unrenderable single instance gets
+- The Search parameters that are about the answer rather than the match, in
+  `dicomweb.MemoryStore`: `limit`, `offset`, `fuzzymatching` and `includefield`
+  (`all`, a keyword, a tag, or a comma-separated list of either, repeated across
+  parameters as the standard allows). `limit` and `offset` trim an ordered result
+  set; `fuzzymatching` makes the free-text VRs match on a case-insensitive
+  substring while dates, numbers and UIDs stay exact, because `2026` is not a
+  fuzzy `20260101`; `includefield` adds attributes to the level's projection, and
+  `all` returns the stored dataset as it is. The reference store now keeps the
+  whole dataset for that last one, where it used to index ten attributes and
+  could not answer any other name
+- `dicomweb.ErrBadQuery`, which a `Store` returns when a Search parameter cannot
+  be honoured — `limit=ten`, a negative `offset`, an `includefield` that names no
+  attribute, a `fuzzymatching` that is not a boolean — and which `Handler`
+  answers with 400 instead of 500. A store that returned nothing for a
+  parameter it did not understand answered with a different result set than the
+  one asked for, and a requestor cannot tell that from a smaller archive
+- `ServerConfig.RequiredCallingAETitles`, the calling titles an SCP serves: any
+  other requestor is rejected with A-ASSOCIATE-RJ (calling-AE-title-not-
+  recognized). Empty is the default and serves any peer that names itself, which
+  is pynetdicom's `require_calling_aet` unset. It is configuration rather than an
+  `Admit` closure because it is the protocol's own refusal — nothing runs,
+  nothing is counted, and the peer is told why in the PDU that ends the
+  negotiation — while `Admit` stays for decisions that need more than a name
+- `ae.EventReportRequest.TransferSyntax`, which states what
+  `EventInformation`'s bytes are, so the same rule applies to an event report as
+  to a store: bytes must match the context that carries them, and a godicom
+  Dataset is encoded into it
+- `gonetdicom.AttrSOPInstance` and `gonetdicom.AttrTransferSyntax`, the log
+  attributes the refusal above and the counted sub-operation failure carry
+
 ## [0.22.0] - 2026-11-15
 
 A retrieval no longer exists as a batch. The three handlers that answer with a

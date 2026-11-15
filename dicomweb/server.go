@@ -15,6 +15,15 @@ import (
 )
 
 // Store is the origin-server backing store for the Studies Service.
+//
+// The three Search methods receive the request's query parameters verbatim,
+// because which attributes a level matches on and which of them it can answer
+// with are the store's knowledge, not the web layer's: the handler holds no data
+// dictionary. That includes the parameters about the answer rather than the
+// match — limit, offset, fuzzymatching and includefield — which are
+// parseQIDOOptions' terms and MemoryStore's to honour; a store that cannot
+// honour one returns ErrBadQuery and the request is answered 400 rather than
+// with a different answer than the one asked for.
 type Store interface {
 	// GetInstance returns Part 10 bytes for the given UIDs.
 	GetInstance(studyUID, seriesUID, instanceUID string) ([]byte, error)
@@ -126,17 +135,12 @@ func (s *MemoryStore) PutInstance(studyUID string, part10 []byte) error {
 	raw := make([]byte, len(part10))
 	copy(raw, part10)
 
-	meta := godicom.NewDataset()
-	for _, tagName := range []string{
-		"SOPClassUID", "SOPInstanceUID",
-		"StudyInstanceUID", "SeriesInstanceUID",
-		"PatientID", "PatientName", "StudyDate", "Modality",
-		"SeriesNumber", "InstanceNumber",
-	} {
-		if elem, ok := fd.Get(godicom.MustTag(tagName)); ok {
-			meta.Set(elem)
-		}
-	}
+	// The whole dataset, not a fixed list of searchable attributes: a Search
+	// response may carry any attribute the requestor names with includefield,
+	// and a store that indexed four of them could not answer that. This is the
+	// reference store — an archive with a real database indexes what it needs
+	// and answers includefield from the query — so it keeps what it was given.
+	meta := fd.Clone()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -206,6 +210,10 @@ func (s *MemoryStore) PutNonPatientInstance(category, uid string, part10 []byte)
 }
 
 func (s *MemoryStore) SearchNonPatientInstances(category string, query url.Values) ([]*godicom.Dataset, error) {
+	opts, err := parseQIDOOptions(query)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -225,7 +233,7 @@ func (s *MemoryStore) SearchNonPatientInstances(category string, query url.Value
 		b, _ := out[j].GetString(godicom.MustTag("SOPInstanceUID"))
 		return a < b
 	})
-	return out, nil
+	return page(out, opts), nil
 }
 
 // matchNonPatientQuery compares a stored instance against the query parameters of
@@ -253,29 +261,43 @@ func matchNonPatientQuery(meta *godicom.Dataset, query url.Values) bool {
 }
 
 func (s *MemoryStore) SearchStudies(query url.Values) ([]*godicom.Dataset, error) {
+	opts, err := parseQIDOOptions(query)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// Sorted keys, because a study's response may now carry the whole stored
+	// dataset (includefield=all) and the first instance seen would otherwise
+	// decide which one a caller gets — a map iteration, i.e. a different answer
+	// per run.
 	seen := map[string]*godicom.Dataset{}
-	for key, meta := range s.meta {
+	for _, key := range sortedKeys(s.meta) {
+		meta := s.meta[key]
 		study := uidFromMeta(meta, key, 0, "StudyInstanceUID")
-		if !matchQuery(meta, query, "PatientID", "StudyInstanceUID", "PatientName", "StudyDate") {
+		if !matchQuery(meta, query, opts.fuzzy, "PatientID", "StudyInstanceUID", "PatientName", "StudyDate") {
 			continue
 		}
 		if _, ok := seen[study]; ok {
 			continue
 		}
-		seen[study] = projectMeta(meta, "StudyInstanceUID", "PatientID", "PatientName", "StudyDate")
+		seen[study] = project(meta, opts, "StudyInstanceUID", "PatientID", "PatientName", "StudyDate")
 	}
-	return mapValues(seen), nil
+	return page(mapValues(seen), opts), nil
 }
 
 func (s *MemoryStore) SearchSeries(studyUID string, query url.Values) ([]*godicom.Dataset, error) {
+	opts, err := parseQIDOOptions(query)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	seen := map[string]*godicom.Dataset{}
-	for key, meta := range s.meta {
+	for _, key := range sortedKeys(s.meta) {
+		meta := s.meta[key]
 		study := uidFromMeta(meta, key, 0, "StudyInstanceUID")
 		if studyUID != "" && study != studyUID {
 			continue
@@ -285,20 +307,23 @@ func (s *MemoryStore) SearchSeries(studyUID string, query url.Values) ([]*godico
 		// study's series against /series asks for it here. Ignoring the key
 		// would answer with every series in the archive, which is a superset the
 		// requestor has no way to notice.
-		if !matchQuery(meta, query, "StudyInstanceUID", "SeriesInstanceUID", "Modality", "SeriesNumber") {
+		if !matchQuery(meta, query, opts.fuzzy, "StudyInstanceUID", "SeriesInstanceUID", "Modality", "SeriesNumber") {
 			continue
 		}
 		series := uidFromMeta(meta, key, 1, "SeriesInstanceUID")
 		if _, ok := seen[series]; ok {
 			continue
 		}
-		ds := projectMeta(meta, "StudyInstanceUID", "SeriesInstanceUID", "Modality", "SeriesNumber")
-		seen[series] = ds
+		seen[series] = project(meta, opts, "StudyInstanceUID", "SeriesInstanceUID", "Modality", "SeriesNumber")
 	}
-	return mapValues(seen), nil
+	return page(mapValues(seen), opts), nil
 }
 
 func (s *MemoryStore) SearchInstances(studyUID, seriesUID string, query url.Values) ([]*godicom.Dataset, error) {
+	opts, err := parseQIDOOptions(query)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -317,13 +342,13 @@ func (s *MemoryStore) SearchInstances(studyUID, seriesUID string, query url.Valu
 		// with StudyInstanceUID or SeriesInstanceUID is how a requestor asks for
 		// one parent's instances. Dropping those keys would answer with the whole
 		// archive.
-		if !matchQuery(meta, query,
+		if !matchQuery(meta, query, opts.fuzzy,
 			"StudyInstanceUID", "SeriesInstanceUID",
 			"SOPInstanceUID", "SOPClassUID", "InstanceNumber", "Modality",
 		) {
 			continue
 		}
-		out = append(out, projectMeta(meta,
+		out = append(out, project(meta, opts,
 			"StudyInstanceUID", "SeriesInstanceUID",
 			"SOPInstanceUID", "SOPClassUID", "InstanceNumber", "Modality",
 		))
@@ -333,7 +358,7 @@ func (s *MemoryStore) SearchInstances(studyUID, seriesUID string, query url.Valu
 		b, _ := out[j].GetString(godicom.MustTag("SOPInstanceUID"))
 		return a < b
 	})
-	return out, nil
+	return page(out, opts), nil
 }
 
 func uidFromMeta(meta *godicom.Dataset, key string, part int, tagName string) string {
@@ -347,16 +372,36 @@ func uidFromMeta(meta *godicom.Dataset, key string, part int, tagName string) st
 	return ""
 }
 
-func matchQuery(meta *godicom.Dataset, query url.Values, keys ...string) bool {
+// matchQuery compares a stored dataset against the query parameters of a Search
+// request.
+//
+// The keys are the attributes the level answers by, and the query parser has
+// already been through the ones that are about the answer rather than the match
+// (see parseQIDOOptions). fuzzy makes the free-text VRs match on a
+// case-insensitive substring, which is what 8.3.4.3 asks for; the other VRs are
+// compared exactly either way.
+func matchQuery(meta *godicom.Dataset, query url.Values, fuzzy bool, keys ...string) bool {
 	for _, key := range keys {
 		want := query.Get(key)
 		if want == "" {
 			continue
 		}
-		got, _ := meta.GetString(godicom.MustTag(key))
-		if got != want {
+		tag := godicom.MustTag(key)
+		elem, ok := meta.Get(tag)
+		if !ok {
 			return false
 		}
+		got, ok := meta.GetString(tag)
+		if !ok {
+			return false
+		}
+		if got == want {
+			continue
+		}
+		if fuzzy && fuzzyVR(elem.VR) && strings.Contains(strings.ToLower(got), strings.ToLower(want)) {
+			continue
+		}
+		return false
 	}
 	return true
 }
@@ -369,6 +414,17 @@ func projectMeta(meta *godicom.Dataset, tags ...string) *godicom.Dataset {
 		}
 	}
 	return ds
+}
+
+// sortedKeys returns a map's keys in order, for the loops that have to pick one
+// dataset out of several that describe the same entity.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func mapValues(m map[string]*godicom.Dataset) []*godicom.Dataset {
@@ -474,6 +530,9 @@ func Handler(store Store, prefix string, opts ...HandlerOption) http.Handler {
 		// GET /studies/{study}/metadata
 		case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "metadata":
 			handleWADOManyMetadata(w, r, store, prefix, parts[0], "")
+		// GET /studies/{study}/rendered
+		case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "rendered":
+			handleWADORenderedMany(w, r, store, parts[0], "")
 		// GET /studies/{study}/series
 		case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "series":
 			matches, err := store.SearchSeries(parts[0], r.URL.Query())
@@ -485,6 +544,9 @@ func Handler(store Store, prefix string, opts ...HandlerOption) http.Handler {
 		// GET /studies/{study}/series/{series}
 		case r.Method == http.MethodGet && len(parts) == 3 && parts[1] == "series":
 			handleWADOMany(w, r, store, parts[0], parts[2])
+		// GET /studies/{study}/series/{series}/rendered
+		case r.Method == http.MethodGet && len(parts) == 4 && parts[1] == "series" && parts[3] == "rendered":
+			handleWADORenderedMany(w, r, store, parts[0], parts[2])
 		// GET /studies/{study}/series/{series}/metadata
 		case r.Method == http.MethodGet && len(parts) == 4 && parts[1] == "series" && parts[3] == "metadata":
 			handleWADOManyMetadata(w, r, store, prefix, parts[0], parts[2])
@@ -549,6 +611,13 @@ func splitPath(path string) []string {
 
 func writeQIDO(w http.ResponseWriter, r *http.Request, matches []*godicom.Dataset, err error) {
 	if err != nil {
+		// A request the store could not honour is the requestor's mistake, not
+		// a server fault: PS3.18 8.3.4.2 wants it answered, not hidden behind a
+		// 500 that reads as "the archive is broken".
+		if errors.Is(err, ErrBadQuery) {
+			respondError(w, r, "qido: search", err.Error(), http.StatusBadRequest, err)
+			return
+		}
 		respondError(w, r, "qido: search", "search failed", http.StatusInternalServerError, err)
 		return
 	}
@@ -750,6 +819,65 @@ func handleWADORendered(w http.ResponseWriter, r *http.Request, store Store, stu
 	}
 	w.Header().Set("Content-Type", mediaType)
 	_, _ = w.Write(body)
+}
+
+// handleWADORenderedMany answers Retrieve Rendered for a study (series empty) or
+// a series: one part per instance, in the media type the request asked for.
+//
+// An instance with nothing to render — an SR, an PR, an image whose Pixel Data
+// was never sent — is left out instead of failing the response. A study is a
+// mixed bag by nature, and the requestor asked for pictures of it rather than for
+// it to consist of them; answering 406 for the whole study because one series
+// holds a Structured Report would make the transaction useless on real archives.
+// What is *not* tolerated is having nothing to send: then the answer is 406, and
+// the cause is the first instance's.
+func handleWADORenderedMany(w http.ResponseWriter, r *http.Request, store Store, study, series string) {
+	parts, err := store.ListInstances(study, series)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		respondError(w, r, "wado: list instances", "retrieve failed", http.StatusInternalServerError, err)
+		return
+	}
+	opts := parseRenderOptions(r.Header.Get("Accept"), r.URL.Query())
+	rendered := make([][]byte, 0, len(parts))
+	var (
+		mediaType string
+		firstErr  error
+	)
+	for _, raw := range parts {
+		mt, body, err := RenderInstance(raw, opts)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		mediaType = mt
+		rendered = append(rendered, body)
+	}
+	if len(rendered) == 0 {
+		// Every stored instance was a property of the resource, not of the
+		// request: this is the same 406 an unrenderable single instance gets.
+		respondError(w, r, "wado: render instances", "cannot render this resource as requested", http.StatusNotAcceptable, firstErr)
+		return
+	}
+	if skipped := len(parts) - len(rendered); skipped > 0 {
+		// The answer is a subset of what was asked for, which the requestor
+		// cannot tell from a study that holds this many images. Say so on the
+		// server side; the log is where an operator can find out why.
+		gonetdicom.LoggerFromContext(r.Context()).
+			With(gonetdicom.AttrComponent, gonetdicom.ComponentDICOMweb).
+			DebugContext(r.Context(), "wado: rendered resource",
+				gonetdicom.AttrMethod, r.Method,
+				gonetdicom.AttrURL, r.URL.Path,
+				"instances", len(parts),
+				"skipped", skipped,
+				"err", firstErr)
+	}
+	_ = writeRenderedParts(w, rendered, mediaType)
 }
 
 func handleWADOBulkData(w http.ResponseWriter, r *http.Request, store Store, study, series, instance string) {

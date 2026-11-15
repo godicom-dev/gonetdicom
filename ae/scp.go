@@ -111,6 +111,23 @@ type ServerConfig struct {
 	// promiscuous SCP — accepting any name makes it impossible for a peer to
 	// detect that it is talking to the wrong endpoint.
 	AllowAnyCalledAETitle bool
+	// RequiredCallingAETitles, when non-empty, lists the Calling AE Titles this
+	// SCP serves; an association from any other is rejected with A-ASSOCIATE-RJ
+	// (calling-AE-title-not-recognized). Empty accepts any calling title that is
+	// not padding, which is the default — pynetdicom's require_calling_aet,
+	// unset.
+	//
+	// It is a configuration field rather than something Admit expresses because
+	// it is the protocol's own refusal, not application policy: nothing runs,
+	// nothing is counted, and the peer is told why in the PDU that ends the
+	// negotiation. Use Admit for decisions that need more than a name — a tenant,
+	// a quota, a maintenance window — and this for "who may address me at all".
+	//
+	// A Calling AE Title identifies, it does not authenticate: a peer that claims
+	// one of these names is believed. Pair it with User Identity (Config.
+	// RequestUserIdentity on the requestor side, ServerConfig.OnUserIdentity
+	// here) when the difference matters.
+	RequiredCallingAETitles []string
 	// AcceptedAbstractSyntaxes lists SOP Class UIDs the SCP will accept
 	// (plus Verification is always accepted for C-ECHO). Prefer
 	// AllStorageSOPClasses for a generic Storage SCP (pynetdicom
@@ -1484,9 +1501,20 @@ func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg Server
 // honoured at the next sub-operation boundary; decoding it as a C-STORE-RSP is
 // what used to fail the association.
 func scpPerformGetStore(ctx context.Context, conn net.Conn, r *assocReader, accepted map[byte]acceptedContext, peerMax uint32, store StoreRequest, storeMsgID, getMsgID uint16) (status uint16, cancelled bool, err error) {
-	storePCID, storeTS, ok := contextByAbstractAccepted(accepted, store.AffectedSOPClassUID)
+	storePCID, storeTS, ok := contextByAbstractAccepted(accepted, store.AffectedSOPClassUID, store.TransferSyntax, store.Data != nil)
 	if !ok {
-		return 0, false, fmt.Errorf("ae: C-GET store missing presentation context for %s", store.AffectedSOPClassUID)
+		// There is no context that can carry these bytes: the store cannot be
+		// performed. Count it failed and keep the association — PS3.4 Table
+		// C.4-3 has the SCP report one instance the peer can retry, and ending
+		// the retrieval over one instance that could not be offered tells the
+		// peer less, not more.
+		gonetdicom.LoggerFromContext(ctx).WarnContext(ctx,
+			"C-GET sub-operation has no presentation context for its transfer syntax",
+			gonetdicom.AttrSOPClass, store.AffectedSOPClassUID,
+			gonetdicom.AttrSOPInstance, store.AffectedSOPInstanceUID,
+			gonetdicom.AttrTransferSyntax, store.TransferSyntax,
+		)
+		return dcmstatus.ProcessingFailure, false, nil
 	}
 	payload := store.Dataset
 	if store.Data != nil {
@@ -1586,11 +1614,49 @@ func writeRetrieveResponses(ctx context.Context, conn net.Conn, pcid byte, peerM
 	return nil
 }
 
-func contextByAbstractAccepted(accepted map[byte]acceptedContext, uid string) (byte, string, bool) {
+// contextByAbstractAccepted picks the presentation context this side sends a
+// dataset on.
+//
+// ts is the syntax the bytes are in, or "" when the caller did not say;
+// encodes says this side writes the payload, so the context's syntax is what
+// the encoder will produce. A payload that is already bytes can only go out on
+// an exact match: the peer decodes under the context's syntax, and the two
+// little-endian syntaxes are not close enough to pass — implicit has no VR
+// field, so explicit bytes read as implicit lose their first two value bytes to
+// a length prefix, and implicit bytes read as explicit take a length prefix for
+// a VR.
+//
+// The choice is the lowest context ID among the candidates. It used to be
+// whichever the map yielded first: an association proposing one SOP Class in
+// two storage syntaxes — which is what a requestor that can accept either
+// does — sent a C-GET's stores in a syntax that varied between runs of the same
+// program.
+func contextByAbstractAccepted(accepted map[byte]acceptedContext, uid, ts string, encodes bool) (byte, string, bool) {
+	var (
+		exactID   byte
+		exactTS   string
+		haveExact bool
+		anyID     byte
+		anyTS     string
+		haveAny   bool
+	)
 	for id, ac := range accepted {
-		if ac.AbstractSyntax == uid {
-			return id, ac.TransferSyntax, true
+		if ac.AbstractSyntax != uid {
+			continue
 		}
+		if ts != "" && ac.TransferSyntax == ts && (!haveExact || id < exactID) {
+			exactID, exactTS, haveExact = id, ac.TransferSyntax, true
+			continue
+		}
+		if !haveAny || id < anyID {
+			anyID, anyTS, haveAny = id, ac.TransferSyntax, true
+		}
+	}
+	if haveExact {
+		return exactID, exactTS, true
+	}
+	if haveAny && (ts == "" || encodes) {
+		return anyID, anyTS, true
 	}
 	return 0, "", false
 }
@@ -1752,7 +1818,7 @@ func scpHandleNEventReport(ctx context.Context, conn net.Conn, cfg ServerConfig,
 }
 
 func scpSendEventReport(ctx context.Context, conn net.Conn, r *assocReader, accepted map[byte]acceptedContext, peerMax uint32, req *EventReportRequest) error {
-	pcid, ts, ok := contextByAbstractAccepted(accepted, req.AffectedSOPClassUID)
+	pcid, ts, ok := contextByAbstractAccepted(accepted, req.AffectedSOPClassUID, req.TransferSyntax, req.EventInformationData != nil)
 	if !ok {
 		return fmt.Errorf("ae: no context for N-EVENT-REPORT %s", req.AffectedSOPClassUID)
 	}

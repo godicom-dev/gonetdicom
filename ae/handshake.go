@@ -40,12 +40,34 @@ func checkAETitles(ctx context.Context, conn net.Conn, cfg ServerConfig, rq *pdu
 			pdu.RejectSourceServiceUser, pdu.RejectReasonCallingAENotRecognized,
 			"empty Calling AE Title")
 	}
+	if !cfg.acceptsCallingAETitle(rq.CallingAETitle) {
+		return reject(ctx, conn, cfg, rq,
+			pdu.RejectSourceServiceUser, pdu.RejectReasonCallingAENotRecognized,
+			fmt.Sprintf("Calling AE Title %q is not one this SCP serves", rq.CallingAETitle))
+	}
 	if !cfg.acceptsCalledAETitle(rq.CalledAETitle) {
 		return reject(ctx, conn, cfg, rq,
 			pdu.RejectSourceServiceUser, pdu.RejectReasonCalledAENotRecognized,
 			fmt.Sprintf("Called AE Title %q is not %q", rq.CalledAETitle, cfg.AETitle))
 	}
 	return nil
+}
+
+// acceptsCallingAETitle reports whether the requestor is one this SCP serves.
+// An empty list is "any title that is not padding", which the caller has already
+// checked: refusing the padding case there keeps the two reasons distinct, since
+// "you did not say who you are" and "I do not serve you" are different answers.
+func (c ServerConfig) acceptsCallingAETitle(calling string) bool {
+	if len(c.RequiredCallingAETitles) == 0 {
+		return true
+	}
+	calling = normalizeAETitle(calling)
+	for _, want := range c.RequiredCallingAETitles {
+		if calling == normalizeAETitle(want) {
+			return true
+		}
+	}
+	return false
 }
 
 // acceptsCalledAETitle reports whether called names this SCP.

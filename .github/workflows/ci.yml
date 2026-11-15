@@ -78,6 +78,7 @@ jobs:
         include:
           - {pkg: ./pdu, target: FuzzRead}
           - {pkg: ./pdu, target: FuzzDecodePDataTF}
+          - {pkg: ./pdu, target: FuzzFragmentReader}
           - {pkg: ./dimse, target: FuzzDecodeElements}
           - {pkg: ./dimse, target: FuzzCommandDecoders}
     name: fuzz (${{ matrix.target }})
@@ -102,6 +103,24 @@ jobs:
           name: fuzz-${{ matrix.target }}-corpus
           path: ${{ matrix.pkg }}/testdata/fuzz
           if-no-files-found: ignore
+
+  # PARITY quotes timings and allocation counts, and a benchmark that stops
+  # compiling is how those claims go stale without anyone noticing. This runs
+  # every benchmark once and asserts nothing about the numbers: a shared runner
+  # cannot say what a duration should be, so the gate is "it still runs".
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Benchmarks run
+        run: go test ./... -run '^$' -bench . -benchtime 1x
 
   lint:
     runs-on: ubuntu-latest

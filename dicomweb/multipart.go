@@ -46,6 +46,95 @@ func writeDICOMParts(w http.ResponseWriter, parts [][]byte) error {
 	return mw.Close()
 }
 
+func renderedMultipartContentType(boundary, mediaType string) string {
+	return fmt.Sprintf(`%s; type="%s"; boundary=%s`, MediaTypeMultipart, mediaType, boundary)
+}
+
+// writeRenderedParts writes already-encoded images as a multipart/related body
+// whose parts are all of one image media type. Each part is one instance rendered
+// the way the request asked for. Callers must not have written a body before
+// calling this.
+//
+// type is a single media type rather than "*": this is one answer to one request,
+// and a response that mixed JPEG and PNG parts would leave the requestor parsing
+// each part's Content-Type to find out what it got.
+func writeRenderedParts(w http.ResponseWriter, parts [][]byte, mediaType string) error {
+	mw := multipart.NewWriter(w)
+	w.Header().Set("Content-Type", renderedMultipartContentType(mw.Boundary(), mediaType))
+	for i, part := range parts {
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Type", mediaType)
+		h.Set("Content-Transfer-Encoding", "binary")
+		pw, err := mw.CreatePart(h)
+		if err != nil {
+			return fmt.Errorf("dicomweb: rendered part %d: %w", i, err)
+		}
+		if _, err := pw.Write(part); err != nil {
+			return err
+		}
+	}
+	return mw.Close()
+}
+
+// readRenderedParts splits a Retrieve Rendered response into its image parts and
+// reports the media type they are in. A body that is one image rather than a
+// multipart is returned as a single part, because a server that answers a
+// one-instance request with a bare image is answering the same request.
+func readRenderedParts(body io.Reader, contentType string) (mediaType string, parts [][]byte, err error) {
+	mt, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return "", nil, fmt.Errorf("dicomweb: Content-Type: %w", err)
+	}
+	if strings.HasPrefix(mt, "image/") {
+		b, err := io.ReadAll(body)
+		if err != nil {
+			return "", nil, err
+		}
+		return mt, [][]byte{b}, nil
+	}
+	if mt != MediaTypeMultipart && !strings.HasPrefix(mt, "multipart/") {
+		return "", nil, fmt.Errorf("dicomweb: unsupported Content-Type %q", contentType)
+	}
+	boundary := params["boundary"]
+	if boundary == "" {
+		return "", nil, fmt.Errorf("dicomweb: multipart missing boundary")
+	}
+	mr := multipart.NewReader(body, boundary)
+	for {
+		p, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", nil, err
+		}
+		partType := p.Header.Get("Content-Type")
+		partMediaType, _, mErr := mime.ParseMediaType(partType)
+		if partType != "" && (mErr != nil || !strings.HasPrefix(partMediaType, "image/")) {
+			_, _ = io.Copy(io.Discard, p)
+			continue
+		}
+		b, err := io.ReadAll(p)
+		if err != nil {
+			return "", nil, err
+		}
+		// The parts are all one media type (see writeRenderedParts); the first
+		// part that says so settles it, and a part with no Content-Type of its
+		// own leaves it to the multipart's type parameter.
+		if mediaType == "" && partMediaType != "" {
+			mediaType = partMediaType
+		}
+		parts = append(parts, b)
+	}
+	if len(parts) == 0 {
+		return "", nil, fmt.Errorf("dicomweb: multipart contained no image parts")
+	}
+	if mediaType == "" {
+		mediaType = params["type"]
+	}
+	return mediaType, parts, nil
+}
+
 // writeFrameParts writes Retrieve Frames as multipart/related of
 // application/octet-stream. Each part is one requested frame in the instance's
 // transfer syntax. Callers must not have written a body before calling this.

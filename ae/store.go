@@ -14,14 +14,24 @@ import (
 //
 // Three ways to supply the dataset, in the order they take precedence:
 //
-//	Data     — already encoded bytes
-//	Dataset  — a godicom Dataset, encoded here with the negotiated transfer syntax
+//	Data     — a godicom Dataset, encoded here with the negotiated transfer syntax
+//	Dataset  — bytes that are already encoded
 //	Source   — bytes that are opened and read as they go out
 //
 // Data takes precedence over Dataset, which takes precedence over Source. Use
 // Source for an instance that should not be resident: a Part 10 file's dataset
 // is the case it was written for, and it is the only one of the three whose
 // memory cost does not follow the instance size.
+//
+// TransferSyntax states what those bytes are. For Dataset and Source it is
+// checked rather than trusted: the bytes must be in the syntax of the
+// presentation context that carries them, and a peer that accepted only the
+// other little-endian syntax — which negotiates, since the two differ only in
+// the VR field — gets ErrTransferSyntaxMismatch instead of bytes labelled with
+// a syntax they are not in. Data is exempt, because the encoder writes whatever
+// syntax the context declares. An empty TransferSyntax with pre-encoded bytes
+// means the caller takes that responsibility; a requestor that read the
+// accepted contexts itself is the case that wants it.
 type StoreRequest struct {
 	AffectedSOPClassUID    string
 	AffectedSOPInstanceUID string
@@ -234,6 +244,17 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 	pc, ok := a.contextForStore(req.AffectedSOPClassUID, req.TransferSyntax)
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNoContext, req.AffectedSOPClassUID)
+	}
+	// A pre-encoded dataset is bytes in the syntax the caller stated. When the
+	// acceptor offered no context for that syntax but did offer the other
+	// little-endian one, contextForStore picks it — they are the same layout
+	// apart from the VR field — and those bytes would then go out on a context
+	// that announces a syntax they are not in. Refusing is the honest answer:
+	// the caller can pass Data and let the encoder write the negotiated
+	// syntax, which is the only way to convert without reading the dataset.
+	if req.Data == nil && req.TransferSyntax != "" && pc.TransferSyntax != req.TransferSyntax {
+		return nil, fmt.Errorf("%w: context %d is %s, dataset is %s; pass Data to re-encode",
+			ErrTransferSyntaxMismatch, pc.ID, pc.TransferSyntax, req.TransferSyntax)
 	}
 
 	payload := req.Dataset
