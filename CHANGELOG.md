@@ -5,7 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.22.0] - 2026-11-15
+
+A retrieval no longer exists as a batch. The three handlers that answer with a
+set — C-FIND's matches, C-GET's and C-MOVE's sub-operations — return iterators
+now, so a match is encoded and written before the next one is produced, and a
+sub-operation is stored before the handler resumes with the peer's answer in
+hand. What that buys is not a smaller number: a five-hundred-instance retrieval
+holds one instance instead of five hundred, a C-CANCEL is noticed between two
+items because the handler's own loop is what notices it, and a handler that
+counts successful stores counts the ones that happened rather than the ones it
+offered. `iter.Seq2` is the Go spelling of the generator pynetdicom's C-FIND SCP
+has always been — yielding is ranging over a function, a yielded error ends the
+operation the way a raised exception does, and a yield that returns false is
+GeneratorExit — and `docs/adr/0002` is the reasoning, including why the C-MOVE
+fan-out went with it: `op.Outcome` is written after the store and before the
+yield returns, so a handler cannot resume with a store still in flight. The
+sending side got the same treatment: `StoreRequest.Source` reads the dataset one
+fragment at a time as the C-STORE-RQ goes out, so an instance that is already a
+file on disk never becomes a `[]byte` at all, and the two encoders are pinned
+against each other so the wire format did not change. The rest of the release is
+the server describing itself: `AcceptedContexts` states what a SOP Class is
+served in and what it is passed through in, `RejectedContexts` and
+`NoContextError` say why a context was refused instead of leaving the requestor
+to guess, and `NewServer` keeps the registry that makes a shutdown mean every
+association rather than the listener.
 
 ### Added
 - `ae.NewServer`, an SCP that keeps a registry of the associations it is serving:
