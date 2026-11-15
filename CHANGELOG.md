@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   association. PS3.4 Table C.4-3 asks the SCP to report the instances it could
   not deliver; one instance the peer may retry is a better answer than a
   retrieval that stops without one
+- Study and series searches walk their instances in UID order. The response may
+  now carry the whole stored dataset (`includefield=all`), and which instance's
+  copy a study or series reported used to be whichever a Go map yielded first
 - C-GET stores and N-EVENT-REPORT payloads pick their presentation context by
   context ID among the candidates. The choice used to be whichever entry a Go
   map yielded first, so an association proposing one SOP Class in two storage
@@ -30,6 +33,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   program
 
 ### Added
+- The Search parameters that are about the answer rather than the match, in
+  `dicomweb.MemoryStore`: `limit`, `offset`, `fuzzymatching` and `includefield`
+  (`all`, a keyword, a tag, or a comma-separated list of either, repeated across
+  parameters as the standard allows). `limit` and `offset` trim an ordered result
+  set; `fuzzymatching` makes the free-text VRs match on a case-insensitive
+  substring while dates, numbers and UIDs stay exact, because `2026` is not a
+  fuzzy `20260101`; `includefield` adds attributes to the level's projection, and
+  `all` returns the stored dataset as it is. The reference store now keeps the
+  whole dataset for that last one, where it used to index ten attributes and
+  could not answer any other name
+- `dicomweb.ErrBadQuery`, which a `Store` returns when a Search parameter cannot
+  be honoured — `limit=ten`, a negative `offset`, an `includefield` that names no
+  attribute, a `fuzzymatching` that is not a boolean — and which `Handler`
+  answers with 400 instead of 500. A store that returned nothing for a
+  parameter it did not understand answered with a different result set than the
+  one asked for, and a requestor cannot tell that from a smaller archive
 - `ServerConfig.RequiredCallingAETitles`, the calling titles an SCP serves: any
   other requestor is rejected with A-ASSOCIATE-RJ (calling-AE-title-not-
   recognized). Empty is the default and serves any peer that names itself, which

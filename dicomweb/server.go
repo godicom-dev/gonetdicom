@@ -15,6 +15,15 @@ import (
 )
 
 // Store is the origin-server backing store for the Studies Service.
+//
+// The three Search methods receive the request's query parameters verbatim,
+// because which attributes a level matches on and which of them it can answer
+// with are the store's knowledge, not the web layer's: the handler holds no data
+// dictionary. That includes the parameters about the answer rather than the
+// match — limit, offset, fuzzymatching and includefield — which are
+// parseQIDOOptions' terms and MemoryStore's to honour; a store that cannot
+// honour one returns ErrBadQuery and the request is answered 400 rather than
+// with a different answer than the one asked for.
 type Store interface {
 	// GetInstance returns Part 10 bytes for the given UIDs.
 	GetInstance(studyUID, seriesUID, instanceUID string) ([]byte, error)
@@ -126,17 +135,12 @@ func (s *MemoryStore) PutInstance(studyUID string, part10 []byte) error {
 	raw := make([]byte, len(part10))
 	copy(raw, part10)
 
-	meta := godicom.NewDataset()
-	for _, tagName := range []string{
-		"SOPClassUID", "SOPInstanceUID",
-		"StudyInstanceUID", "SeriesInstanceUID",
-		"PatientID", "PatientName", "StudyDate", "Modality",
-		"SeriesNumber", "InstanceNumber",
-	} {
-		if elem, ok := fd.Get(godicom.MustTag(tagName)); ok {
-			meta.Set(elem)
-		}
-	}
+	// The whole dataset, not a fixed list of searchable attributes: a Search
+	// response may carry any attribute the requestor names with includefield,
+	// and a store that indexed four of them could not answer that. This is the
+	// reference store — an archive with a real database indexes what it needs
+	// and answers includefield from the query — so it keeps what it was given.
+	meta := fd.Dataset.Clone()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -206,6 +210,10 @@ func (s *MemoryStore) PutNonPatientInstance(category, uid string, part10 []byte)
 }
 
 func (s *MemoryStore) SearchNonPatientInstances(category string, query url.Values) ([]*godicom.Dataset, error) {
+	opts, err := parseQIDOOptions(query)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -225,7 +233,7 @@ func (s *MemoryStore) SearchNonPatientInstances(category string, query url.Value
 		b, _ := out[j].GetString(godicom.MustTag("SOPInstanceUID"))
 		return a < b
 	})
-	return out, nil
+	return page(out, opts), nil
 }
 
 // matchNonPatientQuery compares a stored instance against the query parameters of
@@ -253,29 +261,43 @@ func matchNonPatientQuery(meta *godicom.Dataset, query url.Values) bool {
 }
 
 func (s *MemoryStore) SearchStudies(query url.Values) ([]*godicom.Dataset, error) {
+	opts, err := parseQIDOOptions(query)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// Sorted keys, because a study's response may now carry the whole stored
+	// dataset (includefield=all) and the first instance seen would otherwise
+	// decide which one a caller gets — a map iteration, i.e. a different answer
+	// per run.
 	seen := map[string]*godicom.Dataset{}
-	for key, meta := range s.meta {
+	for _, key := range sortedKeys(s.meta) {
+		meta := s.meta[key]
 		study := uidFromMeta(meta, key, 0, "StudyInstanceUID")
-		if !matchQuery(meta, query, "PatientID", "StudyInstanceUID", "PatientName", "StudyDate") {
+		if !matchQuery(meta, query, opts.fuzzy, "PatientID", "StudyInstanceUID", "PatientName", "StudyDate") {
 			continue
 		}
 		if _, ok := seen[study]; ok {
 			continue
 		}
-		seen[study] = projectMeta(meta, "StudyInstanceUID", "PatientID", "PatientName", "StudyDate")
+		seen[study] = project(meta, opts, "StudyInstanceUID", "PatientID", "PatientName", "StudyDate")
 	}
-	return mapValues(seen), nil
+	return page(mapValues(seen), opts), nil
 }
 
 func (s *MemoryStore) SearchSeries(studyUID string, query url.Values) ([]*godicom.Dataset, error) {
+	opts, err := parseQIDOOptions(query)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	seen := map[string]*godicom.Dataset{}
-	for key, meta := range s.meta {
+	for _, key := range sortedKeys(s.meta) {
+		meta := s.meta[key]
 		study := uidFromMeta(meta, key, 0, "StudyInstanceUID")
 		if studyUID != "" && study != studyUID {
 			continue
@@ -285,20 +307,23 @@ func (s *MemoryStore) SearchSeries(studyUID string, query url.Values) ([]*godico
 		// study's series against /series asks for it here. Ignoring the key
 		// would answer with every series in the archive, which is a superset the
 		// requestor has no way to notice.
-		if !matchQuery(meta, query, "StudyInstanceUID", "SeriesInstanceUID", "Modality", "SeriesNumber") {
+		if !matchQuery(meta, query, opts.fuzzy, "StudyInstanceUID", "SeriesInstanceUID", "Modality", "SeriesNumber") {
 			continue
 		}
 		series := uidFromMeta(meta, key, 1, "SeriesInstanceUID")
 		if _, ok := seen[series]; ok {
 			continue
 		}
-		ds := projectMeta(meta, "StudyInstanceUID", "SeriesInstanceUID", "Modality", "SeriesNumber")
-		seen[series] = ds
+		seen[series] = project(meta, opts, "StudyInstanceUID", "SeriesInstanceUID", "Modality", "SeriesNumber")
 	}
-	return mapValues(seen), nil
+	return page(mapValues(seen), opts), nil
 }
 
 func (s *MemoryStore) SearchInstances(studyUID, seriesUID string, query url.Values) ([]*godicom.Dataset, error) {
+	opts, err := parseQIDOOptions(query)
+	if err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -317,13 +342,13 @@ func (s *MemoryStore) SearchInstances(studyUID, seriesUID string, query url.Valu
 		// with StudyInstanceUID or SeriesInstanceUID is how a requestor asks for
 		// one parent's instances. Dropping those keys would answer with the whole
 		// archive.
-		if !matchQuery(meta, query,
+		if !matchQuery(meta, query, opts.fuzzy,
 			"StudyInstanceUID", "SeriesInstanceUID",
 			"SOPInstanceUID", "SOPClassUID", "InstanceNumber", "Modality",
 		) {
 			continue
 		}
-		out = append(out, projectMeta(meta,
+		out = append(out, project(meta, opts,
 			"StudyInstanceUID", "SeriesInstanceUID",
 			"SOPInstanceUID", "SOPClassUID", "InstanceNumber", "Modality",
 		))
@@ -333,7 +358,7 @@ func (s *MemoryStore) SearchInstances(studyUID, seriesUID string, query url.Valu
 		b, _ := out[j].GetString(godicom.MustTag("SOPInstanceUID"))
 		return a < b
 	})
-	return out, nil
+	return page(out, opts), nil
 }
 
 func uidFromMeta(meta *godicom.Dataset, key string, part int, tagName string) string {
@@ -347,16 +372,36 @@ func uidFromMeta(meta *godicom.Dataset, key string, part int, tagName string) st
 	return ""
 }
 
-func matchQuery(meta *godicom.Dataset, query url.Values, keys ...string) bool {
+// matchQuery compares a stored dataset against the query parameters of a Search
+// request.
+//
+// The keys are the attributes the level answers by, and the query parser has
+// already been through the ones that are about the answer rather than the match
+// (see parseQIDOOptions). fuzzy makes the free-text VRs match on a
+// case-insensitive substring, which is what 8.3.4.3 asks for; the other VRs are
+// compared exactly either way.
+func matchQuery(meta *godicom.Dataset, query url.Values, fuzzy bool, keys ...string) bool {
 	for _, key := range keys {
 		want := query.Get(key)
 		if want == "" {
 			continue
 		}
-		got, _ := meta.GetString(godicom.MustTag(key))
-		if got != want {
+		tag := godicom.MustTag(key)
+		elem, ok := meta.Get(tag)
+		if !ok {
 			return false
 		}
+		got, ok := meta.GetString(tag)
+		if !ok {
+			return false
+		}
+		if got == want {
+			continue
+		}
+		if fuzzy && fuzzyVR(elem.VR) && strings.Contains(strings.ToLower(got), strings.ToLower(want)) {
+			continue
+		}
+		return false
 	}
 	return true
 }
@@ -369,6 +414,17 @@ func projectMeta(meta *godicom.Dataset, tags ...string) *godicom.Dataset {
 		}
 	}
 	return ds
+}
+
+// sortedKeys returns a map's keys in order, for the loops that have to pick one
+// dataset out of several that describe the same entity.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func mapValues(m map[string]*godicom.Dataset) []*godicom.Dataset {
@@ -549,6 +605,13 @@ func splitPath(path string) []string {
 
 func writeQIDO(w http.ResponseWriter, r *http.Request, matches []*godicom.Dataset, err error) {
 	if err != nil {
+		// A request the store could not honour is the requestor's mistake, not
+		// a server fault: PS3.18 8.3.4.2 wants it answered, not hidden behind a
+		// 500 that reads as "the archive is broken".
+		if errors.Is(err, ErrBadQuery) {
+			respondError(w, r, "qido: search", err.Error(), http.StatusBadRequest, err)
+			return
+		}
 		respondError(w, r, "qido: search", "search failed", http.StatusInternalServerError, err)
 		return
 	}
