@@ -32,10 +32,16 @@ type Store interface {
 }
 
 // MemoryStore is an in-memory Store for tests and demos.
+//
+// It also serves the Non-Patient Instance Service: instances stored under a
+// category are kept apart from study instances, because the same SOP Instance UID
+// may legitimately be a colour palette and part of nothing at all.
 type MemoryStore struct {
 	mu        sync.RWMutex
 	instances map[string][]byte // study/series/instance -> Part 10
 	meta      map[string]*godicom.Dataset
+	npi       map[string][]byte // category/instance -> Part 10
+	npiMeta   map[string]*godicom.Dataset
 }
 
 // NewMemoryStore returns an empty MemoryStore.
@@ -43,6 +49,8 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		instances: make(map[string][]byte),
 		meta:      make(map[string]*godicom.Dataset),
+		npi:       make(map[string][]byte),
+		npiMeta:   make(map[string]*godicom.Dataset),
 	}
 }
 
@@ -124,6 +132,113 @@ func (s *MemoryStore) PutInstance(studyUID string, part10 []byte) error {
 	s.instances[key] = raw
 	s.meta[key] = meta
 	return nil
+}
+
+// npiKey is the storage key for a non-patient instance. The category is part of
+// it: a retrieve for /hanging-protocols/{uid} must not be answered by a colour
+// palette that happens to have the same UID.
+func npiKey(category, uid string) string {
+	return category + "/" + uid
+}
+
+// GetNonPatientInstance returns a copy, so a caller cannot rewrite what is stored
+// by writing to what it was given.
+func (s *MemoryStore) GetNonPatientInstance(category, uid string) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	raw, ok := s.npi[npiKey(category, uid)]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	out := make([]byte, len(raw))
+	copy(out, raw)
+	return out, nil
+}
+
+func (s *MemoryStore) PutNonPatientInstance(category, uid string, part10 []byte) error {
+	fd, err := godicom.ReadBytes(part10, nil)
+	if err != nil {
+		return fmt.Errorf("dicomweb: invalid DICOM part: %w", err)
+	}
+	instance, _ := fd.GetString(godicom.MustTag("SOPInstanceUID"))
+	if instance == "" {
+		return fmt.Errorf("dicomweb: instance missing SOP Instance UID")
+	}
+	// A UID in the path is a claim about the instance being stored, not a second
+	// name for it: storing the body under the path UID would file an instance
+	// where its own retrieve URL can never find it again.
+	if uid != "" && uid != instance {
+		return fmt.Errorf("dicomweb: SOPInstanceUID mismatch: body %s path %s", instance, uid)
+	}
+	key := npiKey(category, instance)
+	raw := make([]byte, len(part10))
+	copy(raw, part10)
+
+	// Every element except the bulk ones. PS3.4 gives each of the six categories
+	// its own search attributes, and this package does not carry those tables — so
+	// rather than index a fixed handful of keys and silently fail to match the
+	// rest, the demo store keeps what it can afford to and lets
+	// matchNonPatientQuery compare whatever the caller asks for.
+	meta := godicom.NewDataset()
+	for _, elem := range fd.Iter() {
+		if godicom.BytesVR[elem.VR] {
+			continue
+		}
+		meta.Set(elem)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.npi[key] = raw
+	s.npiMeta[key] = meta
+	return nil
+}
+
+func (s *MemoryStore) SearchNonPatientInstances(category string, query url.Values) ([]*godicom.Dataset, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	prefix := category + "/"
+	out := make([]*godicom.Dataset, 0)
+	for key, meta := range s.npiMeta {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if !matchNonPatientQuery(meta, query) {
+			continue
+		}
+		out = append(out, meta.Clone())
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, _ := out[i].GetString(godicom.MustTag("SOPInstanceUID"))
+		b, _ := out[j].GetString(godicom.MustTag("SOPInstanceUID"))
+		return a < b
+	})
+	return out, nil
+}
+
+// matchNonPatientQuery compares a stored instance against the query parameters of
+// a Search request.
+//
+// A keyword this store cannot resolve is ignored, and one the instance does not
+// carry is not a match: asking whether an instance has an attribute it does not
+// have is answered by the instance, not by the query parser.
+func matchNonPatientQuery(meta *godicom.Dataset, query url.Values) bool {
+	for key := range query {
+		want := query.Get(key)
+		if want == "" {
+			continue
+		}
+		tag, err := godicom.ParseTag(key)
+		if err != nil {
+			continue
+		}
+		got, ok := meta.GetString(tag)
+		if !ok || got != want {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *MemoryStore) SearchStudies(query url.Values) ([]*godicom.Dataset, error) {
@@ -372,6 +487,7 @@ func Handler(store Store, prefix string, opts ...HandlerOption) http.Handler {
 			http.NotFound(w, r)
 		}
 	})
+	registerNonPatient(mux, store, prefix, maxBytes)
 	return mux
 }
 
@@ -402,14 +518,26 @@ func writeQIDO(w http.ResponseWriter, r *http.Request, matches []*godicom.Datase
 }
 
 func handleSTOW(w http.ResponseWriter, r *http.Request, store Store, studyUID string, maxBytes int64) {
-	// The body is buffered whole and then handed to a Store that usually copies it,
-	// so its size is this server's memory use, decided by whoever posted it.
-	// Content-Length is checked first because it costs nothing and catches the
-	// honest client; MaxBytesReader catches the one that lies or sends chunked.
+	storeInstances(w, r, "stow: put instance", maxBytes, func(part []byte) error {
+		return store.PutInstance(studyUID, part)
+	})
+}
+
+// storeInstances reads one Store request body and hands each DICOM part to put,
+// then answers with the SOP Class / SOP Instance reference list the Store
+// Transaction response is made of (PS3.18 Annex I).
+//
+// The Studies Service and the Non-Patient Instance Service store instances this
+// way, and the body bound is the part worth not writing twice: the request is
+// unauthenticated and buffered whole, so its size is this server's memory use as
+// decided by whoever posted it. Content-Length is checked first because it costs
+// nothing and catches the honest client; MaxBytesReader catches the one that
+// lies or sends chunked.
+func storeInstances(w http.ResponseWriter, r *http.Request, op string, maxBytes int64, put func([]byte) error) {
 	body := r.Body
 	if maxBytes > 0 {
 		if r.ContentLength > maxBytes {
-			respondError(w, r, "stow: request body", "request body too large", http.StatusRequestEntityTooLarge,
+			respondError(w, r, op, "request body too large", http.StatusRequestEntityTooLarge,
 				fmt.Errorf("%w: Content-Length %d over %d", ErrTooLarge, r.ContentLength, maxBytes))
 			return
 		}
@@ -419,42 +547,55 @@ func handleSTOW(w http.ResponseWriter, r *http.Request, store Store, studyUID st
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) || errors.Is(err, ErrTooLarge) {
-			respondError(w, r, "stow: request body", "request body too large", http.StatusRequestEntityTooLarge, err)
+			respondError(w, r, op, "request body too large", http.StatusRequestEntityTooLarge, err)
 			return
 		}
 		// This message describes the request's own Content-Type and multipart
 		// framing, which is the requestor's to fix and holds nothing of ours.
-		respondError(w, r, "stow: read parts", err.Error(), http.StatusBadRequest, err)
+		respondError(w, r, op, err.Error(), http.StatusBadRequest, err)
 		return
 	}
-	var refs []*godicom.Dataset
+	refs := make([]*godicom.Dataset, 0, len(parts))
 	for _, part := range parts {
-		if err := store.PutInstance(studyUID, part); err != nil {
-			respondError(w, r, "stow: put instance", "instance rejected", http.StatusBadRequest, err)
+		if err := put(part); err != nil {
+			respondError(w, r, op, "instance rejected", http.StatusBadRequest, err)
 			return
 		}
-		fd, err := godicom.ReadBytes(part, nil)
+		ref, err := sopRef(part)
 		if err != nil {
-			respondError(w, r, "stow: read stored instance", "instance rejected", http.StatusBadRequest, err)
+			respondError(w, r, op, "instance rejected", http.StatusBadRequest, err)
 			return
-		}
-		ref := godicom.NewDataset()
-		if v, ok := fd.GetString(godicom.MustTag("SOPClassUID")); ok {
-			ref.Set(godicom.NewDataElement(godicom.MustTag("ReferencedSOPClassUID"), godicom.VRUI, v))
-		}
-		if v, ok := fd.GetString(godicom.MustTag("SOPInstanceUID")); ok {
-			ref.Set(godicom.NewDataElement(godicom.MustTag("ReferencedSOPInstanceUID"), godicom.VRUI, v))
 		}
 		refs = append(refs, ref)
 	}
 	out, err := dicomjson.MarshalDatasets(refs)
 	if err != nil {
-		respondError(w, r, "stow: marshal response", "store failed", http.StatusInternalServerError, err)
+		respondError(w, r, op, "store failed", http.StatusInternalServerError, err)
 		return
 	}
 	w.Header().Set("Content-Type", MediaTypeDICOMJSON)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
+}
+
+// sopRef builds the (0008,1150) / (0008,1155) pair a Store Transaction response
+// reports for one instance. It reads the part rather than asking the Store for
+// the UIDs, because the response describes what was sent: a Store that rewrites
+// an instance — decompressing it, or assigning a UID — would otherwise make the
+// answer describe something other than the instance the response is about.
+func sopRef(part []byte) (*godicom.Dataset, error) {
+	fd, err := godicom.ReadBytes(part, nil)
+	if err != nil {
+		return nil, err
+	}
+	ref := godicom.NewDataset()
+	if v, ok := fd.GetString(godicom.MustTag("SOPClassUID")); ok {
+		ref.Set(godicom.NewDataElement(godicom.MustTag("ReferencedSOPClassUID"), godicom.VRUI, v))
+	}
+	if v, ok := fd.GetString(godicom.MustTag("SOPInstanceUID")); ok {
+		ref.Set(godicom.NewDataElement(godicom.MustTag("ReferencedSOPInstanceUID"), godicom.VRUI, v))
+	}
+	return ref, nil
 }
 
 func handleWADOMany(w http.ResponseWriter, r *http.Request, store Store, study, series string) {

@@ -23,7 +23,7 @@ Legend: **covered** — a test would fail if the behaviour regressed;
 | `dimse` | 90.4% | command encode/decode, status helpers |
 | `pdu` | 85.7% | every PDU and user-information item, incl. malformed frames |
 | `ae` | 84.9% | association, DIMSE dispatch, Q/R, N-services |
-| `dicomweb` | 78.7% | no pynetdicom counterpart (PS3.18 is not in it) |
+| `dicomweb` | 80.9% | no pynetdicom counterpart (PS3.18 is not in it); Studies and Non-Patient Instance services |
 
 `go test ./... -cover` reproduces the table. Cross-package use does not count
 toward the callee's number, so `pdu` is understated: `FragmentMessage` and the
@@ -173,14 +173,32 @@ attributes themselves stays on the application side, behind the same hook.
 
 In order of value per line of code:
 
-1. DICOMweb beyond the MVP: PS3.18 Delete, Upsert, Capabilities and non-patient
-   instances are the largest remaining surface, and they are outside
-   pynetdicom's scope so they never appear in the comparison above.
-2. Asynchronous operations: the window is negotiated and readable, but DIMSE in
+1. The two top-level Search resources of the Studies Service: `GET /series` (All
+   Series) and `GET /instances` (All Instances), both marked mandatory for Search
+   in Table 10.3-2. The `Store` interface already answers both — an empty study
+   UID means "all" — so this is routing rather than protocol. Retrieve of
+   `/instances/{instance}` is the harder half: it names an instance without the
+   study and series it belongs to, which `Store` cannot express, and
+   `/studies/{study}/series/{series}/instances/{instance}` reaches the same bytes
+   whenever both UIDs are known.
+2. Retrieve Capabilities (PS3.18 8.9): `OPTIONS /` answered with a Capabilities
+   Description — WADL, or its JSON encoding (Annex H, Annex G). It is a document
+   describing every resource and method the server publishes, so it cannot be
+   written without reading the routing table back out, and the failure mode of a
+   wrong one is worse than that of an absent one: a user agent that trusts it
+   stops probing for what is not listed. That is why it is a generator to be
+   built deliberately rather than a transaction to add.
+3. Asynchronous operations: the window is negotiated and readable, but DIMSE in
    this package is synchronous, so more than one operation in flight is refused
    (`ErrOperationInFlight`) rather than demultiplexed. Implementing it means a
    pending-request map and a policy for responses nobody is waiting for — the
    design question ADR 0001 declined on purpose.
+
+Two transactions an earlier version of this list named as gaps do not exist. The
+Studies Service defines Retrieve, Store and Search and nothing else (PS3.18
+10.3), and the 2019a edition that Annex C ("Retired") points at for removed
+content has no such chapters either. Non-patient instances were the third item
+listed here and are now covered: see `dicomweb/nonpatient.go`.
 
 ## Performance
 

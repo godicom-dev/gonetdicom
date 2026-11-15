@@ -19,16 +19,27 @@ type StoreResult struct {
 // StoreInstances posts Part 10 instances via STOW-RS.
 // studyUID may be empty (POST /studies) or set (POST /studies/{StudyInstanceUID}).
 func (c *Client) StoreInstances(ctx context.Context, studyUID string, instances [][]byte) (*StoreResult, error) {
-	ct, body, err := encodeSTOWBody(instances)
-	if err != nil {
-		return nil, err
-	}
-	var url string
+	var (
+		url string
+		err error
+	)
 	if studyUID == "" {
 		url, err = c.resolve("studies")
 	} else {
 		url, err = c.resolve("studies", studyUID)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return c.storeInstances(ctx, url, instances)
+}
+
+// storeInstances posts instances to url and reads the Store Transaction
+// response. Both services that store instances answer with the same module, so
+// both go through here: a second copy of this would be a second place for the
+// status handling to disagree with its own documentation.
+func (c *Client) storeInstances(ctx context.Context, url string, instances [][]byte) (*StoreResult, error) {
+	ct, body, err := encodeSTOWBody(instances)
 	if err != nil {
 		return nil, err
 	}

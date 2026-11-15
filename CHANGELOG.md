@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Non-Patient Instance Service (PS3.18 section 12): `Handler` serves Retrieve,
+  Store and Search on the six resource names — colour palettes, hanging
+  protocols, implant templates, defined procedure protocols, protocol approvals,
+  inventories — and `Client` gained `RetrieveNonPatientInstance`,
+  `RetrieveNonPatientInstanceFile`, `SearchNonPatientInstances`,
+  `StoreNonPatientInstances`, `StoreNonPatientInstance` and
+  `StoreNonPatientFiles`. The backing store is a second pair of interfaces rather
+  than three more methods on `Store`: `NonPatientRetriever` is what a read-only
+  archive implements, `NonPatientStore` adds the Store Transaction that PS3.18
+  12.1 makes optional, and a `Store` implementing neither serves no non-patient
+  resources at all — the paths answer 404, like any path the server does not have.
+  A read-only implementation answers POST with 405 and `Allow: GET` instead, so a
+  user agent can tell "no such resource" from "not accepted here". The instance
+  segment of the path is checked against UID syntax before the store is called,
+  because joining category and UID onto a directory is the ordinary way to write a
+  store and `..` would then name the parent directory
+- `dicomweb.NonPatientCategories()` returns the six resource names of that
+  service, in standard order, as a copy: they decide which paths the server
+  answers, so a caller that truncated the slice would remove a resource
 - `GetRequest.MessageID` and `MoveRequest.MessageID`, for the same reason
   `FindRequest.MessageID` already existed: C-CANCEL names the operation it
   cancels by Message ID, so a caller that wants to stop a retrieval from
