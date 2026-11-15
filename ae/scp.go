@@ -386,7 +386,11 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 
 	raw, err := readPDUConn(ctx, conn)
 	if err != nil {
-		return err
+		// Nothing is negotiated yet, so there is no association to end — but a
+		// PDU that does not decode is still worth an A-ABORT: it is the only way
+		// to tell the peer that its bytes, rather than the network, were the
+		// problem.
+		return abortUndecodable(ctx, conn, err)
 	}
 	rq, ok := raw.(*pdu.AAssociateRQ)
 	if !ok {
@@ -668,10 +672,14 @@ func scpLoop(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfi
 			// and A-ABORT is the only way to say so (PS3.8 9.3.4). Closing the
 			// socket instead reads as a network fault, so the peer retries the
 			// same bytes against a server that will reject them identically.
+			//
+			// The same goes one layer down: a PDU that does not decode at all —
+			// an unknown type, a body its type does not explain — reaches here
+			// through the reader, and gets the same answer.
 			if errors.Is(it.Err, errMalformedCommand) {
 				_ = writePDUConn(ctx, conn, &pdu.AAbort{Source: 0x02, ReasonDiagnostic: 0x00})
 			}
-			return it.Err
+			return abortUndecodable(ctx, conn, it.Err)
 		case it.Control != nil:
 			switch p := it.Control.(type) {
 			case *pdu.AReleaseRQ:

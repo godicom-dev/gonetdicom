@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `pdu.ErrUndecodable`, which marks a PDU that arrived in full but does not
+  parse — an unknown type, or a body its type does not explain — and nothing
+  else: a read that ends early stays an I/O error, because a peer that
+  disconnected has not sent garbage and should not be told that it did. It exists
+  so the association layer can tell the two apart and answer the first with
+  A-ABORT
 - The two top-level Search targets of the Studies Service, "All Series"
   (`GET /series`) and "All Instances" (`GET /instances`): `Handler` answers both,
   and `Client` gained `SearchAllSeries` and `SearchAllInstances`. They are
@@ -82,6 +88,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one that identifies the entity being retrieved (PS3.4 C.6.2.1.1)
 
 ### Changed
+- A PDU that arrives whole but does not decode — an unknown type, or a body its
+  type does not explain — is answered with A-ABORT (source 0x02, reason 0x01
+  *unrecognized PDU*) instead of a closed socket. Both sides do it, and the SCP
+  does it before an association exists too. Closing the connection said the
+  network broke, so the peer retried the same bytes against a server that would
+  refuse them identically; `Release` now returns `ErrAborted` afterwards rather
+  than sending an A-RELEASE-RQ on an association the peer was told to forget.
+  This is the rule pynetdicom's DUL applies to any exception while receiving
+  (`dul.py`, `test_dul.py::test_unknown_pdu_aborts`)
 - The SCU read side runs on its own goroutine, one PDU at a time, where it used
   to read in the caller's goroutine under a deadline taken from the caller's
   context. A deadline that expired in the middle of a PDU therefore consumed
