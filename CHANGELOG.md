@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   program
 
 ### Added
+- `ServerConfig.RequiredCallingAETitles`, the calling titles an SCP serves: any
+  other requestor is rejected with A-ASSOCIATE-RJ (calling-AE-title-not-
+  recognized). Empty is the default and serves any peer that names itself, which
+  is pynetdicom's `require_calling_aet` unset. It is configuration rather than an
+  `Admit` closure because it is the protocol's own refusal — nothing runs,
+  nothing is counted, and the peer is told why in the PDU that ends the
+  negotiation — while `Admit` stays for decisions that need more than a name
 - `ae.EventReportRequest.TransferSyntax`, which states what
   `EventInformation`'s bytes are, so the same rule applies to an event report as
   to a store: bytes must match the context that carries them, and a godicom

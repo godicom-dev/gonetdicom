@@ -111,6 +111,23 @@ type ServerConfig struct {
 	// promiscuous SCP — accepting any name makes it impossible for a peer to
 	// detect that it is talking to the wrong endpoint.
 	AllowAnyCalledAETitle bool
+	// RequiredCallingAETitles, when non-empty, lists the Calling AE Titles this
+	// SCP serves; an association from any other is rejected with A-ASSOCIATE-RJ
+	// (calling-AE-title-not-recognized). Empty accepts any calling title that is
+	// not padding, which is the default — pynetdicom's require_calling_aet,
+	// unset.
+	//
+	// It is a configuration field rather than something Admit expresses because
+	// it is the protocol's own refusal, not application policy: nothing runs,
+	// nothing is counted, and the peer is told why in the PDU that ends the
+	// negotiation. Use Admit for decisions that need more than a name — a tenant,
+	// a quota, a maintenance window — and this for "who may address me at all".
+	//
+	// A Calling AE Title identifies, it does not authenticate: a peer that claims
+	// one of these names is believed. Pair it with User Identity (Config.
+	// RequestUserIdentity on the requestor side, ServerConfig.OnUserIdentity
+	// here) when the difference matters.
+	RequiredCallingAETitles []string
 	// AcceptedAbstractSyntaxes lists SOP Class UIDs the SCP will accept
 	// (plus Verification is always accepted for C-ECHO). Prefer
 	// AllStorageSOPClasses for a generic Storage SCP (pynetdicom
