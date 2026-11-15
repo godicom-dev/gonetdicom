@@ -136,9 +136,19 @@ have not associated yet (`TestServeCancellationEndsConnectingClient`), and
 for the same reason: a closed socket is what a peer cannot tell apart from a
 network fault, and therefore the case it retries.
 
-Not covered: `network timeout` on a half-open socket (needs a controllable
-clock) and ARTIM timer expiry measured in seconds (we use `HandshakeTimeout`
-deadlines instead, which is the same guarantee by a different mechanism).
+Not covered: `network timeout` on a half-open socket, and ARTIM timer expiry
+measured in seconds (we use `HandshakeTimeout` deadlines instead, which is the
+same guarantee by a different mechanism).
+
+The first one has been reconsidered and is still out of reach: `testing/synctest`
+fakes the Go runtime's clock, and the deadline here is a socket deadline, which
+the kernel enforces on its own clock. A bubble that sandbags time cannot make
+`SetReadDeadline` fire, so the test would have to shorten the deadline and wait
+for it — the sleep-based timing that makes such tests flaky in the first place.
+What is testable is the bound, and that is what `TestSCUIdleTimeoutFailsTheWaitAndKeepsTheAssociation`
+and the handshake-timeout cases assert: the wait ends, reports its own error, and leaves
+the stream framed. The half-open case is about TCP's opinion of a peer that
+vanished, which is the operating system's to give and this package's to obey.
 
 ### 3. Transport (partial)
 

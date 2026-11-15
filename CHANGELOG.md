@@ -33,6 +33,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   program
 
 ### Added
+- `pdu.FuzzFragmentReader`, which asserts what a fragmenter must not get wrong —
+  the payloads reassembled from the emitted PDVs are the input, every PDV fits
+  the length the peer stated, and the two encoders produce the same bytes — over
+  generated command, dataset and PDU lengths. It joins the four targets the fuzz
+  job runs, on the encoder every store now goes through
+- `TestRetrieveSoak`, three two-hundred-instance retrievals on one association,
+  asserting the counts are identical every round and that the goroutines are back
+  where they started. The failures this kind of loop has — a drifting count, a
+  goroutine left behind per operation, a response one store late — are the ones a
+  single pass cannot see. It is skipped under `-short`
+- A `bench` job in CI: every benchmark runs once, and nothing is asserted about
+  the numbers. PARITY quotes timings and allocations, and a benchmark that stops
+  compiling is how those claims go stale without anyone noticing
 - `examples/`, a runnable program per service: `echo`, `store`, `find`, `get`,
   `move` and `dicomweb`, each starting its own SCP on a loopback port so that
   `go run ./examples/find` shows both ends of the association with nothing to
