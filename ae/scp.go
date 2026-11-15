@@ -104,8 +104,10 @@ type ServerConfig struct {
 	// AcceptedAbstractSyntaxes lists SOP Class UIDs the SCP will accept
 	// (plus Verification is always accepted for C-ECHO). Prefer
 	// AllStorageSOPClasses for a generic Storage SCP (pynetdicom
-	// AllStoragePresentationContexts). Include "*" only when you intentionally
-	// accept any peer-proposed abstract syntax (including private UIDs).
+	// AllStoragePresentationContexts), or a class's SOPClasses for any other
+	// service — ServiceClassStorageCommitment.SOPClasses() and the like.
+	// Include "*" only when you intentionally accept any peer-proposed
+	// abstract syntax (including private UIDs).
 	AcceptedAbstractSyntaxes []string
 	// AcceptedTransferSyntaxes lists the transfer syntaxes this SCP accepts,
 	// most preferred first. Empty means DefaultTransferSyntaxes, which is what

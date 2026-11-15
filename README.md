@@ -98,6 +98,41 @@ Once associated, the following DIMSE-C and DIMSE-N services are available on
 `OnNAction`, `OnNEventReport`, `OnNGet`, `OnNSet`, `OnNCreate`, `OnNDelete`,
 plus optional `OnUserIdentity`, `MoveDestinations`, role selection, and TLS.
 
+### Service classes
+
+Which SOP Classes make up a service is a table rather than a list to copy.
+`ae.ServiceClassOf` names the class a UID belongs to and a class hands back its
+SOP Classes, which is what a presentation context list is made of:
+
+```go
+// A Storage Commitment SCP. Verification is accepted for C-ECHO without being
+// listed, so this is the whole of what the service adds.
+cfg.AcceptedAbstractSyntaxes = ae.ServiceClassStorageCommitment.SOPClasses()
+
+// A store SCP that files the two kinds in different places.
+switch ae.ServiceClassOf(ev.AffectedSOPClassUID) {
+case ae.ServiceClassStorage:
+	// has a Patient IE at its root
+case ae.ServiceClassNonPatientObjectStorage:
+	// a hanging protocol, a colour palette, an implant template
+}
+```
+
+The table is pynetdicom's `sop_class.py`: the service classes of PS3.4, not the
+UID registry of PS3.6, which is why it is here and not in `godicom/uid`.
+`ae.ServiceClasses()` lists every class. A UID no class claims — a private SOP
+Class, a transfer syntax, a well-known instance — is `ae.ServiceClassUnknown`,
+the same answer pynetdicom's `uid_to_service_class` gives by returning its base
+class. The two Service Class UIDs (`1.2.840.10008.4.2`,
+`1.2.840.10008.5.1.4.34.6`) are answered as well but appear in no list, because
+they are not abstract syntaxes.
+
+There is no `register_uid` counterpart, and the table is read-only: a private SOP
+Class goes into `AcceptedAbstractSyntaxes` or a `PresentationContexts` list,
+where it is this association's business. Registering it into a package-level
+table would be global mutable state that every other association then has to
+agree with.
+
 ## Examples
 
 **Verification SCU (C-ECHO)**

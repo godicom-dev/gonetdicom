@@ -17,7 +17,9 @@ import "github.com/godicom-dev/godicom/uid"
 //
 // The set follows pynetdicom/pynetdicom/sop_class.py; keep it in sync when
 // upgrading the submodule (TestAllStorageSOPClassesMatchPynetdicom checks this
-// where the submodule is checked out).
+// where the submodule is checked out). ServiceClassStorage.SOPClasses returns
+// this same list, which is what makes it the storage half of the service class
+// table rather than a list beside it.
 var AllStorageSOPClasses = UIDStrings(
 	uid.ComputedRadiographyImageStorage,
 	uid.DigitalXRayImageStorageForPresentation,
