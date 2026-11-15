@@ -199,7 +199,7 @@ func main() {
 **Storage SCU (C-STORE)**
 
 Propose a storage presentation context, then send a *godicom* Dataset (or
-pre-encoded bytes):
+pre-encoded bytes, or a file that stays a file):
 
 ```go
 cfg := ae.Config{
@@ -228,6 +228,26 @@ the `[]string` these fields hold.
 `AffectedSOPInstanceUID` and no `SOPInstanceUID` in the dataset it generates a
 UID and encodes a copy carrying it, so reusing one `Dataset` across a series
 gives every instance its own identity; supplying the UID skips the copy.
+
+A dataset that is already on disk does not have to be read into memory to be
+sent. `Source` is opened, read one fragment at a time while the C-STORE-RQ goes
+out, and closed again, so the store costs one fragment of memory whatever the
+instance size — the mirror image of `StoreEvent.Stream()` on the way in.
+`ae.FileSource` is the archive case: a Part 10 file's dataset starts after its
+preamble and file meta group, which is two numbers the caller already parsed.
+
+```go
+res, err := assoc.CStore(ctx, ae.StoreRequest{
+	AffectedSOPClassUID:    string(uid.CTImageStorage),
+	AffectedSOPInstanceUID: sopInstanceUID,
+	Source:                 ae.FileSource{Path: path, Offset: datasetOffset, Size: datasetSize},
+})
+```
+
+`Source` is the last resort — `Data` and `Dataset` are sent from memory when they
+are set, because they already are — and it has to state the size, because a PDV's
+length is explicit on the wire. `ae.SourceFunc` adapts a function when the bytes
+come from somewhere `FileSource` does not know about.
 
 Leaving `ID` unset lets `Dial` assign the free odd Presentation-context-IDs,
 which is usually what you want; an explicit `ID` is kept as given. Since IDs are

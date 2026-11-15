@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"log/slog"
 	"math"
@@ -1507,7 +1508,11 @@ func scpPerformGetStore(ctx context.Context, conn net.Conn, r *assocReader, acce
 	if err != nil {
 		return 0, false, err
 	}
-	if err := writeMessage(ctx, conn, storePCID, cmd, payload, peerMax); err != nil {
+	if len(payload) > 0 || store.Source == nil {
+		if err := writeMessage(ctx, conn, storePCID, cmd, payload, peerMax); err != nil {
+			return 0, false, err
+		}
+	} else if err := writeStoreSource(ctx, conn, storePCID, cmd, store.Source, peerMax); err != nil {
 		return 0, false, err
 	}
 	for {
@@ -1603,6 +1608,31 @@ func writeMessage(ctx context.Context, conn net.Conn, pcid byte, command, datase
 		}
 	}
 	return nil
+}
+
+// writeMessageReader is writeMessage for a dataset that is read as it goes out,
+// and writeStoreSource is the C-STORE-RQ built on it.
+//
+// The SCP stores on a connection it does not own an Association for — C-GET
+// runs on the association the request arrived on — so the streaming path has to
+// exist at this level too. It differs from writeMessage only in who holds the
+// bytes: the wire format, the fragmentation limit and the logging are the same,
+// because pdu.FragmentReader emits exactly the PDUs FragmentMessage builds.
+func writeMessageReader(ctx context.Context, conn net.Conn, pcid byte, command []byte, dataset io.Reader, size int64, maxPDU uint32) error {
+	logDIMSE(ctx, "send", pcid, command)
+	warnUnexpectedStatus(ctx, command)
+	return pdu.FragmentReader(pcid, command, dataset, size, maxPDU, func(p *pdu.PDataTF) error {
+		return writePDUConn(ctx, conn, p)
+	})
+}
+
+func writeStoreSource(ctx context.Context, conn net.Conn, pcid byte, command []byte, src StoreSource, maxPDU uint32) error {
+	r, size, err := openStoreSource(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = r.Close() }()
+	return writeMessageReader(ctx, conn, pcid, command, r, size, maxPDU)
 }
 
 func scpHandleNAction(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.NActionRQ, ds []byte) error {

@@ -2,13 +2,15 @@
 
 - Status: accepted
 - Date: 2026-11-15
-- Implemented: decisions 1–3 and 6 for all three services — `ae.FindHandler` /
-  `ae.FindSeq` / `ae.FindMatches`, `ae.GetHandler` / `ae.PlannedGet` /
-  `ae.PlannedOps`, `ae.MoveHandler` / `ae.PlannedMove` / `ae.PlannedMoveOps`,
-  `ae.RetrieveOp`, `ae.RetrievePlan`, `ae.StoreContext`, `ae.StoreOutcome`, and
-  `ae.ErrPeerCancelled` / `ae.ErrPeerReleased` for all of them. Decision 5
-  (`StoreRequest.Source`, `pdu.FragmentReader`) is still proposed: a store
-  carries its dataset in memory on both sides of the association.
+- Implemented: all six decisions. Decisions 1–3 and 6 for all three services —
+  `ae.FindHandler` / `ae.FindSeq` / `ae.FindMatches`, `ae.GetHandler` /
+  `ae.PlannedGet` / `ae.PlannedOps`, `ae.MoveHandler` / `ae.PlannedMove` /
+  `ae.PlannedMoveOps`, `ae.RetrieveOp`, `ae.RetrievePlan`, `ae.StoreContext`,
+  `ae.StoreOutcome`, and `ae.ErrPeerCancelled` / `ae.ErrPeerReleased` for all of
+  them. Decision 5 as `ae.StoreRequest.Source` with `ae.StoreSource` /
+  `ae.FileSource` / `ae.SourceFunc`, and `pdu.FragmentReader` behind a
+  reader-taking `writeMessage` / `sendMessage`; see §5a for the three details
+  writing it settled.
 
 ## The question
 
@@ -325,6 +327,35 @@ Part 10 file minus its 132-byte preamble and file meta group *is* the dataset.
 A `godicom.Dataset.EncodeTo(io.Writer, UID)` would extend it to re-encoding,
 and that is a `godicom` decision, not this one.
 
+### 5a. Four details writing it settled
+
+- **The declared length is a promise the wire keeps, so a short read is an
+  error.** `io.ReadFull` per fragment, and a source that ends before `size`
+  returns `io.ErrUnexpectedEOF` instead of a shorter message. A truncated
+  instance that still decodes is worse than a failed store, because the archive
+  stores it as a whole one and nobody finds out. The other direction is
+  `io.CopyN`'s rule: bytes past `size` are not read, which is what lets a
+  `FileSource` point at a dataset inside a larger file without trimming it first.
+- **A peer that states no limit still gets fragments.** Unlimited Maximum
+  Length Received says what the peer will accept; it is not an instruction to
+  put the dataset in one PDV, and obeying it that way would require having the
+  whole dataset — the cost this decision exists to remove. So
+  `pdu.FragmentReader` uses `DefaultMaxPDULength` fragments in that case. Smaller
+  PDUs are always legal; the alternative is not.
+- **`Open` happens before the command set is written.** A source that cannot be
+  opened is then a store that never started, on an association that is still
+  usable — which is the ordinary case, a file that is gone. A read that fails
+  part-way is not recoverable in the same way: the PDV item lengths are already
+  on the wire, so the association has to end, and that is what the error becomes.
+- **The in-memory paths keep `FragmentMessage`.** Only a request that names a
+  `Source` takes the reader path, so an existing store puts the same bytes on the
+  wire as before — which `TestFragmentReaderMatchesFragmentMessage` pins by
+  encoding the same message both ways and comparing every PDV. Two encoders is a
+  liability; a byte-equality test over a table of sizes, limits and command
+  splits is what makes it a small one. `FileSource` exists for the same reason
+  `SourceFunc` does: an interface with no implementation makes the caller write
+  the obvious forty lines at every call site.
+
 ### 6. Sequential, and the fan-out goes
 
 An iterator cannot be fanned out without breaking the write-back: the handler
@@ -410,9 +441,10 @@ that gap moves a `partial` to `covered` without changing a byte on the wire.
   pynetdicom's one-yield-per-sub-operation produces too, minus the claim. A
   handler that also yields a Pending `Result` gets a second response, which is
   allowed and means what it says.
-- **`writeMessage` grows a reader variant.** Two call sites (`ae/assoc.go:642`,
-  `ae/scp.go:1535`); `FragmentMessage` stays for the command set, which is
-  small and already in memory.
+- **`writeMessage` and `sendMessage` grow a reader variant.**
+  `sendMessageReader` (ae/assoc.go) and `writeMessageReader` (ae/scp.go); the
+  buffered versions stay for the command set and for a dataset that is already
+  bytes, which is small and already in memory.
 - **`PARITY.md` changes in two places.** The "association handle inside an SCP
   handler" row becomes an explanation rather than a gap — the third use it
   names (a third-party service class initiating on an accepted association) is

@@ -2,7 +2,9 @@ package pdu
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 )
 
@@ -161,15 +163,112 @@ func FragmentMessage(contextID byte, command, dataset []byte, maxPDULength uint3
 	return out, nil
 }
 
-func fragmentPart(contextID byte, data []byte, isCommand bool, maxPDULength uint32) ([]*PDataTF, error) {
-	// PDV item overhead: 4 (item length) + 1 (context ID) + 1 (MCH) = 6
-	// Maximum Length Received limits the PDV list size in the PDU body.
-	maxFrag := 0
-	if maxPDULength > 0 {
-		if maxPDULength < 8 {
-			return nil, fmt.Errorf("pdu: max PDU length %d too small", maxPDULength)
+// FragmentReader is FragmentMessage for a dataset that is not in memory.
+//
+// FragmentMessage materialises every P-DATA-TF of a message before the first
+// one is written, so a dataset of any size is copied once more on the way out
+// and is live twice at the peak. Here the command set is fragmented as usual —
+// it is small, and it has to be whole to be logged — while the dataset is read
+// from r one fragment at a time, each handed to emit before the next is read.
+// A store of any size then leaves the process through one fragment of memory.
+//
+// size is how many bytes r supplies, and it is not optional: a PDV item length
+// is explicit on the wire (PS3.8 Annex E), so a source that cannot say how long
+// it is cannot be sent. Bytes past size are ignored, which is what
+// io.CopyN-guarded writers do; a reader that stops before size is an error
+// rather than a short message, because a truncated instance that still decodes
+// is worse than a store that failed.
+//
+// maxPDULength is the peer's Maximum Length Received (0 = unlimited). Unlimited
+// says what the peer will accept; it is not an instruction to send the whole
+// dataset as one PDV, so a stream uses DefaultMaxPDULength fragments in that
+// case. Smaller PDUs are always legal, and bounded is the point.
+//
+// Every PDU handed to emit is freshly allocated and owned by the caller, so a
+// callback may retain it — including the fragment inside it.
+func FragmentReader(contextID byte, command []byte, dataset io.Reader, size int64, maxPDULength uint32, emit func(*PDataTF) error) error {
+	if len(command) == 0 {
+		return fmt.Errorf("pdu: empty command set")
+	}
+	if size < 0 {
+		return fmt.Errorf("pdu: dataset length %d cannot be sent: a PDV item length is explicit", size)
+	}
+	if size > 0 && dataset == nil {
+		return fmt.Errorf("pdu: dataset length %d with no reader", size)
+	}
+	maxFrag, err := fragmentChunk(maxPDULength)
+	if err != nil {
+		return err
+	}
+	cmdPDUs, err := fragmentPart(contextID, command, true, maxPDULength)
+	if err != nil {
+		return err
+	}
+	for _, p := range cmdPDUs {
+		if err := emit(p); err != nil {
+			return err
 		}
-		maxFrag = int(maxPDULength) - 6
+	}
+	if size == 0 {
+		return nil
+	}
+	if maxFrag == 0 {
+		// The peer stated no limit, so pick one: the default PDU length is a
+		// fragment size that every implementation accepts, and it keeps the
+		// memory this path costs constant.
+		maxFrag = DefaultMaxPDULength - pdvOverhead
+	}
+	for remaining := size; remaining > 0; {
+		n := int64(maxFrag)
+		last := false
+		if remaining <= n {
+			n = remaining
+			last = true
+		}
+		// MCH + fragment, sized exactly: the value's length is the PDV item
+		// length, and the peer reads the dataset from it.
+		value := make([]byte, 1+n)
+		if last {
+			value[0] = MCHLastFragment
+		}
+		got, err := io.ReadFull(dataset, value[1:])
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return fmt.Errorf("pdu: dataset ended %d bytes short of its stated %d: %w",
+					remaining-int64(got), size, io.ErrUnexpectedEOF)
+			}
+			return fmt.Errorf("pdu: read dataset: %w", err)
+		}
+		remaining -= n
+		if err := emit(&PDataTF{PDVs: []PDV{{ContextID: contextID, Value: value}}}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pdvOverhead is what one PDV costs besides its fragment: 4 (item length) +
+// 1 (context ID) + 1 (message control header).
+const pdvOverhead = 6
+
+// fragmentChunk is how much of a part one PDV may carry for a given Maximum
+// Length Received, which limits the PDV list size in the PDU body. Zero means
+// "all of it", which is what FragmentMessage does when the peer states no
+// limit.
+func fragmentChunk(maxPDULength uint32) (int, error) {
+	if maxPDULength == 0 {
+		return 0, nil
+	}
+	if maxPDULength < pdvOverhead+2 {
+		return 0, fmt.Errorf("pdu: max PDU length %d too small", maxPDULength)
+	}
+	return int(maxPDULength) - pdvOverhead, nil
+}
+
+func fragmentPart(contextID byte, data []byte, isCommand bool, maxPDULength uint32) ([]*PDataTF, error) {
+	maxFrag, err := fragmentChunk(maxPDULength)
+	if err != nil {
+		return nil, err
 	}
 
 	var frags [][]byte

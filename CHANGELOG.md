@@ -31,6 +31,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ae.NoContextError`, returned by `Dial` when the acceptor accepted nothing. It
   names each refused class and the reason, and unwraps to `ErrNoContext`, so
   `errors.Is` still works for callers that only checked that
+- `ae.StoreRequest.Source`, which sends a dataset that never has to be resident:
+  `Open()` returns a reader and its length, and the bytes are read one fragment
+  at a time as the C-STORE-RQ goes out, so a 500 MB instance costs one fragment
+  of memory on the sending side. `ae.FileSource` is the archive case — a path, an
+  offset and a length, which is a Part 10 file minus its preamble and file meta
+  group — and `ae.SourceFunc` adapts a function, as `http.HandlerFunc` adapts a
+  handler. `Data` and `Dataset` still take precedence, and the wire format is
+  unchanged: the store goes out through the new `pdu.FragmentReader`, which emits
+  what `pdu.FragmentMessage` builds, one PDU at a time instead of all of them
+  first. A source that ends before its declared length is `io.ErrUnexpectedEOF`
+  rather than a short instance the peer would store, and an `Open` that fails
+  leaves nothing on the wire, so the association is still usable. This is the
+  sending half of #51; see `docs/adr/0002-handler-contract-iterators.md` §5
 
 ### Changed
 - **Breaking.** `ServerConfig.OnCGet` returns `iter.Seq2[*ae.RetrieveOp, error]`
