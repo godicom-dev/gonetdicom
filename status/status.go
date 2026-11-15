@@ -55,6 +55,15 @@ const (
 
 	UnableToProcess  uint16 = 0xC000
 	CannotUnderstand uint16 = 0xC000
+
+	// Handler-failure codes for C-FIND. pynetdicom answers a handler that
+	// returns an error with 0xC311 (service_class.py:311) and a response
+	// whose Identifier will not encode with 0xC312 (:376); C-GET and C-MOVE
+	// use 0xC411/0xC413 and 0xC511/0xC514 for the same two situations. These
+	// numbers coincide with UPS codes above — which service is in flight
+	// decides which reading applies.
+	FindUnableToProcess        uint16 = 0xC311
+	FindIdentifierNotEncodable uint16 = 0xC312
 )
 
 // Unified Procedure Step (UPS) statuses (PS3.4).

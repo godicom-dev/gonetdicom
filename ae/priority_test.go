@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"context"
+	"iter"
 	"net"
 	"sync"
 	"testing"
@@ -64,9 +65,9 @@ func TestPriorityReachesPeerUnchanged(t *testing.T) {
 				rec.record("C-STORE", ev.Priority)
 				return dimse.StatusSuccess
 			},
-			OnCFind: func(_ context.Context, req ae.FindRequest) []ae.FindMatch {
+			OnCFind: func(_ context.Context, req ae.FindRequest) iter.Seq2[ae.FindMatch, error] {
 				rec.record("C-FIND", req.Priority)
-				return []ae.FindMatch{{Status: dimse.StatusSuccess}}
+				return ae.FindSeq([]ae.FindMatch{{Status: dimse.StatusSuccess}})
 			},
 			OnCMove: func(_ context.Context, req ae.MoveRequest) ae.MovePlan {
 				rec.record("C-MOVE", req.Priority)

@@ -3,6 +3,7 @@ package ae
 import (
 	"context"
 	"fmt"
+	"iter"
 
 	"github.com/godicom-dev/godicom"
 	"github.com/godicom-dev/godicom/uid"
@@ -47,6 +48,35 @@ type FindRequest struct {
 type FindMatch struct {
 	Status     uint16
 	Identifier *godicom.Dataset // non-nil for Pending responses with a dataset
+}
+
+// FindSeq yields matches in order and stops after the last one.
+//
+// It is the return value of a handler that already has the whole list — the
+// shape every handler had before the iterator contract — and the building
+// block of FindMatches. Yielding through it is the same act as yielding
+// directly: when the framework is no longer reading, the loop ends.
+func FindSeq(matches []FindMatch) iter.Seq2[FindMatch, error] {
+	return func(yield func(FindMatch, error) bool) {
+		for _, m := range matches {
+			if !yield(m, nil) {
+				return
+			}
+		}
+	}
+}
+
+// FindMatches adapts a list of matches to a FindHandler. It is the one-line
+// migration for a handler that built its results eagerly:
+//
+//	// before
+//	OnCFind: func(ctx context.Context, req ae.FindRequest) []ae.FindMatch { … }
+//	// after
+//	OnCFind: ae.FindMatches(list)
+func FindMatches(matches []FindMatch) FindHandler {
+	return func(context.Context, FindRequest) iter.Seq2[FindMatch, error] {
+		return FindSeq(matches)
+	}
 }
 
 // CFind sends a C-FIND-RQ and collects responses until Success/Failure/Cancel.

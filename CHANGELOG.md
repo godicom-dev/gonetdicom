@@ -33,6 +33,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `errors.Is` still works for callers that only checked that
 
 ### Changed
+- **Breaking.** `ServerConfig.OnCFind` returns `iter.Seq2[ae.FindMatch, error]`
+  rather than `[]ae.FindMatch`: the handler is the Go spelling of pynetdicom's
+  C-FIND generator, so a match is encoded and written before the next one is
+  produced and a result set is never resident as a whole — the streaming half of
+  #51, with the reasoning in `docs/adr/0002-handler-contract-iterators.md`. A
+  handler that already holds its matches returns `ae.FindSeq(matches)`, or the
+  whole handler becomes `ae.FindMatches(matches)`; one that produces them
+  incrementally ranges over its own source and yields, and stops when the yield
+  reports that nothing is listening. Three behaviours came with it: a handler
+  error is answered with `0xC311` and an Identifier that will not encode with
+  `0xC312` instead of ending the association, an operation whose handler yielded
+  no terminal response ends with Success as the reference does
+  (`service_class.py:398-402`) instead of being left open, and the handler's
+  context is cancelled the moment the peer cancels, so `context.Cause` reports
+  `ae.ErrPeerCancelled` or `ae.ErrPeerReleased` to a call that is blocked rather
+  than a flag to poll
 - `Serve` returns after the last association has ended rather than when the
   listener closes. Cancelling the context already closed every association;
   returning earlier left handlers running behind a function that had returned,

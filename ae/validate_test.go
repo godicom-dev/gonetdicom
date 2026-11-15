@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"context"
+	"iter"
 	"testing"
 	"time"
 
@@ -61,9 +62,9 @@ func TestIdentifierValidatorRefusesFind(t *testing.T) {
 	assoc := dialNegotiated(t, ae.ServerConfig{
 		AcceptedAbstractSyntaxes: []string{ae.PatientRootQueryRetrieveInformationModelFind},
 		IdentifierValidator:      ae.QueryRetrieveLevelValidator("PATIENT", "STUDY"),
-		OnCFind: func(context.Context, ae.FindRequest) []ae.FindMatch {
+		OnCFind: func(context.Context, ae.FindRequest) iter.Seq2[ae.FindMatch, error] {
 			called++
-			return []ae.FindMatch{{Status: dimse.StatusSuccess}}
+			return ae.FindSeq([]ae.FindMatch{{Status: dimse.StatusSuccess}})
 		},
 	}, ae.Config{
 		PresentationContexts: []ae.PresentationContext{

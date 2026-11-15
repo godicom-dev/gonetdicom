@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"context"
+	"iter"
 	"net"
 	"testing"
 	"time"
@@ -31,15 +32,15 @@ func TestCFindSCURoundtrip(t *testing.T) {
 			AcceptedAbstractSyntaxes: []string{
 				ae.PatientRootQueryRetrieveInformationModelFind,
 			},
-			OnCFind: func(_ context.Context, req ae.FindRequest) []ae.FindMatch {
+			OnCFind: func(context.Context, ae.FindRequest) iter.Seq2[ae.FindMatch, error] {
 				ident := godicom.NewDataset()
 				ident.Set(godicom.NewDataElement(godicom.MustTag("QueryRetrieveLevel"), godicom.VRCS, "PATIENT"))
 				ident.Set(godicom.NewDataElement(godicom.MustTag("PatientName"), godicom.VRPN, "DOE^JOHN"))
 				ident.Set(godicom.NewDataElement(godicom.MustTag("PatientID"), godicom.VRLO, "P001"))
-				return []ae.FindMatch{
+				return ae.FindSeq([]ae.FindMatch{
 					{Status: dimse.StatusPending, Identifier: ident},
 					{Status: dimse.StatusSuccess},
-				}
+				})
 			},
 		})
 	}()
@@ -110,20 +111,23 @@ func TestCFindCancel(t *testing.T) {
 			AcceptedAbstractSyntaxes: []string{
 				ae.PatientRootQueryRetrieveInformationModelFind,
 			},
-			OnCFind: func(_ context.Context, _ ae.FindRequest) []ae.FindMatch {
-				// Hold so SCU can send C-CANCEL while the request is outstanding;
-				// the cancel sits in the TCP buffer until responses are streamed.
-				time.Sleep(80 * time.Millisecond)
-				mk := func(id string) *godicom.Dataset {
-					ds := godicom.NewDataset()
-					ds.Set(godicom.NewDataElement(godicom.MustTag("PatientID"), godicom.VRLO, id))
-					return ds
-				}
-				return []ae.FindMatch{
-					{Status: dimse.StatusPending, Identifier: mk("A")},
-					{Status: dimse.StatusPending, Identifier: mk("B")},
-					{Status: dimse.StatusPending, Identifier: mk("C")},
-					{Status: dimse.StatusSuccess},
+			OnCFind: func(context.Context, ae.FindRequest) iter.Seq2[ae.FindMatch, error] {
+				return func(yield func(ae.FindMatch, error) bool) {
+					// Hold so SCU can send C-CANCEL while the request is
+					// outstanding; the cancel sits in the TCP buffer until
+					// responses are streamed.
+					time.Sleep(80 * time.Millisecond)
+					mk := func(id string) *godicom.Dataset {
+						ds := godicom.NewDataset()
+						ds.Set(godicom.NewDataElement(godicom.MustTag("PatientID"), godicom.VRLO, id))
+						return ds
+					}
+					for _, id := range []string{"A", "B", "C"} {
+						if !yield(ae.FindMatch{Status: dimse.StatusPending, Identifier: mk(id)}, nil) {
+							return
+						}
+					}
+					yield(ae.FindMatch{Status: dimse.StatusSuccess}, nil)
 				}
 			},
 		})

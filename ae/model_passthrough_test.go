@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"context"
+	"iter"
 	"testing"
 	"time"
 
@@ -27,9 +28,9 @@ func TestCFindServesModelsWithoutDedicatedCode(t *testing.T) {
 	addr := serveSCP(t, ae.ServerConfig{
 		AETitle:                  "MODELSCP",
 		AcceptedAbstractSyntaxes: models,
-		OnCFind: func(_ context.Context, req ae.FindRequest) []ae.FindMatch {
+		OnCFind: func(_ context.Context, req ae.FindRequest) iter.Seq2[ae.FindMatch, error] {
 			seen[req.QueryModel]++
-			return []ae.FindMatch{{Status: dimse.StatusSuccess}}
+			return ae.FindSeq([]ae.FindMatch{{Status: dimse.StatusSuccess}})
 		},
 	})
 

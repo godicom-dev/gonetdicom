@@ -415,9 +415,7 @@ func TestSCPWarnsAboutUnexpectedStatus(t *testing.T) {
 					AETitle:                  "STSCP",
 					AcceptedAbstractSyntaxes: []string{ae.StudyRootQueryRetrieveInformationModelFind},
 					Logger:                   serverLogger,
-					OnCFind: func(context.Context, ae.FindRequest) []ae.FindMatch {
-						return []ae.FindMatch{{Status: tc.status}}
-					},
+					OnCFind:                  ae.FindMatches([]ae.FindMatch{{Status: tc.status}}),
 				})
 			}()
 

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"math"
 	"net"
@@ -24,9 +25,31 @@ import (
 // Return a DIMSE status (dcmstatus.Success / dimse.StatusSuccess on success).
 type StoreHandler func(ctx context.Context, ev StoreEvent) uint16
 
-// FindHandler handles an incoming C-FIND-RQ. Return Pending matches followed by
-// a final Success/Failure/Cancel response (without Identifier).
-type FindHandler func(ctx context.Context, req FindRequest) []FindMatch
+// FindHandler handles an incoming C-FIND-RQ. It returns an iterator over the
+// responses, in the order they should go on the wire: Pending matches,
+// optionally followed by one terminal Success/Failure/Cancel response.
+//
+// The iterator is the Go spelling of pynetdicom's C-FIND generator
+// (service_class.py:296-390): the handler body runs on the association's
+// goroutine, one item at a time, and the framework has written the previous
+// response before it asks for the next. That is where the memory goes — a
+// query over a large archive is answered without the whole result set ever
+// existing — and it is also why a handler needs no buffer, no goroutine and no
+// send queue of its own.
+//
+// Returning without a terminal response ends the operation with Success, which
+// is what pynetdicom does when the generator is exhausted (:398-402).
+//
+// ctx is the handler's to use for as long as it runs. The framework cancels it
+// when the peer stops the operation — context.Cause reports ErrPeerCancelled
+// or ErrPeerReleased (cancel.go) — and the yield returns false at the same
+// time, so a handler that is producing results stops at its next yield. Both
+// are noticed between two items, which is the granularity the protocol offers:
+// a stop that arrives while one item is being produced takes effect when that
+// item is offered, not inside the call that produced it — the association's own
+// context is the only thing that interrupts a call already under way.
+// Handler errors become 0xC311 (status.FindUnableToProcess).
+type FindHandler func(ctx context.Context, req FindRequest) iter.Seq2[FindMatch, error]
 
 // MoveHandler handles an incoming C-MOVE-RQ. Return a MovePlan with Stores to
 // C-STORE to MoveDestination and/or explicit Responses.
@@ -931,63 +954,89 @@ func scpHandleFind(ctx context.Context, conn net.Conn, r *assocReader, cfg Serve
 		return refuseFindIdentifier(ctx, conn, pcid, peerMax, rq.MessageID, rq.AffectedSOPClassUID, status)
 	}
 
-	var matches []FindMatch
+	// The handler gets a cancellable context of its own: a peer cancel or the
+	// end of the association reaches it as a cause, not as a boolean it has to
+	// remember to poll (cancel.go).
+	hctx, stopHandler := context.WithCancelCause(ctx)
+	defer stopHandler(nil)
+
+	// A handler that yields nothing is a query with no matches, and one that
+	// is absent answers Success; both end below with a bare final response,
+	// which is what pynetdicom does when the generator is empty (:398-402).
+	seq := FindSeq(nil)
 	if cfg.OnCFind != nil {
-		matches = cfg.OnCFind(ctx, FindRequest{
+		if handlerSeq := cfg.OnCFind(hctx, FindRequest{
 			QueryModel:     rq.AffectedSOPClassUID,
 			Identifier:     ds,
 			IdentifierData: ident,
 			Priority:       rq.Priority,
-		})
-	} else {
-		matches = []FindMatch{{Status: dimse.StatusSuccess}}
-	}
-	if len(matches) == 0 {
-		matches = []FindMatch{{Status: dimse.StatusSuccess}}
+		}); handlerSeq != nil {
+			seq = handlerSeq
+		}
 	}
 
-	for i, m := range matches {
-		if i > 0 {
-			switch r.pollStop(rq.MessageID) {
-			case stopAssociation:
-				return nil
-			case stopCancelled:
-				rsp, err := (&dimse.CFindRSP{
-					MessageIDBeingRespondedTo: rq.MessageID,
-					AffectedSOPClassUID:       rq.AffectedSOPClassUID,
-					Status:                    dimse.StatusCancel,
-				}).Encode()
-				if err != nil {
-					return err
-				}
-				return writeMessage(ctx, conn, pcid, rsp, nil, peerMax)
-			}
+	for m, handlerErr := range seq {
+		// A stop is checked before every response, the first one included:
+		// the request can be cancelled while the handler is still scanning,
+		// and a match produced after that point is one the peer has said it
+		// will discard.
+		switch r.pollStop(rq.MessageID) {
+		case stopAssociation:
+			stopHandler(ErrPeerReleased)
+			return nil
+		case stopCancelled:
+			stopHandler(ErrPeerCancelled)
+			return writeFindRSP(ctx, conn, pcid, peerMax, rq, dimse.StatusCancel, nil)
 		}
+
+		if handlerErr != nil {
+			// pynetdicom answers a handler that raises with 0xC311 and ends
+			// the operation (:311). The error itself stays local: a Q/R
+			// response has nowhere to put it, and the peer's remedy is the
+			// same either way.
+			return writeFindRSP(ctx, conn, pcid, peerMax, rq, dcmstatus.FindUnableToProcess, nil)
+		}
+
 		hasDS := m.Identifier != nil && dimse.IsPending(m.Status)
-		rsp, err := (&dimse.CFindRSP{
-			MessageIDBeingRespondedTo: rq.MessageID,
-			AffectedSOPClassUID:       rq.AffectedSOPClassUID,
-			Status:                    m.Status,
-			HasDataset:                hasDS,
-		}).Encode()
-		if err != nil {
-			return err
-		}
 		var payload []byte
 		if hasDS {
-			payload, err = m.Identifier.Encode(godicom.UID(ac.TransferSyntax))
-			if err != nil {
-				return fmt.Errorf("ae: encode C-FIND identifier: %w", err)
+			encoded, err := m.Identifier.Encode(godicom.UID(ac.TransferSyntax))
+			if err != nil || len(encoded) == 0 {
+				// :376 — the identifier will not encode, so this match cannot
+				// be sent and the first response that would have carried it
+				// is the failure itself.
+				return writeFindRSP(ctx, conn, pcid, peerMax, rq, dcmstatus.FindIdentifierNotEncodable, nil)
 			}
+			payload = encoded
 		}
-		if err := writeMessage(ctx, conn, pcid, rsp, payload, peerMax); err != nil {
+		if err := writeFindRSP(ctx, conn, pcid, peerMax, rq, m.Status, payload); err != nil {
 			return err
 		}
 		if !dimse.IsPending(m.Status) {
+			// Only a Pending status keeps a C-FIND open (PS3.4 Table C.4-2:
+			// 0xFF00 and 0xFF01). Anything else the handler yielded — Success,
+			// Failure, Cancel — is the last response of the operation.
 			return nil
 		}
 	}
-	return nil
+
+	// The handler ran out of matches without saying how the operation ends.
+	return writeFindRSP(ctx, conn, pcid, peerMax, rq, dimse.StatusSuccess, nil)
+}
+
+// writeFindRSP sends one C-FIND-RSP for rq. A non-nil payload is the response
+// Identifier and sets the CommandDataSetType that announces it.
+func writeFindRSP(ctx context.Context, conn net.Conn, pcid byte, peerMax uint32, rq *dimse.CFindRQ, status uint16, payload []byte) error {
+	rsp, err := (&dimse.CFindRSP{
+		MessageIDBeingRespondedTo: rq.MessageID,
+		AffectedSOPClassUID:       rq.AffectedSOPClassUID,
+		Status:                    status,
+		HasDataset:                payload != nil,
+	}).Encode()
+	if err != nil {
+		return fmt.Errorf("ae: encode C-FIND-RSP: %w", err)
+	}
+	return writeMessage(ctx, conn, pcid, rsp, payload, peerMax)
 }
 
 func scpHandleMove(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CMoveRQ, ds []byte, callingAE string) error {
