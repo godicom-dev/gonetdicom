@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -172,6 +173,7 @@ type Association struct {
 	called               string
 	peerMax              uint32
 	contexts             []AcceptedContext
+	rejected             []RejectedContext
 	userIdentityResponse []byte
 	// peerImplClassUID / peerImplVersionName are the acceptor's implementation
 	// identification from the A-ASSOCIATE-AC, the SCU-side counterpart of what
@@ -357,11 +359,21 @@ func (a *Association) negotiate(ctx context.Context) error {
 		acRoles := roleMap(p.UserInformation.RoleSelections)
 		rqRoles := roleMap(a.cfg.RoleSelections)
 		for _, ac := range p.PresentationContexts {
-			if ac.Result != 0 {
-				continue
-			}
 			prop, ok := byID[ac.ID]
 			if !ok {
+				continue
+			}
+			if ac.Result != 0 {
+				// A context the acceptor refused. It stays in the list so a
+				// caller can tell "this class is not served here" (3) from
+				// "it is served, but not in a syntax either of us can read"
+				// (4) — the two answers lead to different fixes, and without
+				// them both look like ErrNoContext.
+				a.rejected = append(a.rejected, RejectedContext{
+					ID:             ac.ID,
+					AbstractSyntax: prop.AbstractSyntax,
+					Result:         ac.Result,
+				})
 				continue
 			}
 			ctxAcc := AcceptedContext{
@@ -385,7 +397,7 @@ func (a *Association) negotiate(ctx context.Context) error {
 			a.contexts = append(a.contexts, ctxAcc)
 		}
 		if len(a.contexts) == 0 {
-			return fmt.Errorf("%w: no presentation context accepted", ErrNoContext)
+			return &NoContextError{Rejected: append([]RejectedContext(nil), a.rejected...)}
 		}
 		return nil
 	case *pdu.AAssociateRJ:
@@ -400,6 +412,77 @@ func (a *Association) negotiate(ctx context.Context) error {
 // Contexts returns accepted presentation contexts.
 func (a *Association) Contexts() []AcceptedContext {
 	return append([]AcceptedContext(nil), a.contexts...)
+}
+
+// RejectedContext is a presentation context the acceptor refused, with the
+// result/reason it gave (PS3.8 Table 9-18):
+//
+//	1 user rejection
+//	2 no reason given
+//	3 abstract syntax not supported
+//	4 transfer syntaxes not supported
+//
+// 3 and 4 are the ones worth telling apart: the first says this peer does not
+// serve the class at all, the second that it does but not in any syntax this
+// association proposed. Only 4 is fixed by proposing more syntaxes.
+type RejectedContext struct {
+	ID             byte
+	AbstractSyntax string
+	Result         byte
+}
+
+// RejectedContexts returns the presentation contexts the acceptor refused, in
+// the order they were proposed.
+//
+// An association that ended with ErrNoContext has this list to explain it: a
+// caller that reads it can name the class and the reason instead of reporting
+// that nothing was accepted.
+func (a *Association) RejectedContexts() []RejectedContext {
+	return append([]RejectedContext(nil), a.rejected...)
+}
+
+// NoContextError reports an association where the acceptor accepted none of the
+// proposed presentation contexts. It unwraps to ErrNoContext, and carries the
+// refusals — which is the only place they can be read, since no Association
+// exists to ask.
+type NoContextError struct {
+	Rejected []RejectedContext
+}
+
+func (e *NoContextError) Error() string {
+	if len(e.Rejected) == 0 {
+		return "ae: no presentation context accepted"
+	}
+	var b strings.Builder
+	b.WriteString("ae: no presentation context accepted (")
+	for i, r := range e.Rejected {
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(&b, "%s: %s", r.AbstractSyntax, r.reason())
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
+// Unwrap makes errors.Is(err, ErrNoContext) true for a refusal, so a caller that
+// only cares whether the association came up keeps its old check.
+func (e *NoContextError) Unwrap() error { return ErrNoContext }
+
+// reason names a rejection result (PS3.8 Table 9-18).
+func (r RejectedContext) reason() string {
+	switch r.Result {
+	case 1:
+		return "user rejection"
+	case 2:
+		return "no reason given"
+	case 3:
+		return "abstract syntax not supported"
+	case 4:
+		return "transfer syntaxes not supported"
+	default:
+		return fmt.Sprintf("result %d", r.Result)
+	}
 }
 
 // AsyncOperationsWindow returns the window the acceptor granted, and false when

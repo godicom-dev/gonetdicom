@@ -27,6 +27,23 @@ func requireClosed(t *testing.T, conn net.Conn, timeout time.Duration) {
 	}
 }
 
+// requireAbortThenClosed checks the goodbye an established association gets: the
+// A-ABORT, then the close. A close alone is what a broken network looks like.
+func requireAbortThenClosed(t *testing.T, conn net.Conn, timeout time.Duration) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		t.Fatal(err)
+	}
+	p, err := pdu.Read(conn)
+	if err != nil {
+		t.Fatalf("reading the SCP's answer to shutdown: %v", err)
+	}
+	if _, ok := p.(*pdu.AAbort); !ok {
+		t.Fatalf("SCP sent %T, want A-ABORT", p)
+	}
+	requireClosed(t, conn, timeout)
+}
+
 // A connection that never associates must not hold a goroutine and a socket
 // forever: opening connections and saying nothing was enough to exhaust the SCP.
 func TestSCPHandshakeTimeoutEndsSilentConnection(t *testing.T) {
@@ -88,10 +105,11 @@ func TestSCPMaxConcurrentAssociations(t *testing.T) {
 	}
 }
 
-// Serve documents that it runs until its context is cancelled. Cancelling used
-// to close only the listener, leaving established associations running with a
-// goroutine each until their peers happened to act. The association reader is
-// what covers this case today; the invariant is pinned here regardless.
+// Serve documents that it runs until its context is cancelled, and cancelling
+// ends the associations it is serving. It used to merely close their sockets,
+// which leaves the peer unable to tell a shutdown from a network fault; the
+// association now gets A-ABORT first, because that is the protocol's own way of
+// saying the association is over.
 func TestServeCancellationEndsEstablishedAssociation(t *testing.T) {
 	t.Parallel()
 
@@ -99,7 +117,7 @@ func TestServeCancellationEndsEstablishedAssociation(t *testing.T) {
 	scu := dialRawSCU(t, addr, "LIMITSCP", pdu.VerificationSOPClass)
 
 	cancel()
-	requireClosed(t, scu.conn, 3*time.Second)
+	requireAbortThenClosed(t, scu.conn, 3*time.Second)
 }
 
 // Cancellation has to reach a connection that has not associated yet, too. This

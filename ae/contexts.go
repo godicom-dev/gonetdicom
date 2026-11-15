@@ -57,6 +57,73 @@ func (c ServerConfig) acceptedTransferSyntaxes() []string {
 	return DefaultTransferSyntaxes
 }
 
+// acceptedContextTable answers, per SOP Class, which transfer syntaxes this SCP
+// accepts. A class in byClass uses its own list; a class in neither is refused
+// with result 3 unless any is set.
+//
+// The table exists because the two ways of configuring an acceptor answer
+// different questions. AcceptedAbstractSyntaxes says "these classes, with this
+// list of syntaxes" — one list for all of them. AcceptedContexts says it a class
+// at a time, which is what an SCP needs when it decodes some classes and
+// forwards others untouched: implicit VR only for the classes it parses, "*" for
+// the ones it stores as bytes.
+type acceptedContextTable struct {
+	byClass map[string][]string
+	// any holds the syntaxes for a class byClass does not name. Nil means no
+	// class outside byClass is accepted.
+	any []string
+}
+
+// syntaxesFor returns the acceptor's preference for one proposed SOP Class.
+func (t acceptedContextTable) syntaxesFor(sopClass string) ([]string, bool) {
+	if syn, ok := t.byClass[sopClass]; ok {
+		return syn, true
+	}
+	if t.any != nil {
+		return t.any, true
+	}
+	return nil, false
+}
+
+// acceptedContexts builds the table from the configured fields.
+//
+// Verification is always accepted: it answers C-ECHO, which is how a peer asks
+// whether this endpoint is the one it thinks it is. Refusing it would turn a
+// liveness probe into a context error the caller has to interpret. Naming it in
+// AcceptedContexts still overrides the syntaxes it accepts.
+func (c ServerConfig) acceptedContexts() acceptedContextTable {
+	fallback := c.acceptedTransferSyntaxes()
+	if len(c.AcceptedContexts) > 0 {
+		t := acceptedContextTable{byClass: make(map[string][]string, len(c.AcceptedContexts)+1)}
+		for _, pc := range c.AcceptedContexts {
+			syn := pc.TransferSyntaxes
+			if len(syn) == 0 {
+				syn = fallback
+			}
+			if pc.AbstractSyntax == "*" {
+				t.any = syn
+				continue
+			}
+			t.byClass[pc.AbstractSyntax] = syn
+		}
+		if _, ok := t.byClass[pdu.VerificationSOPClass]; !ok {
+			t.byClass[pdu.VerificationSOPClass] = fallback
+		}
+		return t
+	}
+
+	t := acceptedContextTable{byClass: make(map[string][]string, len(c.AcceptedAbstractSyntaxes)+1)}
+	t.byClass[pdu.VerificationSOPClass] = fallback
+	for _, uid := range c.AcceptedAbstractSyntaxes {
+		if uid == "*" {
+			t.any = fallback
+			continue
+		}
+		t.byClass[uid] = fallback
+	}
+	return t
+}
+
 // ErrPresentationContexts is returned when Config.PresentationContexts cannot be
 // proposed as written.
 var ErrPresentationContexts = errors.New("ae: invalid presentation contexts")

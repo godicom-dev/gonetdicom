@@ -108,6 +108,10 @@ type ServerConfig struct {
 	// service — ServiceClassStorageCommitment.SOPClasses() and the like.
 	// Include "*" only when you intentionally accept any peer-proposed
 	// abstract syntax (including private UIDs).
+	//
+	// Every class listed here is offered the same syntaxes, from
+	// AcceptedTransferSyntaxes. A server that wants to refuse a syntax for one
+	// class and allow it for another writes AcceptedContexts instead.
 	AcceptedAbstractSyntaxes []string
 	// AcceptedTransferSyntaxes lists the transfer syntaxes this SCP accepts,
 	// most preferred first. Empty means DefaultTransferSyntaxes, which is what
@@ -119,8 +123,32 @@ type ServerConfig struct {
 	// setting for a pass-through SCP (StoreEvent.Stream is enough to forward or
 	// file the bytes), and the wrong one for a handler that calls Decode.
 	AcceptedTransferSyntaxes []string
-	OnCStore                 StoreHandler
-	OnCFind                  FindHandler
+	// AcceptedContexts states the accepted presentation contexts a SOP Class at
+	// a time, each with its own transfer-syntax preference — pynetdicom's
+	// add_supported_context(uid, transfer_syntaxes). It replaces
+	// AcceptedAbstractSyntaxes and AcceptedTransferSyntaxes rather than adding
+	// to them, because a class-at-a-time list is the more specific statement:
+	// when both are set, this one decides.
+	//
+	// It exists for the SCP that does not treat every class the same way. A
+	// store that parses CT and MR and only forwards everything else wants
+	// implicit VR for the first two and "*" for the rest:
+	//
+	//	AcceptedContexts: []PresentationContext{
+	//		{AbstractSyntax: string(uid.CTImageStorage), TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian}},
+	//		{AbstractSyntax: string(uid.MRImageStorage), TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian}},
+	//		{AbstractSyntax: "*", TransferSyntaxes: []string{"*"}},
+	//	},
+	//
+	// An entry with no TransferSyntaxes uses AcceptedTransferSyntaxes (or the
+	// default set). Verification stays accepted for C-ECHO unless it is listed
+	// with syntaxes of its own. A class that is neither listed nor covered by
+	// "*" is answered with result 3, and a class whose list does not intersect
+	// what the requestor proposed with result 4 — the same two answers the
+	// flat configuration gives, decided per class instead of globally.
+	AcceptedContexts []PresentationContext
+	OnCStore         StoreHandler
+	OnCFind          FindHandler
 	// IdentifierValidator checks a C-FIND / C-MOVE / C-GET identifier before
 	// the handler runs and returns a DIMSE status (0 accepts, 0xA900 refuses).
 	// Nil means every identifier reaches the handler unexamined.
@@ -294,64 +322,46 @@ func (c ServerConfig) logger(ctx context.Context) *slog.Logger {
 }
 
 // Serve accepts associations on ln until ctx is cancelled. Cancelling closes
-// the listener and every association still running.
+// the listener and every association still running, and Serve returns once they
+// have ended.
+//
+// It is the shorthand for a server nobody needs a handle on; NewServer returns
+// one that can report and end the associations it is serving.
 func Serve(ctx context.Context, ln net.Listener, cfg ServerConfig) error {
-	cfg = cfg.withDefaults()
-	ctx = gonetdicom.LoggerContext(ctx, cfg.Logger, gonetdicom.ComponentSCP)
-	limiter := newAssocLimiter(cfg.MaxConcurrentAssociations)
-	go func() {
-		<-ctx.Done()
-		_ = ln.Close()
-	}()
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			select {
-			case <-ctx.Done():
-				return nil
-			default:
-				return fmt.Errorf("ae: accept: %w", err)
-			}
-		}
-		go func(c net.Conn) {
-			cfg.logger(ctx).Info("scp accepted connection",
-				gonetdicom.AttrRemote, c.RemoteAddr().String(),
-			)
-			if !limiter.acquire() {
-				_ = rejectOverloaded(ctx, c, cfg)
-				return
-			}
-			defer limiter.release()
-			if err := handleAssociation(ctx, c, cfg); err != nil && ctx.Err() == nil {
-				cfg.logger(ctx).Debug("scp association ended",
-					gonetdicom.AttrRemote, c.RemoteAddr().String(),
-					"err", err,
-				)
-			}
-		}(conn)
-	}
+	return NewServer(cfg).Serve(ctx, ln)
 }
 
 // ListenAndServeTLS listens on addr with cfg.TLS and serves associations.
 func ListenAndServeTLS(ctx context.Context, addr string, cfg ServerConfig) error {
-	if cfg.TLS == nil {
-		return fmt.Errorf("ae: ListenAndServeTLS requires ServerConfig.TLS")
-	}
-	ln, err := tls.Listen("tcp", addr, cfg.TLS)
-	if err != nil {
-		return fmt.Errorf("ae: tls listen %s: %w", addr, err)
-	}
-	defer ln.Close()
-	cfg = cfg.withDefaults()
-	ctx = gonetdicom.LoggerContext(ctx, cfg.Logger, gonetdicom.ComponentSCP)
-	cfg.logger(ctx).Info("scp listening (tls)", gonetdicom.AttrAddr, ln.Addr().String())
-	return Serve(ctx, ln, cfg)
+	return NewServer(cfg).ListenAndServeTLS(ctx, addr)
 }
 
-func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) error {
-	defer func() { _ = conn.Close() }()
+func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig, srv *Server) error {
 	ctx = gonetdicom.LoggerContext(ctx, cfg.Logger, gonetdicom.ComponentSCP)
-	defer closeOnDone(ctx, conn)()
+
+	// The registry entry covers the whole connection, including the handshake:
+	// a peer that is taking its time to send an A-ASSOCIATE-RQ holds a slot and
+	// is exactly what an operator looking at a full server wants to see.
+	assoc := srv.track(conn)
+	defer srv.untrack(assoc)
+
+	// Before an association exists there is nothing to abort, so a shutdown
+	// just closes the connection — that is what unblocks a peer that never sent
+	// an A-ASSOCIATE-RQ and is sitting in a read this package cannot interrupt.
+	// Once the association is up, the defer below takes over and says goodbye
+	// properly.
+	stopHandshakeWatch := closeOnDone(ctx, conn)
+	defer stopHandshakeWatch()
+	defer func() {
+		// The server's context being cancelled ends this association, and the
+		// peer is told so. Closing the socket instead reads at the far end as a
+		// network fault — the one thing a peer cannot tell apart from a pulled
+		// cable, and therefore the thing it retries.
+		if ctx.Err() != nil {
+			_ = writePDUConn(ctx, conn, &pdu.AAbort{Source: 0x00, ReasonDiagnostic: 0x00})
+		}
+		_ = conn.Close()
+	}()
 
 	// Declared up here so the panic handler below can name the peer; the
 	// closure reads whatever value info holds at the moment of the panic.
@@ -420,6 +430,7 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 		AsyncOperationsWindow:           answers.AsyncOps,
 	}
 	ctx = WithAssoc(ctx, info)
+	assoc.negotiatedInfo(info)
 
 	if err := checkProtocolVersion(ctx, conn, cfg, rq); err != nil {
 		return err
@@ -457,29 +468,15 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 		}
 	}
 
-	allowed := map[string]struct{}{
-		pdu.VerificationSOPClass: {},
-	}
-	acceptAll := false
-	for _, uid := range cfg.AcceptedAbstractSyntaxes {
-		if uid == "*" {
-			acceptAll = true
-			continue
-		}
-		allowed[uid] = struct{}{}
-	}
-
-	var acContexts []pdu.PresentationContextAC
 	accepted := map[byte]acceptedContext{}
+	contexts := cfg.acceptedContexts()
 	rqRoles := roleMap(rq.UserInformation.RoleSelections)
 	acRoles := roleMap(cfg.RoleSelections)
+	var acContexts []pdu.PresentationContextAC
 	var replyRoles []pdu.RoleSelection
 
 	for _, pc := range rq.PresentationContexts {
-		_, ok := allowed[pc.AbstractSyntax]
-		if acceptAll {
-			ok = true
-		}
+		syntaxes, ok := contexts.syntaxesFor(pc.AbstractSyntax)
 		if !ok || len(pc.TransferSyntaxes) == 0 {
 			acContexts = append(acContexts, pdu.PresentationContextAC{
 				ID:     pc.ID,
@@ -487,7 +484,7 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 			})
 			continue
 		}
-		ts, ok := negotiateTransferSyntax(pc.TransferSyntaxes, cfg.acceptedTransferSyntaxes())
+		ts, ok := negotiateTransferSyntax(pc.TransferSyntaxes, syntaxes)
 		if !ok {
 			acContexts = append(acContexts, pdu.PresentationContextAC{
 				ID:     pc.ID,
@@ -550,6 +547,9 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig) err
 	if err := writePDUConn(ctx, conn, ac); err != nil {
 		return err
 	}
+	// The association exists from here on, so ending it is the defer's job: it
+	// can say goodbye before closing, which the handshake watcher cannot.
+	stopHandshakeWatch()
 
 	// Negotiation is over: drop its deadline and let IdleTimeout (if any) govern
 	// the association from here on.

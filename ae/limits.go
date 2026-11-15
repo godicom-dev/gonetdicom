@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/godicom-dev/gonetdicom"
@@ -231,8 +232,13 @@ func withIdleTimeout(conn net.Conn, idle time.Duration) net.Conn {
 // closes the listener: a goroutine blocked reading an established association
 // stays blocked until its peer acts. Closing the connection is what actually
 // unblocks it.
+//
+// This is the pre-association watcher only: a connection that has not sent an
+// A-ASSOCIATE-RQ has no association to abort, so it gets a close. Once one
+// exists, handleAssociation's own defer ends it with A-ABORT instead.
 func closeOnDone(ctx context.Context, conn net.Conn) func() {
 	done := make(chan struct{})
+	var once sync.Once
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -240,5 +246,8 @@ func closeOnDone(ctx context.Context, conn net.Conn) func() {
 		case <-done:
 		}
 	}()
-	return func() { close(done) }
+	// Idempotent because the caller stops the watcher at the point where the
+	// association takes over ending the connection itself, and a second
+	// close(done) would panic in the middle of that handover.
+	return func() { once.Do(func() { close(done) }) }
 }

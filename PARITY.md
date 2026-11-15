@@ -27,7 +27,7 @@ table or not behaviours at all.
 | root | 95.8% | logger precedence, nil tolerance |
 | `dimse` | 90.4% | command encode/decode, status helpers |
 | `pdu` | 85.9% | every PDU and user-information item, incl. malformed frames |
-| `ae` | 85.0% | association, DIMSE dispatch, Q/R, N-services, the service class and status tables |
+| `ae` | 85.3% | association, DIMSE dispatch, Q/R, N-services, the service class and status tables, the server registry |
 | `dicomweb` | 81.3% | no pynetdicom counterpart (PS3.18 is not in it); Studies and Non-Patient Instance services |
 
 `go test ./... -cover` reproduces the table. Cross-package use does not count
@@ -45,7 +45,7 @@ control-PDU decoders are also driven through `ae`.
 | `test_service_storage.py` (24) | `ae/store_*_test.go`, `ae/stream_test.go`, `ae/subops*_test.go` | covered |
 | `test_service_n.py` (51), `test_assoc_n.py` (84) | `ae/n_status_test.go`, `ae/n_test.go`, `ae/action_test.go`, `ae/nevent_test.go` | covered |
 | `test_service_qr.py` (149) | `ae/find_test.go`, `ae/retrieve_test.go`, `ae/move_*_test.go`, `ae/subops_e2e_test.go`, `ae/validate_test.go`, `ae/qrmodel_test.go`, `ae/model_passthrough_test.go` | covered — including the per-model level tables (see gap 1) |
-| `test_presentation.py` (99) | `ae/contexts_test.go`, `ae/pc_negotiation_e2e_test.go`, `ae/role_*_test.go` | covered |
+| `test_presentation.py` (99) | `ae/contexts_test.go`, `ae/pc_negotiation_e2e_test.go`, `ae/role_*_test.go`, `ae/server_test.go` | partial — the negotiation half is covered; `build_context` and the 22 per-service context lists have no counterpart (see "What is still missing") |
 | `test_acse.py` (85) | `ae/handshake_test.go`, `ae/acse_robustness_test.go`, `ae/admit_test.go`, `ae/identity_test.go`, `ae/negotiation_test.go` | partial — see below |
 | `test_ae.py` (102) | `ae/scp.go`/`Config`/`ServerConfig` + the tests above | partial — see below |
 | `test_assoc.py` (213) | `ae/assoc_test.go`, `ae/release_test.go`, `ae/negotiation_test.go` | partial — see below |
@@ -59,14 +59,21 @@ control-PDU decoders are also driven through `ae`.
 | `test_dsutils.py` (56) | godicom | out of scope — dataset work lives in the dataset library |
 | `test_service_relevant_patient.py` (22), `test_service_non_patient.py` (12), `test_service_substance_admin.py` (8) | `ae/model_passthrough_test.go` | covered as pass-through — named models exported, no per-model validation |
 | `test_utils.py` (18), `test_validators.py` (3) | none | partial — see "Validation" below |
+| `apps/tests/` (229) | none | out of scope — the eight command-line tools; see "What is still missing" |
 
-Tally over the 34 upstream test modules: 13 covered, 3 covered as pass-through,
-11 partial, 7 out of scope. The out-of-scope set is 162 tests, and every one of
+Tally over the 34 upstream test modules: 12 covered, 3 covered as pass-through,
+12 partial, 7 out of scope. The out-of-scope set is 162 tests, and every one of
 them asserts something about pynetdicom's own objects: the event bus, the
-dataset helpers, the CLI, the ARTIM timer. Two blocks that used to be listed
-there — the state machine (`test_fsm.py`, `test_dul.py`) and the SOP Class
+dataset helpers, the CLI framework, the ARTIM timer. Two blocks that used to be
+listed there — the state machine (`test_fsm.py`, `test_dul.py`) and the SOP Class
 registry (`test_sop.py`, `test_service_class.py`) — are now partial, because part
-of what they assert does reach the wire; see gaps 6 and 7.
+of what they assert does reach the wire; see gaps 6 and 7. `test_presentation.py`
+moved the other way: its negotiation half is covered, but its per-service context
+lists are not there at all, and calling that "covered" hid the absence.
+
+`pynetdicom/apps/` is outside those 34 modules and outside the library: 4322
+lines of CLI over 6939 lines of end-to-end tests. It is the largest single thing
+this repository does not have, and it is not a library feature — see below.
 
 ## The gaps that remain, in order of what a peer would notice
 
@@ -120,6 +127,15 @@ catches every exception while receiving and sends A-ABORT with reason 0x00
 (`dul.py`), and `test_dul.py::test_unknown_pdu_aborts` /
 `::test_recv_bad_pdu_aborts` assert the association ends up aborted.
 
+Shutdown is the same statement in the other direction: cancelling the server's
+context ends every established association with A-ABORT
+(`TestServeCancellationEndsEstablishedAssociation`), closes connections that
+have not associated yet (`TestServeCancellationEndsConnectingClient`), and
+`Serve` returns only once the last handler has finished. pynetdicom's
+`AE.shutdown` aborts each active association before shutting its servers down,
+for the same reason: a closed socket is what a peer cannot tell apart from a
+network fault, and therefore the case it retries.
+
 Not covered: `network timeout` on a half-open socket (needs a controllable
 clock) and ARTIM timer expiry measured in seconds (we use `HandshakeTimeout`
 deadlines instead, which is the same guarantee by a different mechanism).
@@ -168,6 +184,12 @@ covered by every `ae` test that starts a server, not by a separate lifecycle API
 What the upstream module asserts about what goes on the wire — which contexts are
 accepted, how a rejection is worded, what happens when the same context is added
 twice — is covered by `ae/negotiation_test.go` and `ae/contexts_test.go`.
+
+The lifecycle half that `AE` also provides — enumerate the live associations, end
+one, wait for the last to finish — is `ae.NewServer`: `Associations`,
+`ActiveAssociation.Abort`, `AbortAll`, and a `Serve` that returns only after the
+last association goroutine has ended. `Serve(ctx, ln, cfg)` remains the shorthand
+for a server nobody needs a handle on, and both run the same code.
 
 Genuine gap inside this group: none left at the negotiation layer. Both 0x56
 (`SOP Class Extended Negotiation`) and 0x57 (`SOP Class Common Extended
@@ -288,6 +310,35 @@ cases) and its wrong-type case, plus `test_scp_raises`, which asserts that the
 base `ServiceClass.SCP` raises `NotImplementedError`. All six are about the type a
 Python callback returns or about an exception Python raises; the Go answers are
 the type system and 0x0122.
+
+## What is still missing
+
+The list below is what pynetdicom has and this package does not, named as
+features rather than as test counts. Three items that used to be spread across
+gaps 2–5 are closed and are not on it: per-SOP-Class transfer syntaxes at the
+acceptor (`ServerConfig.AcceptedContexts`), the requestor's view of the contexts
+an acceptor refused (`Association.RejectedContexts`, and `NoContextError` when
+none were accepted), and a registry of live associations (`ae.NewServer` with
+`Associations` and `AbortAll`).
+
+| Missing | pynetdicom | Here | Note |
+|---|---|---|---|
+| The eight command-line tools | `apps/{echoscu,echoscp,storescu,storescp,findscu,getscu,movescu,qrscp}` — 4322 lines of app over 6939 lines of end-to-end tests, including a Q/R SCP with its own handler database | nothing: there is no `package main` in this repository | The largest absence, and the one least worth closing. These are the reference implementation's own test harnesses: `storescu` exists so `storescp` can be tested, and both exist so the library can be. A Go stack the size of this one would get more from an `Example` per service and one real-PACS integration test than from eight more binaries to maintain |
+| Per-service presentation context lists | 22 constants — `QueryRetrievePresentationContexts`, `PrintManagementPresentationContexts`, `ModalityPerformedPresentationContexts`, `UnifiedProcedurePresentationContexts`, … — plus `build_context(uid)` | `ServiceClass.SOPClasses()` and `DefaultTransferSyntaxes`, composed by the caller | 22 of the 99 `test_presentation.py` cases. They assert that a list holds the right UIDs and the default syntaxes; the UIDs come from the service class table, so the missing part is the composition, not the data |
+| `require_calling_aet` | a list of calling AE titles; a peer that matches none is rejected | `Admit` plus `RejectError{Source: pdu.RejectSourceServiceUser, Reason: pdu.RejectReasonCallingAENotRecognized}` — expressible, but nothing is configured for it | A field away from being a config item; `require_called_aet` is `AETitle` / `AlternativeAETitles` / `AllowAnyCalledAETitle` |
+| `register_uid` | a private SOP Class is registered into the service-class table at run time | the table is static; a private UID answers `ServiceClassUnknown` and gets the general status set | Deliberate — a package-level mutable table is global state every other association has to agree with — but it is an absence, not a covered behaviour |
+| An association handle inside an SCP handler | `event.assoc`, so a handler can `send_c_store`, `send_n_event_report` or `send_c_find` on the connection it is serving | handlers receive `(ctx, req)`; the two protocol uses are purpose-built: C-GET and C-MOVE sub-operations store over the association, and an N-ACTION handler returns an `*EventReportRequest` to push the Storage Commitment report back | The gap shows up in a third-party service class that wants to initiate on an accepted association, not in DIMSE itself |
+
+Two more things are worth writing down as absences rather than gaps, because
+they would change behaviour if they were filled:
+
+- **Async operations.** pynetdicom does not implement them either — `acse.py`
+  answers `(1, 1)` to any proposed window — so implementing them would put this
+  package ahead of the reference, not level with it. See "If you want to move
+  the number".
+- **Retrieval Capabilities (PS3.18 8.9).** pynetdicom has no HTTP surface, so it
+  cannot be a parity item at all; it belongs to `dicomweb` and is still
+  unimplemented for the reason recorded there.
 
 ## Validation
 
