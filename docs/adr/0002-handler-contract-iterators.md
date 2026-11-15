@@ -3,8 +3,11 @@
 - Status: proposed
 - Date: 2026-11-15
 - Implemented: decision 1 for C-FIND (`ae.FindHandler`, `ae.FindSeq`,
-  `ae.FindMatches`, `ae.ErrPeerCancelled` / `ae.ErrPeerReleased`, unreleased).
-  C-GET and C-MOVE still return plans.
+  `ae.FindMatches`) and decision 2 for C-GET (`ae.GetHandler`, `ae.RetrieveOp`,
+  `ae.RetrievePlan`, `ae.StoreOutcome`, `ae.PlannedGet`, `ae.PlannedOps`), with
+  `ae.ErrPeerCancelled` / `ae.ErrPeerReleased` for both. Decisions 3–6 remain
+  proposed: C-MOVE still returns a `MovePlan`, and `StoreRequest.Source` and
+  `FragmentReader` are not written.
 
 ## The question
 
@@ -178,6 +181,31 @@ framework dials it before it asks for the count — matching pynetdicom's order,
 where the association to the Move Destination is opened between the first and
 second yield. `Total == 0` means "nothing to do" and produces a Success with
 zero counts, as upstream does; `Total > 65535` is `0xC416` / `0xC516`.
+
+### 2a. Two details the code settled
+
+Writing the C-GET half changed two things in the decision above, and both are
+corrections rather than drift:
+
+- **The framework does not invent a response for a `Store`.** pynetdicom's
+  contract is one response per yield, so a handler that wants the SCU to watch
+  progress yields a `Result` with a Pending status and the counts are filled in
+  on the way out (`subOperations.reconcileMatch`). Auto-sending a Pending after
+  every store would have doubled the responses of a handler that already yields
+  one, which is what every C-GET handler in the tree does.
+- **Reconciliation is per response, not per batch.** `reconcile` rewrote a slice
+  after the fact; `reconcileMatch` fills the same numbers into one response as it
+  is written, because a response that waits for the end of the operation is a
+  response the point of this ADR does not get to send.
+
+C-MOVE is the remaining service, and the reason it is not in the same change is
+decision 6: its sub-operations run on a second association and
+`MoveDestination.MaxAssociations` fans them out across a pool, which the
+write-back cannot survive — the handler resumes before a store dispatched to
+another goroutine comes back. Either the fan-out goes, or the batched operation
+that decision 6 sketches arrives first. That is a decision about a feature this
+package has and the reference does not, so it is not something to slip into a
+translation.
 
 ### 3. The statuses are pynetdicom's, and so is the arithmetic
 

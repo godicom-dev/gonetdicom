@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"io"
+	"iter"
 	"net"
 	"testing"
 	"time"
@@ -259,9 +260,9 @@ func TestCGetStreamsStoredDataset(t *testing.T) {
 				ctUID,
 			},
 			RoleSelections: []pdu.RoleSelection{ae.BuildRole(ctUID, true, true)},
-			OnCGet: func(context.Context, ae.GetRequest) ae.GetPlan {
+			OnCGet: func(context.Context, ae.GetRequest) iter.Seq2[*ae.RetrieveOp, error] {
 				ds := stored
-				return ae.GetPlan{
+				return ae.PlannedOps(ae.GetPlan{
 					Stores: []ae.StoreRequest{{
 						AffectedSOPClassUID:    ctUID,
 						AffectedSOPInstanceUID: sopInstance,
@@ -273,7 +274,7 @@ func TestCGetStreamsStoredDataset(t *testing.T) {
 							Completed: 1, Present: true,
 						},
 					}},
-				}
+				})
 			},
 		})
 	}()

@@ -3,6 +3,7 @@ package ae_test
 import (
 	"context"
 	"fmt"
+	"iter"
 	"net"
 	"strings"
 	"testing"
@@ -84,7 +85,7 @@ func TestCGetAggregatesSubOperationStatuses(t *testing.T) {
 						ctUID,
 					},
 					RoleSelections: []pdu.RoleSelection{ae.BuildRole(ctUID, true, true)},
-					OnCGet: func(_ context.Context, _ ae.GetRequest) ae.GetPlan {
+					OnCGet: func(context.Context, ae.GetRequest) iter.Seq2[*ae.RetrieveOp, error] {
 						plan := ae.GetPlan{}
 						for _, inst := range instances {
 							ds := godicom.NewDataset()
@@ -98,7 +99,7 @@ func TestCGetAggregatesSubOperationStatuses(t *testing.T) {
 							})
 						}
 						// No Responses: the framework reports the outcome.
-						return plan
+						return ae.PlannedOps(plan)
 					},
 				})
 			}()

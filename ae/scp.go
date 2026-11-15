@@ -87,17 +87,14 @@ type MoveDestination struct {
 	MaxAssociations int
 }
 
-// GetPlan is the SCP response plan for a C-GET-RQ.
-//
-// Stores are sent as C-STORE-RQ on the same association (SCU role), then
-// Responses are sent as C-GET-RSP.
+// GetPlan is the whole list of sub-operations a C-GET handler used to return:
+// its stores are sent as C-STORE-RQ on the same association (SCU role), then
+// its responses are sent as C-GET-RSP. PlannedGet adapts one to the handler
+// contract, which is what a handler that enumerates eagerly still returns.
 type GetPlan struct {
 	Stores    []StoreRequest
 	Responses []RetrieveMatch
 }
-
-// GetHandler handles an incoming C-GET-RQ.
-type GetHandler func(ctx context.Context, req GetRequest) GetPlan
 
 type acceptedContext struct {
 	AbstractSyntax string
@@ -1421,98 +1418,169 @@ func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg Server
 		return refuseGetIdentifier(ctx, conn, pcid, peerMax, rq.MessageID, rq.AffectedSOPClassUID, status)
 	}
 
-	var plan GetPlan
+	hctx, stopHandler := context.WithCancelCause(ctx)
+	defer stopHandler(nil)
+
+	// A handler that is absent answers Success, and one that returns a nil
+	// iterator says the same thing: there is nothing to retrieve and nothing to
+	// account for.
+	var seq iter.Seq2[*RetrieveOp, error]
 	if cfg.OnCGet != nil {
-		plan = cfg.OnCGet(ctx, GetRequest{
+		seq = cfg.OnCGet(hctx, GetRequest{
 			QueryModel:     rq.AffectedSOPClassUID,
 			Identifier:     ds,
 			IdentifierData: ident,
 			Priority:       rq.Priority,
 		})
 	}
-	if len(plan.Responses) == 0 {
-		plan.Responses = []RetrieveMatch{{Status: dimse.StatusSuccess}}
+	results := newSubOperations(0)
+	var (
+		sawPlan    bool
+		storeMsgID uint16 = 1
+	)
+	write := func(m RetrieveMatch) error {
+		return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false, []RetrieveMatch{m})
+	}
+	if seq == nil {
+		return write(RetrieveMatch{Status: dimse.StatusSuccess})
+	}
+	// cancel ends the operation the way the peer asked: the sub-operations it
+	// never got to are remaining, not failed (PS3.4 C.4.3.1.4).
+	cancel := func() error {
+		stopHandler(ErrPeerCancelled)
+		return write(results.cancelMatch(results.total - results.attempted()))
 	}
 
-	var storeMsgID uint16 = 1
-	// Every C-STORE sub-operation's response is tally here; before, the status
-	// was decoded and dropped, so a C-GET whose stores all failed answered the
-	// SCU Success with the handler's sub-operation counts unchanged.
-	results := newSubOperations(len(plan.Stores))
-	for i, store := range plan.Stores {
-		// Between two sub-operations is the only place a stop can be honoured:
-		// the C-STORE-RQ already on the wire has to be answered, or the next
-		// read would be one message behind. PS3.4 C.4.3.1.4 calls the untried
-		// ones "remaining", not failed, which is what cancelMatch reports.
-		switch r.pollStop(rq.MessageID) {
-		case stopAssociation:
-			return nil
-		case stopCancelled:
-			return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false,
-				[]RetrieveMatch{results.cancelMatch(len(plan.Stores) - i)})
+	for op, handlerErr := range seq {
+		if handlerErr != nil {
+			// pynetdicom answers a C-GET handler that raises with 0xC411 and
+			// ends the operation (:1777).
+			return write(RetrieveMatch{Status: dcmstatus.GetUnableToProcess})
 		}
-		storePCID, storeTS, ok := contextByAbstractAccepted(accepted, store.AffectedSOPClassUID)
-		if !ok {
-			return fmt.Errorf("ae: C-GET store missing presentation context for %s", store.AffectedSOPClassUID)
+		if op == nil || op.Plan == nil && op.Store == nil && op.Result == nil {
+			// An item that names no operation cannot be acted on, and the
+			// sub-operation count is what this most likely is: pynetdicom
+			// answers a first yield it cannot read with 0xC413 (:1739).
+			return write(RetrieveMatch{Status: dcmstatus.GetUnrecognizedOperation})
 		}
-		payload := store.Dataset
-		if store.Data != nil {
-			encoded, err := store.Data.Encode(godicom.UID(storeTS))
-			if err != nil {
-				return fmt.Errorf("ae: encode C-GET store dataset: %w", err)
+		switch {
+		case op.Plan != nil:
+			// Every count in every response is computed from the plan, so it
+			// has to arrive once, before anything else, and be a number the
+			// four US fields can carry.
+			if sawPlan || op.Plan.Total < 0 {
+				return write(RetrieveMatch{Status: dcmstatus.GetUnrecognizedOperation})
 			}
-			payload = encoded
-		}
-		cmd, err := (&dimse.CStoreRQ{
-			MessageID:                            storeMsgID,
-			Priority:                             store.Priority,
-			AffectedSOPClassUID:                  store.AffectedSOPClassUID,
-			AffectedSOPInstanceUID:               store.AffectedSOPInstanceUID,
-			MoveOriginatorApplicationEntityTitle: store.MoveOriginatorApplicationEntityTitle,
-			MoveOriginatorMessageID:              store.MoveOriginatorMessageID,
-			HasMoveOriginator:                    store.MoveOriginatorApplicationEntityTitle != "",
-		}).Encode()
-		if err != nil {
-			return err
-		}
-		storeMsgID++
-		if err := writeMessage(ctx, conn, storePCID, cmd, payload, peerMax); err != nil {
-			return err
-		}
-		// The response to this store is owed whatever else arrives first. A
-		// C-CANCEL that overtakes it used to be decoded as a C-STORE-RSP and
-		// fail the association; now it is noted and the read continues, so the
-		// operation ends the way the peer asked — at the next sub-operation
-		// boundary, with a Cancel status.
-		cancelled := false
-		for {
-			_, rspCmd, _, err := r.message(ctx)
+			if op.Plan.Total > math.MaxUint16 {
+				return write(RetrieveMatch{Status: dcmstatus.GetTooManySubOperations})
+			}
+			results = newSubOperations(op.Plan.Total)
+			sawPlan = true
+		case op.Store != nil:
+			if !sawPlan {
+				return write(RetrieveMatch{Status: dcmstatus.GetUnrecognizedOperation})
+			}
+			// Between two sub-operations is the only place a stop can be
+			// honoured: the C-STORE-RQ already on the wire has to be answered,
+			// or the next read would be one message behind.
+			switch r.pollStop(rq.MessageID) {
+			case stopAssociation:
+				stopHandler(ErrPeerReleased)
+				return nil
+			case stopCancelled:
+				return cancel()
+			}
+			status, cancelled, err := scpPerformGetStore(ctx, conn, r, accepted, peerMax, *op.Store, storeMsgID, rq.MessageID)
 			if err != nil {
 				if errors.Is(err, errAssociationEnding) {
 					return nil
 				}
 				return err
 			}
-			if c, err := dimse.DecodeCCancelRQ(rspCmd); err == nil && c.MessageIDBeingRespondedTo == rq.MessageID {
-				cancelled = true
-				continue
+			storeMsgID++
+			results.record(op.Store.AffectedSOPInstanceUID, nil, status)
+			op.Outcome = StoreOutcome{Status: status}
+			if cancelled {
+				return cancel()
 			}
-			rsp, err := dimse.DecodeCStoreRSP(rspCmd)
-			if err != nil {
-				return fmt.Errorf("ae: decode C-STORE-RSP during C-GET: %w", err)
+		case op.Result != nil:
+			// The counts and the aggregate status are this package's to
+			// report, so a response is reconciled as it is written rather than
+			// after the fact.
+			m := results.reconcileMatch(*op.Result)
+			if err := write(m); err != nil {
+				return err
 			}
-			results.record(store.AffectedSOPInstanceUID, nil, rsp.Status)
-			break
-		}
-		if cancelled {
-			return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false,
-				[]RetrieveMatch{results.cancelMatch(len(plan.Stores) - i - 1)})
+			if !dimse.IsPending(m.Status) {
+				return nil
+			}
 		}
 	}
 
-	plan.Responses = results.reconcile(plan.Responses)
+	// The handler ran out of items without saying how the operation ends.
+	// Without stores there is nothing to account for and the answer is a bare
+	// Success; with them, the aggregate and the counts are the measurement.
+	if results.total == 0 {
+		return write(RetrieveMatch{Status: dimse.StatusSuccess})
+	}
+	for _, m := range results.reconcile(nil) {
+		if err := write(m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, false, plan.Responses)
+// scpPerformGetStore writes one C-STORE-RQ for a C-GET on the association the
+// request arrived on, and returns the status the peer answered with.
+//
+// cancelled reports that a C-CANCEL for the C-GET overtook the response. The
+// response to a store already on the wire is owed, so the cancel is noted and
+// honoured at the next sub-operation boundary; decoding it as a C-STORE-RSP is
+// what used to fail the association.
+func scpPerformGetStore(ctx context.Context, conn net.Conn, r *assocReader, accepted map[byte]acceptedContext, peerMax uint32, store StoreRequest, storeMsgID, getMsgID uint16) (status uint16, cancelled bool, err error) {
+	storePCID, storeTS, ok := contextByAbstractAccepted(accepted, store.AffectedSOPClassUID)
+	if !ok {
+		return 0, false, fmt.Errorf("ae: C-GET store missing presentation context for %s", store.AffectedSOPClassUID)
+	}
+	payload := store.Dataset
+	if store.Data != nil {
+		encoded, err := store.Data.Encode(godicom.UID(storeTS))
+		if err != nil {
+			return 0, false, fmt.Errorf("ae: encode C-GET store dataset: %w", err)
+		}
+		payload = encoded
+	}
+	cmd, err := (&dimse.CStoreRQ{
+		MessageID:                            storeMsgID,
+		Priority:                             store.Priority,
+		AffectedSOPClassUID:                  store.AffectedSOPClassUID,
+		AffectedSOPInstanceUID:               store.AffectedSOPInstanceUID,
+		MoveOriginatorApplicationEntityTitle: store.MoveOriginatorApplicationEntityTitle,
+		MoveOriginatorMessageID:              store.MoveOriginatorMessageID,
+		HasMoveOriginator:                    store.MoveOriginatorApplicationEntityTitle != "",
+	}).Encode()
+	if err != nil {
+		return 0, false, err
+	}
+	if err := writeMessage(ctx, conn, storePCID, cmd, payload, peerMax); err != nil {
+		return 0, false, err
+	}
+	for {
+		_, rspCmd, _, err := r.message(ctx)
+		if err != nil {
+			return 0, false, err
+		}
+		if c, err := dimse.DecodeCCancelRQ(rspCmd); err == nil && c.MessageIDBeingRespondedTo == getMsgID {
+			cancelled = true
+			continue
+		}
+		rsp, err := dimse.DecodeCStoreRSP(rspCmd)
+		if err != nil {
+			return 0, false, fmt.Errorf("ae: decode C-STORE-RSP during C-GET: %w", err)
+		}
+		return rsp.Status, cancelled, nil
+	}
 }
 
 // writeRetrieveResponses encodes and writes a C-MOVE/C-GET response stream.

@@ -3,6 +3,7 @@ package ae_test
 import (
 	"context"
 	"fmt"
+	"iter"
 	"net"
 	"testing"
 	"time"
@@ -113,7 +114,7 @@ func getSCPWith(t *testing.T, n int, responses []ae.RetrieveMatch) string {
 				ae.PatientRootQueryRetrieveInformationModelGet,
 				secondaryCaptureSOPClass,
 			},
-			OnCGet: func(_ context.Context, _ ae.GetRequest) ae.GetPlan {
+			OnCGet: func(context.Context, ae.GetRequest) iter.Seq2[*ae.RetrieveOp, error] {
 				stores := make([]ae.StoreRequest, 0, n)
 				for i := 0; i < n; i++ {
 					stores = append(stores, ae.StoreRequest{
@@ -122,7 +123,7 @@ func getSCPWith(t *testing.T, n int, responses []ae.RetrieveMatch) string {
 						Dataset:                []byte{0x08, 0x00, 0x05, 0x00, 0x43, 0x53, 0x00, 0x00},
 					})
 				}
-				return ae.GetPlan{Stores: stores, Responses: responses}
+				return ae.PlannedOps(ae.GetPlan{Stores: stores, Responses: responses})
 			},
 		})
 	}()

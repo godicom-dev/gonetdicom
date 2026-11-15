@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"context"
+	"iter"
 	"math"
 	"net"
 	"sync/atomic"
@@ -127,12 +128,12 @@ func TestCGetSCURoundtrip(t *testing.T) {
 			RoleSelections: []pdu.RoleSelection{
 				ae.BuildRole(ctUID, true, true),
 			},
-			OnCGet: func(_ context.Context, _ ae.GetRequest) ae.GetPlan {
+			OnCGet: func(context.Context, ae.GetRequest) iter.Seq2[*ae.RetrieveOp, error] {
 				ds := godicom.NewDataset()
 				ds.Set(godicom.NewDataElement(godicom.MustTag("SOPClassUID"), godicom.VRUI, ctUID))
 				ds.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, sopInstance))
 				ds.Set(godicom.NewDataElement(godicom.MustTag("PatientName"), godicom.VRPN, "DOE^JOHN"))
-				return ae.GetPlan{
+				return ae.PlannedOps(ae.GetPlan{
 					Stores: []ae.StoreRequest{{
 						AffectedSOPClassUID:    ctUID,
 						AffectedSOPInstanceUID: sopInstance,
@@ -152,7 +153,7 @@ func TestCGetSCURoundtrip(t *testing.T) {
 							},
 						},
 					},
-				}
+				})
 			},
 		})
 	}()

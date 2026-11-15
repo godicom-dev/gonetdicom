@@ -214,11 +214,11 @@ func TestCGetStoreAssocContext(t *testing.T) {
 				ctUID,
 			},
 			RoleSelections: []pdu.RoleSelection{ae.BuildRole(ctUID, true, true)},
-			OnCGet: func(_ context.Context, _ ae.GetRequest) ae.GetPlan {
+			OnCGet: func(context.Context, ae.GetRequest) iter.Seq2[*ae.RetrieveOp, error] {
 				ds := godicom.NewDataset()
 				ds.Set(godicom.NewDataElement(godicom.MustTag("SOPClassUID"), godicom.VRUI, ctUID))
 				ds.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, sopInstance))
-				return ae.GetPlan{
+				return ae.PlannedOps(ae.GetPlan{
 					Stores: []ae.StoreRequest{{
 						AffectedSOPClassUID:    ctUID,
 						AffectedSOPInstanceUID: sopInstance,
@@ -228,7 +228,7 @@ func TestCGetStoreAssocContext(t *testing.T) {
 						Status:        dimse.StatusSuccess,
 						SubOperations: dimse.SubOperations{Completed: 1, Present: true},
 					}},
-				}
+				})
 			},
 		})
 	}()

@@ -33,6 +33,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `errors.Is` still works for callers that only checked that
 
 ### Changed
+- **Breaking.** `ServerConfig.OnCGet` returns `iter.Seq2[*ae.RetrieveOp, error]`
+  for the same reason `OnCFind` does, and with more to gain: the handler states
+  the sub-operation count (`ae.RetrievePlan{Total}`), then offers one `Store` at
+  a time, and the framework performs the store on the association and writes the
+  peer's C-STORE-RSP back into `op.Outcome` before the yield returns. A
+  five-hundred-instance retrieval therefore produces one instance at a time
+  instead of materialising five hundred `StoreRequest`s, and the handler learns
+  what actually happened to each of them — which pynetdicom's C-GET cannot
+  report, because there the handler calls `send_c_store` itself and the
+  framework only tallies what it is told. `ae.PlannedGet(plan)` and
+  `ae.PlannedOps(plan)` adapt the old return value in one line. The counts and
+  the aggregate status of every response are now the measured ones
+  (`subOperations.reconcileMatch`), a store offered before the count is
+  `0xC413`, more than 65535 sub-operations is `0xC416`, and a handler error is
+  `0xC411`. C-MOVE still returns a `MovePlan`: its sub-operations run on a second
+  association, and `MaxAssociations` fan-out and the iterator's write-back do not
+  both hold — that one needs its own decision
 - **Breaking.** `ServerConfig.OnCFind` returns `iter.Seq2[ae.FindMatch, error]`
   rather than `[]ae.FindMatch`: the handler is the Go spelling of pynetdicom's
   C-FIND generator, so a match is encoded and written before the next one is

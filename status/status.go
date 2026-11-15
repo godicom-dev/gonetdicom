@@ -64,6 +64,14 @@ const (
 	// decides which reading applies.
 	FindUnableToProcess        uint16 = 0xC311
 	FindIdentifierNotEncodable uint16 = 0xC312
+
+	// C-GET failures a handler can cause: raising (:1777), yielding something
+	// the framework cannot read as the sub-operation count (:1739), or
+	// planning more sub-operations than the four US fields can report
+	// (:1746).
+	GetUnableToProcess       uint16 = 0xC411
+	GetUnrecognizedOperation uint16 = 0xC413
+	GetTooManySubOperations  uint16 = 0xC416
 )
 
 // Unified Procedure Step (UPS) statuses (PS3.4).

@@ -115,9 +115,9 @@ func TestIdentifierValidatorRefusesRetrieval(t *testing.T) {
 			moveCalls++
 			return ae.MovePlan{}
 		},
-		OnCGet: func(context.Context, ae.GetRequest) ae.GetPlan {
+		OnCGet: func(context.Context, ae.GetRequest) iter.Seq2[*ae.RetrieveOp, error] {
 			getCalls++
-			return ae.GetPlan{}
+			return ae.PlannedOps(ae.GetPlan{})
 		},
 	}, ae.Config{
 		PresentationContexts: []ae.PresentationContext{

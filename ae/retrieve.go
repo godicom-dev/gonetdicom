@@ -3,6 +3,7 @@ package ae
 import (
 	"context"
 	"fmt"
+	"iter"
 
 	"github.com/godicom-dev/godicom"
 	"github.com/godicom-dev/godicom/uid"
@@ -51,6 +52,104 @@ type RetrieveMatch struct {
 	Status        uint16
 	SubOperations dimse.SubOperations
 	Identifier    *godicom.Dataset // Failed SOP Instance UID List when present
+}
+
+// RetrievePlan is the first item a C-GET handler yields: how many
+// sub-operations there are going to be.
+//
+// It is not a convenience. A Pending C-GET-RSP carries Number of Remaining
+// Sub-operations and the final one carries all four counts, and PS3.4
+// C.4.3.1.3 requires them to be consistent with each other — which cannot be
+// written truthfully without knowing the total up front. pynetdicom has the
+// same rule, expressed as "the first yield is the count"
+// (service_class.py:1727).
+type RetrievePlan struct {
+	Total int
+}
+
+// RetrieveOp is one item a C-GET handler yields. Exactly one of Plan, Store and
+// Result is set, and the order is the protocol's: a Plan first, then the
+// sub-operations, then whatever the handler wants to say.
+//
+// A Store is performed by the framework, on the association the request arrived
+// on, before the handler resumes; the peer's C-STORE-RSP is written back to
+// Outcome. That write-back is what replaces pynetdicom's association handle in
+// the handler: the handler reads the result on its own goroutine, with no lock
+// and no future — and because the number is measured rather than reported, the
+// counts in the responses are facts, not claims (PR #59 made the same change
+// for C-MOVE).
+type RetrieveOp struct {
+	// Plan states how many sub-operations follow. Required, and only valid as
+	// the first item.
+	Plan *RetrievePlan
+	// Store asks for one C-STORE sub-operation.
+	Store *StoreRequest
+	// Result sends this response as a C-GET-RSP. The counts and the aggregate
+	// status are the framework's to fill in: whatever the handler put there is
+	// replaced by the measurement.
+	Result *RetrieveMatch
+
+	// Outcome is what the peer answered for this Store. The framework writes it
+	// before the yield returns.
+	Outcome StoreOutcome
+}
+
+// StoreOutcome is the result of one sub-operation the framework performed.
+//
+// Status is the C-STORE-RSP the destination sent, which is the number the
+// counts are computed from. A sub-operation that could not be attempted at all
+// is not an outcome — for C-GET, which stores on the association it is serving,
+// that is a broken association rather than a per-instance failure, and it ends
+// the operation instead.
+type StoreOutcome struct {
+	Status uint16
+}
+
+// GetHandler handles an incoming C-GET-RQ. It returns an iterator over
+// *RetrieveOp, in the order the SCP should act on them.
+//
+// The iterator is the Go spelling of pynetdicom's C-GET generator
+// (service_class.py:1690-1810) with one difference that is the point of it: the
+// store belongs to the framework, so a 500-instance retrieval produces and sends
+// one instance at a time instead of materialising five hundred StoreRequests
+// before the first C-STORE leaves the process.
+//
+// ctx and the yield follow the same rules as FindHandler: the framework cancels
+// ctx when the peer stops the operation (context.Cause reports
+// ErrPeerCancelled / ErrPeerReleased), and a yield that returns false means the
+// peer is no longer listening.
+type GetHandler func(ctx context.Context, req GetRequest) iter.Seq2[*RetrieveOp, error]
+
+// PlannedOps yields a GetPlan's items in the order the slice contract sent
+// them: the plan, its stores one at a time, then its responses.
+//
+// It is the building block of PlannedGet and what a handler returns when it
+// enumerates eagerly but still has to run first — a lookup, a log line, a
+// decision about the identifier.
+func PlannedOps(plan GetPlan) iter.Seq2[*RetrieveOp, error] {
+	return func(yield func(*RetrieveOp, error) bool) {
+		if !yield(&RetrieveOp{Plan: &RetrievePlan{Total: len(plan.Stores)}}, nil) {
+			return
+		}
+		for i := range plan.Stores {
+			if !yield(&RetrieveOp{Store: &plan.Stores[i]}, nil) {
+				return
+			}
+		}
+		for i := range plan.Responses {
+			if !yield(&RetrieveOp{Result: &plan.Responses[i]}, nil) {
+				return
+			}
+		}
+	}
+}
+
+// PlannedGet adapts a GetPlan — the whole list of sub-operations, which is what
+// every C-GET handler used before the iterator contract — to a GetHandler.
+func PlannedGet(plan GetPlan) GetHandler {
+	return func(context.Context, GetRequest) iter.Seq2[*RetrieveOp, error] {
+		return PlannedOps(plan)
+	}
 }
 
 // CMove sends a C-MOVE-RQ and collects responses until a final status.
