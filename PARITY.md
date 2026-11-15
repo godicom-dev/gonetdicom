@@ -55,7 +55,7 @@ control-PDU decoders are also driven through `ae`.
 | `test_dul.py` (10), `test_fsm.py` (273) | `ae/acse_robustness_test.go`, `ae/malformed_test.go`, `ae/undecodable_test.go` | partial — see below |
 | `test_primitives.py` (50), `test_events.py` (23), `test_dimse_provider.py` (22) | none | out of scope — these assert that Python objects hold the values they were given and that `evt.trigger` calls the bound handler; the corresponding behaviour here is a function call |
 | `test_timer.py` (7), `test_cli.py` (2), `test_environment.py` (2) | none | out of scope — a thread-based TIMER, a command line, and version/env lookup; `HandshakeTimeout` and `IdleTimeout` are the timeouts that reach the wire |
-| `test_sop.py` (67), `test_service_class.py` (13) | `status`, `ae/validate_test.go`, `ae/scp_cancel_move_test.go` | partial — see below |
+| `test_sop.py` (67), `test_service_class.py` (13) | `ae/serviceclass_test.go`, `status`, `ae/validate_test.go`, `ae/scp_cancel_move_test.go` | partial — see below |
 | `test_dsutils.py` (56) | godicom | out of scope — dataset work lives in the dataset library |
 | `test_service_relevant_patient.py` (22), `test_service_non_patient.py` (12), `test_service_substance_admin.py` (8) | `ae/model_passthrough_test.go` | covered as pass-through — named models exported, no per-model validation |
 | `test_utils.py` (18), `test_validators.py` (3) | none | partial — see "Validation" below |
@@ -215,6 +215,29 @@ enters the bad state — the abort paths above end the association instead.
 `test_sop.py` and `test_service_class.py` cover pynetdicom's registry: 67 tests
 that walk UID tables and 13 that exercise the two behaviours built on them.
 
+The table is now here, as `ae/serviceclass.go`: 23 service classes,
+`ServiceClassOf` and `ServiceClass.SOPClasses`, with
+`ae/serviceclass_test.go::TestServiceClassesMatchPynetdicom` parsing
+`pynetdicom/pynetdicom/sop_class.py` and requiring the two to agree UID for UID
+where the submodule is checked out. That covers the 26
+`test_sop.py::TestUIDToServiceClass` cases one for one, including the two that
+are easy to get wrong: `1.2.840.10008.4.2` is a Service Class UID rather than a
+SOP Class and is answered without being offered as an abstract syntax, and
+`MediaStorageDirectoryStorage` has no service class in pynetdicom either.
+
+Where it lives moved since this section was first written. It said the map
+belonged in `godicom/uid`, next to the UIDs; that was this repository's layering
+talking. pynetdicom keeps it in the network stack, pydicom — the library godicom
+ports — has no notion of a service class, and the mapping is stated in PS3.4
+rather than in the UID registry of PS3.6. A DIMSE stack is the only place that
+needs to know it.
+
+What remains of `test_sop.py` is the `SOPClass` type: 35 tests that assert a
+named constant equals a UID and carries a `service_class` attribute. The
+constant-equals-UID half is godicom's (`uid.CTImageStorage`), and the attribute
+half is the table above; the type itself has no Go counterpart, because a UID
+here is a string.
+
 The behaviours, which do reach the wire:
 
 - `ServiceClass.is_cancelled` — whether a C-CANCEL arrived for a given Message
@@ -230,12 +253,12 @@ The behaviours, which do reach the wire:
   with no Status element" is answered 0xC001, and here a handler returns a status
   value, so there is no such dataset.
 
-The tables themselves are not here, and that is the part `test_sop.py` mostly
-asserts: which UID belongs to which Service Class. A DIMSE stack dispatches on
-the Command Field, not on the SOP Class, so the registry buys nothing on the
-wire — but it is a real table, and the one place a Go user needs it is
-`godicom/uid`, which already names the SOP Classes. A `uid → Service Class` map
-belongs there rather than in the network stack, next to the UIDs it maps.
+What is left of this group is the status sets: `test_service_class.py`'s
+`is_valid_status` / `validate_status` cases check a status code against the
+per-class list. pynetdicom logs a status outside that list and sends it anyway,
+so nothing reaches the wire; a Go handler returns a status value and this
+package sends it. `status` holds the values and the predicates
+(`status.IsPending`, `status.IsWarning`), which is the part a handler uses.
 
 ## Validation
 
@@ -290,7 +313,7 @@ What is left, measured against upstream test counts:
 | Upstream block | Tests | Why it is not covered |
 |---|---|---|
 | `test_fsm.py` | 273 | asserts the state table, not the wire; the wire half is gap 6 |
-| `test_sop.py`, `test_service_class.py` | 80 | a UID → Service Class table, which belongs in `godicom/uid`; the two behaviours on top of it are gap 7 |
+| `test_sop.py`, `test_service_class.py` | 80 | 26 of them are the UID → Service Class table, and that table is `ae/serviceclass.go` now. What is left is the `SOPClass` type (35), the per-class status sets (13) and the UID-dictionary membership cases (6), all described in gap 7 |
 | `test_primitives.py`, `test_events.py`, `test_dimse_provider.py` | 95 | the Python object model |
 | `test_timer.py`, `test_cli.py`, `test_environment.py` | 11 | a thread, a command line, version lookup |
 | `test_dsutils.py` | 56 | godicom's |

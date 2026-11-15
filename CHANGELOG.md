@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The DIMSE service classes as a table: `ae.ServiceClassOf` names the class a SOP
+  Class UID belongs to, a class returns its SOP Classes
+  (`ae.ServiceClassPrintManagement.SOPClasses()`), and `ae.ServiceClasses` lists
+  all 23. This is pynetdicom's `uid_to_service_class` and `_*_CLASSES`, and it
+  answers the question a presentation context list poses — which UIDs make up
+  MPPS, or print management, or storage commitment — without a literal list in
+  every application. A UID no class claims is `ae.ServiceClassUnknown`, the same
+  answer pynetdicom gives by returning its base `ServiceClass`. The two Service
+  Class UIDs are answered but appear in no list, because they are not abstract
+  syntaxes. Storage names the existing `AllStorageSOPClasses` rather than a
+  second copy of the same UIDs
 - `pdu.ErrUndecodable`, which marks a PDU that arrived in full but does not
   parse — an unknown type, or a body its type does not explain — and nothing
   else: a read that ends early stays an I/O error, because a peer that
