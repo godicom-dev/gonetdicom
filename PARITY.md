@@ -27,7 +27,7 @@ table or not behaviours at all.
 | root | 95.8% | logger precedence, nil tolerance |
 | `dimse` | 90.4% | command encode/decode, status helpers |
 | `pdu` | 85.9% | every PDU and user-information item, incl. malformed frames |
-| `ae` | 84.8% | association, DIMSE dispatch, Q/R, N-services |
+| `ae` | 85.0% | association, DIMSE dispatch, Q/R, N-services, the service class and status tables |
 | `dicomweb` | 81.3% | no pynetdicom counterpart (PS3.18 is not in it); Studies and Non-Patient Instance services |
 
 `go test ./... -cover` reproduces the table. Cross-package use does not count
@@ -55,7 +55,7 @@ control-PDU decoders are also driven through `ae`.
 | `test_dul.py` (10), `test_fsm.py` (273) | `ae/acse_robustness_test.go`, `ae/malformed_test.go`, `ae/undecodable_test.go` | partial — see below |
 | `test_primitives.py` (50), `test_events.py` (23), `test_dimse_provider.py` (22) | none | out of scope — these assert that Python objects hold the values they were given and that `evt.trigger` calls the bound handler; the corresponding behaviour here is a function call |
 | `test_timer.py` (7), `test_cli.py` (2), `test_environment.py` (2) | none | out of scope — a thread-based TIMER, a command line, and version/env lookup; `HandshakeTimeout` and `IdleTimeout` are the timeouts that reach the wire |
-| `test_sop.py` (67), `test_service_class.py` (13) | `ae/serviceclass_test.go`, `status`, `ae/validate_test.go`, `ae/scp_cancel_move_test.go` | partial — see below |
+| `test_sop.py` (67), `test_service_class.py` (13) | `ae/serviceclass_test.go`, `ae/serviceclass_status_test.go`, `ae/scp_cancel_move_test.go` | partial — the `SOPClass` type and the dataset half of `validate_status`; see gap 7 |
 | `test_dsutils.py` (56) | godicom | out of scope — dataset work lives in the dataset library |
 | `test_service_relevant_patient.py` (22), `test_service_non_patient.py` (12), `test_service_substance_admin.py` (8) | `ae/model_passthrough_test.go` | covered as pass-through — named models exported, no per-model validation |
 | `test_utils.py` (18), `test_validators.py` (3) | none | partial — see "Validation" below |
@@ -246,19 +246,48 @@ The behaviours, which do reach the wire:
   sub-operation boundary.
 - `ServiceClass.validate_status` / `is_valid_status` — a handler's status is
   merged into the response, and a status outside the service class's set is
-  logged and **still sent**; nothing is refused at the wire. Covered in the same
-  sense: `status` provides the values and predicates, and no path in this package
-  validates a handler's status before sending it. pynetdicom's extra work here
-  answers a question a Go handler cannot ask — "a callback returned a `Dataset`
-  with no Status element" is answered 0xC001, and here a handler returns a status
-  value, so there is no such dataset.
+  logged and **still sent**; nothing is refused at the wire. Both halves are here
+  now, in the places a Go handler can reach them: the sets are
+  `ae/serviceclass_status.go` and `ServiceClass.HasStatus`, and the log is
+  `warnUnexpectedStatus`, called from `writeMessage` so that every response this
+  package sends is checked in one place. The half that has no counterpart is
+  `validate_status`'s input: pynetdicom accepts a `Dataset` from a callback, so it
+  has to answer 0xC001 when it holds no Status element and 0xC002 when the
+  callback returned neither a dataset nor an int. A Go handler returns a
+  `uint16`; there is nothing to repair and no wrong type to refuse.
 
-What is left of this group is the status sets: `test_service_class.py`'s
-`is_valid_status` / `validate_status` cases check a status code against the
-per-class list. pynetdicom logs a status outside that list and sends it anyway,
-so nothing reaches the wire; a Go handler returns a status value and this
-package sends it. `status` holds the values and the predicates
-(`status.IsPending`, `status.IsWarning`), which is the part a handler uses.
+That leaves the status sets as data rather than as a gap:
+
+`ae/serviceclass_status.go` carries the general list and the twelve class annexes
+of `status.py` -- Storage (B.2.3), C-FIND / C-GET / C-MOVE (C.4), worklist (K),
+relevant patient (Q), substance administration (V), non-patient storage (GG),
+procedure step, print job management (H), application event logging (I), UPS
+(CC) and RT machine verification (DD). `ServiceClass.HasStatus` answers them, and
+the `RetrieveOperation` parameter is what keeps C-FIND and C-MOVE apart: 0xB001 is
+a C-FIND warning, 0xA801 a C-MOVE failure, and 0xA702 belongs to the two
+operations that perform sub-operations. pynetdicom makes the same distinction by
+picking `QR_*_SERVICE_CLASS_STATUS` in `QueryRetrieveServiceClass.__init__`; here
+the operation is the key, which is also what the wire carries.
+
+Annexes give ranges (`0xC000-0xCFFF: unable to process`) and the table keeps them
+as ranges. pynetdicom materialises four thousand dict entries instead; both are
+the same set, and `TestStatusSetsMatchPynetdicom` compares them by sweeping all
+65536 codes, so a mistake in a range bound fails the same way a wrong code does.
+
+Three tables in `status.py` are defined and attached to nothing, and are
+therefore not copied: the Annex K worklist set (because
+`BasicWorklistManagementServiceClass` answers `QR_FIND_SERVICE_CLASS_STATUS`),
+and the Media Creation and Storage Management sets (because neither class sets
+`statuses`). Following the table instead of the behaviour would have blessed a
+status pynetdicom warns about. The test asserts the codes that tell the two
+apart, so an upstream change that attaches one of them arrives as a failure
+rather than as silence.
+
+What is left of `test_service_class.py` is `validate_status`'s dataset half (four
+cases) and its wrong-type case, plus `test_scp_raises`, which asserts that the
+base `ServiceClass.SCP` raises `NotImplementedError`. All six are about the type a
+Python callback returns or about an exception Python raises; the Go answers are
+the type system and 0x0122.
 
 ## Validation
 
@@ -313,7 +342,7 @@ What is left, measured against upstream test counts:
 | Upstream block | Tests | Why it is not covered |
 |---|---|---|
 | `test_fsm.py` | 273 | asserts the state table, not the wire; the wire half is gap 6 |
-| `test_sop.py`, `test_service_class.py` | 80 | 26 of them are the UID → Service Class table, and that table is `ae/serviceclass.go` now. What is left is the `SOPClass` type (35), the per-class status sets (13) and the UID-dictionary membership cases (6), all described in gap 7 |
+| `test_sop.py`, `test_service_class.py` | 80 | 26 of them are the UID → Service Class table, and that table is `ae/serviceclass.go` now; the 13 `test_service_class.py` cases are down to the dataset half of `validate_status` and `test_scp_raises`. What is left is the `SOPClass` type (35), the Python-typed status cases (6) and the UID-dictionary membership cases (6), all described in gap 7 |
 | `test_primitives.py`, `test_events.py`, `test_dimse_provider.py` | 95 | the Python object model |
 | `test_timer.py`, `test_cli.py`, `test_environment.py` | 11 | a thread, a command line, version lookup |
 | `test_dsutils.py` | 56 | godicom's |

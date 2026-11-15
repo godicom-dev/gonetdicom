@@ -1531,6 +1531,7 @@ func contextByAbstractAccepted(accepted map[byte]acceptedContext, uid string) (b
 
 func writeMessage(ctx context.Context, conn net.Conn, pcid byte, command, dataset []byte, maxPDU uint32) error {
 	logDIMSE(ctx, "send", pcid, command)
+	warnUnexpectedStatus(ctx, command)
 	pdus, err := pdu.FragmentMessage(pcid, command, dataset, maxPDU)
 	if err != nil {
 		return err
