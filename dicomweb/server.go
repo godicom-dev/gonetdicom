@@ -140,7 +140,7 @@ func (s *MemoryStore) PutInstance(studyUID string, part10 []byte) error {
 	// and a store that indexed four of them could not answer that. This is the
 	// reference store — an archive with a real database indexes what it needs
 	// and answers includefield from the query — so it keeps what it was given.
-	meta := fd.Dataset.Clone()
+	meta := fd.Clone()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
