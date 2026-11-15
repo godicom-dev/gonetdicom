@@ -19,7 +19,8 @@ medical domains.
 *gonetdicom* implements the DICOM networking protocol in Go. Working with
 [godicom](https://github.com/godicom-dev/godicom), it allows the easy creation of
 DICOM *Service Class Users* (SCUs) and *Service Class Providers* (SCPs), plus a
-DICOMweb user agent and origin-server MVP.
+DICOMweb user agent and origin-server MVP covering the Studies and Non-Patient
+Instance services.
 
 *gonetdicom*'s main association helpers live in package
 [`ae`](https://pkg.go.dev/github.com/godicom-dev/gonetdicom/ae):
@@ -500,6 +501,37 @@ bounds it at `dicomweb.DefaultMaxRequestBytes` (256 MiB) unless
 responses carry only a status and a fixed reason — the cause comes from your
 `Store`, from decoding stored bytes, or from the render path, and goes to the
 request context's logger (`gonetdicom.WithLogger`) instead of to the requestor.
+
+### Non-Patient Instance Service
+
+PS3.18 section 12 serves the instances whose information model has no Patient at
+the root — colour palettes, hanging protocols, implant templates, defined
+procedure protocols, protocol approvals, inventories — from six resource names of
+their own:
+
+```go
+palettes, err := client.SearchNonPatientInstances(ctx, "color-palettes",
+	url.Values{"ContentLabel": {"HOT"}})
+raw, err := client.RetrieveNonPatientInstance(ctx, "color-palettes", sopUID)
+_, err = client.StoreNonPatientFiles(ctx, "color-palettes", []*godicom.FileDataset{palette})
+```
+
+`dicomweb.NonPatientCategories()` lists the six names. On the server side the
+service is optional in two ways, which is why it is a second pair of interfaces
+instead of three more methods on `Store`:
+
+- A `Store` that does not implement `dicomweb.NonPatientRetriever` serves no
+  non-patient resources: the six paths are not registered and answer 404 like any
+  other path the server does not have. A clinical archive that holds none of these
+  objects should not have to say so three times.
+- One that implements `NonPatientRetriever` but not `dicomweb.NonPatientStore`
+  serves Retrieve and Search and answers POST with 405 and `Allow: GET`. That is
+  PS3.18 12.1 read literally: the Store Transaction is optional for this service,
+  so a read-only archive is a complete implementation of it.
+
+The instance segment of the path is checked against UID syntax before the store is
+called. Joining category and UID onto a directory is the ordinary way to write a
+store, and `..` would then name the parent directory rather than an instance.
 
 ## Logging
 

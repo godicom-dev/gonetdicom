@@ -4,6 +4,8 @@
 //   - WADO-RS Retrieve Study / Series / Instance (+ metadata)
 //   - STOW-RS Store Instances (multipart/related; type="application/dicom")
 //   - QIDO-RS Search for Studies / Series / Instances
+//   - Non-Patient Instance Service: Retrieve, Store and Search on the six
+//     resource names of PS3.18 section 12
 package dicomweb
 
 import (
