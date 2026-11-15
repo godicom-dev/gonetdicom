@@ -476,7 +476,17 @@ bulk, err := client.RetrieveBulkData(ctx, studyUID, seriesUID, sopUID)
 frames, err := client.RetrieveFrames(ctx, studyUID, seriesUID, sopUID, []int{1})
 
 matches, err := client.SearchStudies(ctx, url.Values{"PatientID": {"P001"}})
+allSeries, err := client.SearchAllSeries(ctx, url.Values{"Modality": {"CT"}})
+allInst, err := client.SearchAllInstances(ctx, url.Values{"StudyInstanceUID": {studyUID}})
 ```
+
+`SearchAllSeries` and `SearchAllInstances` are the two top-level Search targets
+(`GET /series`, `GET /instances`), which PS3.18 10.1 defines as "all Series in all
+Studies" and "all Instances in all Series in all Studies". They are separate
+methods rather than `SearchSeries` with an empty UID: a UID that arrives empty
+from a variable is a bug, and it should not come back as the archive. Since the
+URI names no parent, the parent is a query key instead — `?StudyInstanceUID=`
+against `/series`, `?SeriesInstanceUID=` against `/instances`.
 
 UIDs are checked before a request is built: a study, series, or instance UID
 carrying a `/`, a `..`, or a `%` names a resource other than the one asked for, so
@@ -532,6 +542,16 @@ instead of three more methods on `Store`:
 The instance segment of the path is checked against UID syntax before the store is
 called. Joining category and UID onto a directory is the ordinary way to write a
 store, and `..` would then name the parent directory rather than an instance.
+
+### The two empty UIDs in `Store`
+
+`Store.SearchSeries` and `Store.SearchInstances` take the enclosing UIDs as
+arguments, and either may be empty. Empty is the *absent level of the URI*, not a
+study named by the empty string: `SearchSeries("", q)` is `GET /series` and must
+return every series the store holds. An implementation that reads an empty study
+as "a study I do not have" returns nothing, and the server answers `204 No
+Content` to a request it could have answered — which reads to the user agent as
+an empty archive rather than as a store that does not support the target.
 
 ## Logging
 
