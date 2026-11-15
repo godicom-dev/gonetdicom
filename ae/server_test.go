@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"strings"
@@ -72,6 +73,29 @@ func TestSCPAcceptedContextsWildcardCoversUnlistedClasses(t *testing.T) {
 	requireContextResults(t, got, map[byte]byte{
 		1: pcTransferSyntaxesNotSup,
 		3: pcAcceptance,
+	})
+}
+
+// An entry with no syntaxes of its own uses the server-wide preference, so a
+// class can be named without repeating the default list — which is what
+// AcceptedTransferSyntaxes still means once a class is listed.
+func TestSCPAcceptedContextsEntryFallsBackToDefaultSyntaxes(t *testing.T) {
+	t.Parallel()
+
+	ct := string(uid.CTImageStorage)
+	addr := serveSCP(t, ae.ServerConfig{
+		AETitle: "FALLBACKSCP",
+		AcceptedContexts: []ae.PresentationContext{
+			{AbstractSyntax: ct},
+		},
+	})
+	got := associate(t, addr, acceptRQ("FALLBACKSCP",
+		contextRQ(1, ct, string(uid.ExplicitVRLittleEndian)), // in the default set
+		contextRQ(3, ct, string(uid.JPEG2000Lossless)),       // not in it
+	))
+	requireContextResults(t, got, map[byte]byte{
+		1: pcAcceptance,
+		3: pcTransferSyntaxesNotSup,
 	})
 }
 
@@ -390,6 +414,99 @@ func TestServerShutdownAbortsAssociations(t *testing.T) {
 	}
 	if left := len(srv.Associations()); left != 0 {
 		t.Errorf("%d associations still registered after Serve returned", left)
+	}
+}
+
+// The handle form binds its own TLS listener, so a DICOM-over-TLS peer reaches
+// it the same way it reaches the function form.
+func TestServerListenAndServeTLSServes(t *testing.T) {
+	t.Parallel()
+
+	cert, pool := testTLSMaterial(t)
+
+	// Reserve a port, then hand the address to ListenAndServeTLS, which binds it
+	// itself. The window between the two is why the dial below retries.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := probe.Addr().String()
+	_ = probe.Close()
+
+	srv := ae.NewServer(ae.ServerConfig{
+		AETitle: "TLSSRV",
+		TLS:     &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.ListenAndServeTLS(ctx, addr) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("ListenAndServeTLS returned %v, want nil", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("ListenAndServeTLS did not return after cancellation")
+		}
+	})
+
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer dialCancel()
+
+	var assoc *ae.Association
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		assoc, err = ae.Dial(dialCtx, ae.Config{
+			AETitle: "TLSSRU",
+			TLS:     &tls.Config{RootCAs: pool, ServerName: "localhost", MinVersion: tls.VersionTLS12},
+		}, addr, "TLSSRV")
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("dial: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	defer func() { _ = assoc.Release(dialCtx) }()
+
+	if err := assoc.CEcho(dialCtx); err != nil {
+		t.Fatalf("C-ECHO over TLS: %v", err)
+	}
+}
+
+// HTTPS is opt-in per call, not a property of the server: without a TLS config
+// there is nothing to listen with.
+func TestServerListenAndServeTLSRequiresConfig(t *testing.T) {
+	t.Parallel()
+
+	srv := ae.NewServer(ae.ServerConfig{AETitle: "NOTLS"})
+	err := srv.ListenAndServeTLS(context.Background(), "127.0.0.1:0")
+	if err == nil {
+		t.Fatal("ListenAndServeTLS without a TLS config returned nil")
+	}
+	if !strings.Contains(err.Error(), "TLS") {
+		t.Errorf("error %q does not say what is missing", err)
+	}
+}
+
+// A listener that fails for a reason of its own ends Serve with that error
+// instead of looking like a shutdown: the two are different answers to the same
+// Accept call, and confusing them would report a broken socket as a clean stop.
+func TestServerServeReportsAcceptError(t *testing.T) {
+	t.Parallel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = ln.Close()
+
+	srv := ae.NewServer(ae.ServerConfig{AETitle: "BROKENSCP"})
+	if err := srv.Serve(context.Background(), ln); err == nil {
+		t.Fatal("Serve returned nil on a closed listener, want the accept error")
 	}
 }
 

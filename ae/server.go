@@ -127,9 +127,6 @@ func (s *Server) ListenAndServeTLS(ctx context.Context, addr string) error {
 // is harmless (Abort is a no-op then, Info still answers), but it does not keep
 // anything running.
 func (s *Server) Associations() []*ActiveAssociation {
-	if s == nil {
-		return nil
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]*ActiveAssociation, 0, len(s.reg))
@@ -156,12 +153,8 @@ func (s *Server) AbortAll() int {
 }
 
 // track registers a connection and returns its handle for the association
-// goroutine to fill in. A nil *Server (the function form of Serve) tracks
-// nothing and returns nil, and every method below tolerates that.
+// goroutine to fill in.
 func (s *Server) track(conn net.Conn) *ActiveAssociation {
-	if s == nil {
-		return nil
-	}
 	a := &ActiveAssociation{conn: conn, since: time.Now()}
 	s.mu.Lock()
 	s.reg[a] = struct{}{}
@@ -170,9 +163,6 @@ func (s *Server) track(conn net.Conn) *ActiveAssociation {
 }
 
 func (s *Server) untrack(a *ActiveAssociation) {
-	if s == nil || a == nil {
-		return
-	}
 	s.mu.Lock()
 	delete(s.reg, a)
 	s.mu.Unlock()
@@ -199,17 +189,11 @@ type ActiveAssociation struct {
 // is also when it is most useful: an association that never associates is a
 // connection, and this is all there is to say about it.
 func (a *ActiveAssociation) RemoteAddr() net.Addr {
-	if a == nil {
-		return nil
-	}
 	return a.conn.RemoteAddr()
 }
 
 // Since is when the connection was accepted.
 func (a *ActiveAssociation) Since() time.Time {
-	if a == nil {
-		return time.Time{}
-	}
 	return a.since
 }
 
@@ -220,9 +204,6 @@ func (a *ActiveAssociation) Since() time.Time {
 // that is connected but has not said who it is. It never becomes false again:
 // the last values stay readable after the association ends.
 func (a *ActiveAssociation) Info() (AssocInfo, bool) {
-	if a == nil {
-		return AssocInfo{}, false
-	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.info, a.negotiated
@@ -235,9 +216,6 @@ func (a *ActiveAssociation) Info() (AssocInfo, bool) {
 // believes that retries into a server that has already decided to cut it off.
 // Calling it twice, or on an association that has already ended, is a no-op.
 func (a *ActiveAssociation) Abort() error {
-	if a == nil {
-		return nil
-	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.closed {
@@ -251,9 +229,6 @@ func (a *ActiveAssociation) Abort() error {
 
 // negotiatedInfo records the peer's identity once the handshake has read it.
 func (a *ActiveAssociation) negotiatedInfo(info AssocInfo) {
-	if a == nil {
-		return
-	}
 	a.mu.Lock()
 	a.info = info
 	a.negotiated = true
