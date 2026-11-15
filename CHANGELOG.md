@@ -5,6 +5,47 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `ae.NewServer`, an SCP that keeps a registry of the associations it is serving:
+  `Associations()` returns them, `ActiveAssociation.Abort()` ends one with
+  A-ABORT, `AbortAll()` ends every one, and `Info()` reports the AE titles and
+  peer identification the association negotiated (with `ok=false` while it is
+  still negotiating). `Serve(ctx, ln, cfg)` is unchanged and runs the same code
+  with the registry off. pynetdicom exposes the same three things as
+  `AE.active_associations`, `Association.abort` and `AE.shutdown`
+- `ServerConfig.AcceptedContexts`, which states the accepted presentation
+  contexts a SOP Class at a time with its own transfer-syntax preference
+  (pynetdicom's `add_supported_context(uid, transfer_syntaxes)`). When set it
+  replaces `AcceptedAbstractSyntaxes` and `AcceptedTransferSyntaxes`, because a
+  class-at-a-time list is the more specific statement. This is what lets an SCP
+  decode some classes and pass the rest through: implicit VR for the ones it
+  parses, `"*"` for the ones it files untouched. An unlisted class is answered
+  with result 3, an unlisted syntax with result 4, and a `"*"` entry covers the
+  classes the list does not name
+- `Association.RejectedContexts()`, the contexts the acceptor refused with the
+  result it gave, so a requestor can tell "this peer does not serve that class"
+  (3) from "it does, but not in a syntax either of us offered" (4). The two used
+  to be indistinguishable: both arrived as a missing context
+- `ae.NoContextError`, returned by `Dial` when the acceptor accepted nothing. It
+  names each refused class and the reason, and unwraps to `ErrNoContext`, so
+  `errors.Is` still works for callers that only checked that
+
+### Changed
+- `Serve` returns after the last association has ended rather than when the
+  listener closes. Cancelling the context already closed every association;
+  returning earlier left handlers running behind a function that had returned,
+  which made "shutdown" mean "stop accepting" and nothing more. A listener that
+  fails for another reason still returns immediately, because associations
+  already running own their connections
+- A cancelled server ends an established association with A-ABORT instead of
+  closing its socket. A close is indistinguishable from a pulled cable, so a
+  peer that sees one retries into a server that is not there; A-ABORT is the
+  protocol's own way of saying the association is over, and it is what
+  pynetdicom's `AE.shutdown` does. A connection that has not sent an
+  A-ASSOCIATE-RQ yet is still just closed — there is no association to abort
+
 ## [0.21.0] - 2026-11-15
 
 Failure, said precisely. Three different things used to be reported as one: a

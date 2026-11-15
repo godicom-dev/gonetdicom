@@ -398,6 +398,39 @@ cannot read would be a claim the first C-STORE disproves. An SCP that only files
 bytes and never calls `Decode` can widen it with `"*"`, and then stores whatever
 the peer sends.
 
+One list per server is not always what a server wants to say. An SCP that parses
+CT and MR and files everything else unaffected wants implicit VR for the two it
+decodes and whatever arrives for the rest — accepting JPEG everywhere would
+claim a decode it cannot do, and accepting nothing would refuse bytes it is
+happy to file. `AcceptedContexts` states it a class at a time and replaces both
+fields above when set:
+
+```go
+cfg := ae.ServerConfig{
+	AETitle: "SPLITSCP",
+	AcceptedContexts: []ae.PresentationContext{
+		// Parsed: only the encodings godicom can decode.
+		{AbstractSyntax: string(uid.CTImageStorage), TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian}},
+		{AbstractSyntax: string(uid.MRImageStorage), TransferSyntaxes: []string{pdu.ImplicitVRLittleEndian}},
+		// Filed untouched: whatever the peer can produce.
+		{AbstractSyntax: "*", TransferSyntaxes: []string{"*"}},
+	},
+	OnCStore: store,
+}
+```
+
+A class that is neither listed nor covered by `"*"` is answered with result 3,
+and one whose list does not intersect the proposal with result 4 — the same two
+answers as before, decided per class. Verification keeps answering C-ECHO
+whether or not it is listed; naming it overrides the syntaxes it accepts.
+
+On the requestor side the refusals are readable instead of implied:
+`Association.RejectedContexts()` returns each refused context with its result, so
+a caller can tell "this peer does not serve that class" (3) from "it does, but
+not in a syntax either of us offered" (4). When nothing at all is accepted there
+is no `Association` to ask, so `Dial` returns a `*ae.NoContextError` naming each
+refusal; it still satisfies `errors.Is(err, ae.ErrNoContext)`.
+
 Three optional user-information items are negotiated and exposed:
 
 - **Asynchronous Operations Window** — `Config.AsyncOperationsWindow` proposes
@@ -680,6 +713,48 @@ Optional real-PACS soak (skipped unless env is set):
 GONETDICOM_PACS_ADDR=host:11112 GONETDICOM_PACS_AE=ANY-SCP \
   go test -tags=integration ./ae -run TestIntegrationCEchoPACS -v
 ```
+
+## Operating a running SCP
+
+`ae.Serve` is the whole server for a process that only needs to serve. Once it is
+started there is no handle on it, which leaves the questions an operator asks
+unanswerable: who is connected now, cut that one off, has the last peer gone
+before the database closes. `ae.NewServer` keeps that handle:
+
+```go
+srv := ae.NewServer(ae.ServerConfig{
+	AETitle:                  "STORESCP",
+	AcceptedAbstractSyntaxes: ae.AllStorageSOPClasses,
+	OnCStore:                 store,
+})
+
+go srv.Serve(ctx, ln)
+
+for _, a := range srv.Associations() {
+	info, negotiated := a.Info()
+	if !negotiated {
+		// Connected, but has not sent an A-ASSOCIATE-RQ yet.
+		log.Printf("%s: still negotiating", a.RemoteAddr())
+		continue
+	}
+	log.Printf("%s: %s -> %s for %s", a.RemoteAddr(), info.CallingAETitle, info.CalledAETitle, time.Since(a.Since()))
+}
+```
+
+`ActiveAssociation.Abort()` ends one association with A-ABORT — the peer is told
+the association is over, rather than left to read a closed socket as a network
+fault — and `AbortAll()` does it to everything, for a shutdown that cannot wait
+for each peer to release (a licence revoked, a device going into service).
+Cancelling the context is the polite version, and `Serve` returns only after the
+last association goroutine has ended, so whatever runs next runs against a quiet
+server. Either way the peer is told: an established association ends with
+A-ABORT rather than a closed socket, which at the far end is the difference
+between "this server is done with me" and "the network broke, retry".
+
+An entry appears when the connection is accepted and is removed when the
+handlers are done, so the registry includes connections still negotiating and
+never includes associations that have ended. `Serve(ctx, ln, cfg)` still exists
+and runs the same code with the registry switched off.
 
 ## Concurrency and limits
 
