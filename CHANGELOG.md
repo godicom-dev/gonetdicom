@@ -5,6 +5,38 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- A C-STORE whose pre-encoded bytes are not in the syntax of the context that
+  carries them is refused with `ae.ErrTransferSyntaxMismatch`, where it used to
+  go out mislabelled. The two little-endian syntaxes negotiate for each other —
+  they differ only in the VR field — so a peer that accepted Explicit VR Little
+  Endian alone was sent Implicit VR bytes and told they were Explicit VR. The
+  receiver decodes under the context's syntax, so a strict peer fails an
+  instance that was never actually wrong and a lenient decoder (including
+  godicom's) hides the damage until the instance is read back. `StoreRequest.Data`
+  is the conversion: a godicom Dataset is encoded into whatever the context
+  declares, which is also why the check only covers bytes the caller encoded
+- A C-GET sub-operation whose transfer syntax no accepted context carries is
+  counted failed and reported in the failed count, instead of ending the
+  association. PS3.4 Table C.4-3 asks the SCP to report the instances it could
+  not deliver; one instance the peer may retry is a better answer than a
+  retrieval that stops without one
+- C-GET stores and N-EVENT-REPORT payloads pick their presentation context by
+  context ID among the candidates. The choice used to be whichever entry a Go
+  map yielded first, so an association proposing one SOP Class in two storage
+  syntaxes sent the stores in a syntax that varied between runs of the same
+  program
+
+### Added
+- `ae.EventReportRequest.TransferSyntax`, which states what
+  `EventInformation`'s bytes are, so the same rule applies to an event report as
+  to a store: bytes must match the context that carries them, and a godicom
+  Dataset is encoded into it
+- `gonetdicom.AttrSOPInstance` and `gonetdicom.AttrTransferSyntax`, the log
+  attributes the refusal above and the counted sub-operation failure carry
+
 ## [0.22.0] - 2026-11-15
 
 A retrieval no longer exists as a batch. The three handlers that answer with a

@@ -45,6 +45,12 @@ type EventReportRequest struct {
 	EventTypeID            uint16
 	EventInformation       []byte
 	EventInformationData   *godicom.Dataset
+	// TransferSyntax states what EventInformation's bytes are, and is checked
+	// against the presentation context they go out on — see StoreRequest for
+	// the rule and why the two little-endian syntaxes are not interchangeable
+	// in practice. EventInformationData is exempt because the encoder writes
+	// the negotiated syntax. Empty means the caller takes the responsibility.
+	TransferSyntax string
 	// AsyncDestination, when non-nil, causes the SCP to dial a new association
 	// after the N-ACTION-RSP and send this event report there (non-blocking for
 	// the requestor association). When nil, the report is pushed on the same

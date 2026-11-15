@@ -40,6 +40,23 @@ var ErrReleased = errors.New("ae: association released by peer")
 // ErrNoContext is returned when no accepted presentation context is available.
 var ErrNoContext = errors.New("ae: no accepted presentation context")
 
+// ErrTransferSyntaxMismatch is returned when a dataset's transfer syntax is not
+// the one its presentation context declares.
+//
+// It exists because the two little-endian syntaxes are interchangeable in every
+// respect except the VR field: an acceptor that offers only Explicit VR Little
+// Endian will take a requestor's Implicit VR context as "convertible", and a
+// requestor that hands over pre-encoded bytes would then put Implicit VR bytes
+// on a context announced as Explicit VR. The receiver decodes them under the
+// context's syntax, so the bytes are read as something they are not — a strict
+// peer fails the sub-operation, and a lenient one (including godicom's decoder)
+// hides the damage until the instance is read back.
+//
+// The fix is on the sending side: pass a godicom Dataset in
+// StoreRequest.Data and the encoder writes the negotiated syntax. Pre-encoded
+// bytes are only accepted for the syntax they are stated to be in.
+var ErrTransferSyntaxMismatch = errors.New("ae: dataset transfer syntax is not the one the context declares")
+
 // ErrIdleTimeout is returned when no PDU arrived within Config.IdleTimeout.
 //
 // It is a bound on the wait, not a verdict on the association: the socket is
