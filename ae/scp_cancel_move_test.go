@@ -3,6 +3,7 @@ package ae_test
 import (
 	"context"
 	"fmt"
+	"iter"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -43,8 +44,8 @@ func (m *moveBatch) waitFor(t *testing.T, n int) {
 }
 
 // startMoveBatch serves a C-MOVE SCP with n stores to a Move Destination that
-// the caller can hold open. maxAssoc is passed straight to the destination.
-func startMoveBatch(t *testing.T, n, maxAssoc int) *moveBatch {
+// the caller can hold open.
+func startMoveBatch(t *testing.T, n int) *moveBatch {
 	t.Helper()
 
 	m := &moveBatch{
@@ -96,9 +97,9 @@ func startMoveBatch(t *testing.T, n, maxAssoc int) *moveBatch {
 			AETitle:                  "MOVESCP",
 			AcceptedAbstractSyntaxes: []string{ae.PatientRootQueryRetrieveInformationModelMove},
 			MoveDestinations: map[string]ae.MoveDestination{
-				"STORESCP": {Addr: storeLn.Addr().String(), MaxAssociations: maxAssoc},
+				"STORESCP": {Addr: storeLn.Addr().String()},
 			},
-			OnCMove: func(_ context.Context, _ ae.MoveRequest) ae.MovePlan {
+			OnCMove: func(_ context.Context, _ ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
 				plan := ae.MovePlan{}
 				for _, inst := range instances {
 					plan.Stores = append(plan.Stores, ae.StoreRequest{
@@ -107,7 +108,7 @@ func startMoveBatch(t *testing.T, n, maxAssoc int) *moveBatch {
 						Dataset:                []byte{0x08, 0x00, 0x05, 0x00, 0x43, 0x53, 0x00, 0x00},
 					})
 				}
-				return plan
+				return ae.PlannedMoveOps(plan)
 			},
 		})
 	}()
@@ -191,7 +192,7 @@ func TestSCPStopsCMoveBatchOnCancel(t *testing.T) {
 	t.Parallel()
 
 	const total = 4
-	m := startMoveBatch(t, total, 0)
+	m := startMoveBatch(t, total)
 	scu := dialRawSCU(t, m.addr, "MOVESCP", ae.PatientRootQueryRetrieveInformationModelMove)
 	sendCMove(t, scu, 7)
 
@@ -229,54 +230,6 @@ func TestSCPStopsCMoveBatchOnCancel(t *testing.T) {
 	}
 }
 
-// The same stop has to reach the parallel path, where the difference between
-// "dispatched" and "started" is a channel hand-off. A batch pre-filled into the
-// jobs channel before the cancel arrived would run to the end.
-func TestSCPStopsParallelCMoveBatchOnCancel(t *testing.T) {
-	t.Parallel()
-
-	const (
-		total   = 6
-		workers = 3
-	)
-	m := startMoveBatch(t, total, workers)
-	scu := dialRawSCU(t, m.addr, "MOVESCP", ae.PatientRootQueryRetrieveInformationModelMove)
-	sendCMove(t, scu, 21)
-
-	if rsp := nextMoveRSP(t, scu, 5*time.Second); !dimse.IsPending(rsp.Status) {
-		t.Fatalf("first response status 0x%04X, want Pending", rsp.Status)
-	}
-
-	// One parked sub-operation per association: every worker is busy, so the
-	// dispatcher is the only thing that can start another.
-	m.waitFor(t, workers)
-	cancelSCU(t, scu, m, 21)
-
-	final := readFinalMoveRSP(t, scu)
-	if final.Status != dimse.StatusCancel {
-		t.Errorf("final status 0x%04X, want 0x%04X (Cancel)", final.Status, dimse.StatusCancel)
-	}
-	c := final.SubOperations
-	if !c.Present {
-		t.Fatal("final response carries no sub-operation counts")
-	}
-	if c.Failed != 0 {
-		t.Errorf("Failed=%d, want 0", c.Failed)
-	}
-	if c.Completed < workers {
-		t.Errorf("Completed=%d, want at least %d: the in-flight sub-operations finish", c.Completed, workers)
-	}
-	if c.Remaining == 0 {
-		t.Error("Remaining=0: every sub-operation ran, so the cancel did not cut the batch short")
-	}
-	if sum := int(c.Completed) + int(c.Failed) + int(c.Warning) + int(c.Remaining); sum != total {
-		t.Errorf("counts add up to %d, want %d", sum, total)
-	}
-	if n := int(m.stores.Load()); n >= total {
-		t.Errorf("the store SCP received %d of %d instances, want fewer", n, total)
-	}
-}
-
 // A requestor that releases while its C-MOVE is still running is waiting for
 // A-RELEASE-RP: PS3.8 7.2.2 lets it receive P-DATA meanwhile and requires it to
 // ignore it. Running the rest of the batch first turns a release into a stall
@@ -286,7 +239,7 @@ func TestSCPReleasesMidCMove(t *testing.T) {
 	t.Parallel()
 
 	const total = 4
-	m := startMoveBatch(t, total, 0)
+	m := startMoveBatch(t, total)
 	scu := dialRawSCU(t, m.addr, "MOVESCP", ae.PatientRootQueryRetrieveInformationModelMove)
 	sendCMove(t, scu, 9)
 

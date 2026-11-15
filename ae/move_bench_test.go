@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"context"
+	"iter"
 	"net"
 	"strconv"
 	"testing"
@@ -14,18 +15,14 @@ import (
 	"github.com/godicom-dev/gonetdicom/pdu"
 )
 
-// BenchmarkCMoveStoreAssociations compares sequential vs parallel C-MOVE
-// destination stores — the parallel path is a Go concurrency win over
-// typical single-threaded DIMSE stacks.
+// BenchmarkCMoveStoreAssociations measures what a C-MOVE costs when the handler
+// streams: the stores are produced and sent one at a time, so the association,
+// the sub-operation and the response are the whole of the work.
 func BenchmarkCMoveStoreAssociations(b *testing.B) {
-	for _, maxAssoc := range []int{1, 4} {
-		b.Run("maxAssoc="+strconv.Itoa(maxAssoc), func(b *testing.B) {
-			benchmarkCMoveStores(b, maxAssoc, 16)
-		})
-	}
+	benchmarkCMoveStores(b, 16)
 }
 
-func benchmarkCMoveStores(b *testing.B, maxAssoc, nStores int) {
+func benchmarkCMoveStores(b *testing.B, nStores int) {
 	b.Helper()
 	ctUID := string(uid.CTImageStorage)
 
@@ -62,9 +59,9 @@ func benchmarkCMoveStores(b *testing.B, maxAssoc, nStores int) {
 				ae.PatientRootQueryRetrieveInformationModelMove,
 			},
 			MoveDestinations: map[string]ae.MoveDestination{
-				"STORESCP": {Addr: storeLn.Addr().String(), MaxAssociations: maxAssoc},
+				"STORESCP": {Addr: storeLn.Addr().String()},
 			},
-			OnCMove: func(_ context.Context, _ ae.MoveRequest) ae.MovePlan {
+			OnCMove: func(_ context.Context, _ ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
 				stores := make([]ae.StoreRequest, nStores)
 				for i := range stores {
 					ds := godicom.NewDataset()
@@ -77,7 +74,7 @@ func benchmarkCMoveStores(b *testing.B, maxAssoc, nStores int) {
 						Data:                   ds,
 					}
 				}
-				return ae.MovePlan{Stores: stores}
+				return ae.PlannedMoveOps(ae.MovePlan{Stores: stores})
 			},
 		})
 	}()

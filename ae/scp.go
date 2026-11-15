@@ -10,8 +10,6 @@ import (
 	"math"
 	"net"
 	"runtime/debug"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/godicom-dev/godicom"
@@ -51,24 +49,14 @@ type StoreHandler func(ctx context.Context, ev StoreEvent) uint16
 // Handler errors become 0xC311 (status.FindUnableToProcess).
 type FindHandler func(ctx context.Context, req FindRequest) iter.Seq2[FindMatch, error]
 
-// MoveHandler handles an incoming C-MOVE-RQ. Return a MovePlan with Stores to
-// C-STORE to MoveDestination and/or explicit Responses.
-type MoveHandler func(ctx context.Context, req MoveRequest) MovePlan
-
-// MovePlan is the SCP response plan for a C-MOVE-RQ.
+// MovePlan is the whole list of sub-operations a C-MOVE handler used to
+// return: a destination, the stores to send there, and optionally the
+// responses. PlannedMove adapts one to the handler contract, which is what a
+// handler that enumerates eagerly still returns.
 //
-// Destination is the first yield of pynetdicom's evt.EVT_C_MOVE handler
-// (pynetdicom/_handlers.py doc_handle_move): the address and port of the
-// Move Destination. Nil keeps the ServerConfig.MoveDestinations lookup.
-// A non-nil Destination with an empty Addr is an unknown destination, and
-// the SCP responds with status 0xA801, the same as yielding (None, None).
-//
-// When Stores is non-empty and the destination is known, the SCP opens a
-// Storage SCU association and performs C-STORE sub-operations. Each distinct
-// SOP Class and stored transfer syntax is one presentation context offering
-// only that syntax, as qrscp does with build_context(sop_class_uid,
-// transfer_syntax_uid). If Responses is empty, pending and final C-MOVE-RSP
-// statuses are derived from the store outcomes.
+// The plan's presentation contexts are derived from its stores, so a plan can
+// still name stores whose SOP Class and transfer syntax were not repeated in a
+// RetrievePlan.Contexts.
 type MovePlan struct {
 	Destination *MoveDestination
 	Stores      []StoreRequest
@@ -76,15 +64,16 @@ type MovePlan struct {
 }
 
 // MoveDestination is an outbound Storage SCP endpoint for C-MOVE sub-operations.
+//
+// There is no parallel-association setting. C-MOVE sub-operations run one at a
+// time on one association, which is what pynetdicom does and what the handler
+// contract requires: a handler that resumes with RetrieveOp.Outcome filled in
+// cannot have a store still in flight, so fanning the batch out across
+// associations and writing results back to it are mutually exclusive.
 type MoveDestination struct {
 	Addr      string // host:port
 	CalledAE  string // if empty, use the Move Destination AE Title
 	CallingAE string // if empty, use ServerConfig.AETitle
-	// MaxAssociations is the maximum number of parallel Storage SCU associations
-	// used for C-MOVE C-STORE sub-operations. 0 or 1 uses a single association
-	// (sequential stores). Values >1 fan out stores across associations — a
-	// Go concurrency advantage over typical single-threaded DIMSE stacks.
-	MaxAssociations int
 }
 
 // GetPlan is the whole list of sub-operations a C-GET handler used to return:
@@ -1062,42 +1051,204 @@ func scpHandleMove(ctx context.Context, conn net.Conn, r *assocReader, cfg Serve
 		return refuseMoveIdentifier(ctx, conn, pcid, peerMax, rq.MessageID, rq.AffectedSOPClassUID, status)
 	}
 
-	var plan MovePlan
+	hctx, stopHandler := context.WithCancelCause(ctx)
+	defer stopHandler(nil)
+
+	seq := PlannedMoveOps(MovePlan{})
 	if cfg.OnCMove != nil {
-		plan = cfg.OnCMove(ctx, MoveRequest{
+		if handlerSeq := cfg.OnCMove(hctx, MoveRequest{
 			QueryModel:      rq.AffectedSOPClassUID,
 			MoveDestination: rq.MoveDestination,
 			Identifier:      ds,
 			IdentifierData:  ident,
 			Priority:        rq.Priority,
-		})
-	}
-	if plan.Destination != nil && plan.Destination.Addr == "" {
-		// pynetdicom service_class._c_move returns 0xA801 when the first
-		// yield is (None, None), before it asks how many matches there are.
-		return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
-			Status: dcmstatus.MoveDestinationUnknown,
-		}})
-	}
-	if len(plan.Stores) > 0 {
-		if err := scpPerformMoveStores(ctx, conn, r, cfg, peerMax, pcid, ac.TransferSyntax, rq, callingAE, plan.Destination, plan.Stores); err != nil {
-			fail := []RetrieveMatch{{
-				Status: dcmstatus.MoveDestinationUnknown,
-				SubOperations: dimse.SubOperations{
-					Failed: subOpCount(len(plan.Stores)), Present: true,
-				},
-			}}
-			if len(plan.Responses) > 0 {
-				fail = plan.Responses
-			}
-			return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, fail)
+		}); handlerSeq != nil {
+			seq = handlerSeq
 		}
-		return nil
 	}
-	if len(plan.Responses) == 0 {
-		plan.Responses = []RetrieveMatch{{Status: dimse.StatusSuccess}}
+
+	write := func(m RetrieveMatch) error {
+		return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{m})
 	}
-	return writeRetrieveResponses(ctx, conn, pcid, peerMax, ac.TransferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, plan.Responses)
+
+	results := newSubOperations(0)
+	var (
+		sawPlan bool
+		stores  *Association
+	)
+	defer func() {
+		if stores != nil {
+			_ = stores.Release(ctx)
+		}
+	}()
+	// cancel ends the operation the way the peer asked: the sub-operations it
+	// never got to are remaining, not failed (PS3.4 Table C.4-3).
+	cancel := func() error {
+		stopHandler(ErrPeerCancelled)
+		return write(results.cancelMatch(results.total - results.attempted()))
+	}
+
+	for op, handlerErr := range seq {
+		if handlerErr != nil {
+			// pynetdicom answers a C-MOVE handler that raises with 0xC511 and
+			// ends the operation (service_class.py:2072).
+			return write(RetrieveMatch{Status: dcmstatus.MoveUnableToProcess})
+		}
+		if op == nil || op.Plan == nil && op.Store == nil && op.Result == nil {
+			return write(RetrieveMatch{Status: dcmstatus.MoveUnrecognizedOperation})
+		}
+		switch {
+		case op.Plan != nil:
+			// Every count in every response is computed from the plan, so it
+			// has to arrive once, before anything else, and say how much work
+			// there is.
+			if sawPlan || op.Plan.Total < 0 {
+				return write(RetrieveMatch{Status: dcmstatus.MoveUnrecognizedOperation})
+			}
+			// The destination is checked before the count, which is the order
+			// pynetdicom does it in (:2116 then :2132) and the order that makes
+			// 0xA801 mean "that endpoint does not exist" rather than "your batch
+			// was too big". A plan that names a destination is held to it even
+			// with nothing to move: an empty Addr is how a handler says it does
+			// not know where to send.
+			var dest MoveDestination
+			if op.Plan.Destination != nil || op.Plan.Total > 0 {
+				d, ok := resolveMoveDestination(cfg, rq, op.Plan.Destination)
+				if !ok {
+					m := RetrieveMatch{Status: dcmstatus.MoveDestinationUnknown}
+					if op.Plan.Total > 0 {
+						// Nothing was attempted because the endpoint does not
+						// exist, so every sub-operation failed — otherwise the
+						// counts would not add up to the number of matches.
+						m.SubOperations = dimse.SubOperations{
+							Failed: subOpCount(op.Plan.Total), Present: true,
+						}
+					}
+					return write(m)
+				}
+				dest = d
+			}
+			// Counts past 65535 saturate rather than reject. pynetdicom answers
+			// 0xC516 there (:2132), and this package deliberately does not: a
+			// PACS migrating a 65536-instance series needs the transfer to
+			// happen, and a Remaining that stops moving is a report an SCU can
+			// act on, while a refusal is not.
+			if op.Plan.Total > math.MaxUint16 {
+				cfg.logger(ctx).Warn("scp C-MOVE sub-operation counts saturated",
+					gonetdicom.AttrMessageID, rq.MessageID,
+					"sub_operations", op.Plan.Total,
+					"limit", math.MaxUint16,
+				)
+			}
+			results = newSubOperations(op.Plan.Total)
+			sawPlan = true
+			// Nothing to move is answered without an association: no
+			// sub-operations are going to run, so opening one would be a dial
+			// that announces work there is none of.
+			if op.Plan.Total == 0 {
+				break
+			}
+			// An opening Pending tells the SCU how much is coming before the
+			// first instance does, which is worth a message on a batch that may
+			// take minutes: with no sub-operation yet attempted, Remaining is
+			// the whole of Total.
+			if err := write(results.reconcileMatch(RetrieveMatch{Status: dimse.StatusPending})); err != nil {
+				return err
+			}
+			pcs, err := movePresentationContexts(op.Plan.Contexts)
+			if err != nil {
+				return write(RetrieveMatch{Status: dcmstatus.MoveUnrecognizedOperation})
+			}
+			called := dest.CalledAE
+			if called == "" {
+				called = rq.MoveDestination
+			}
+			calling := dest.CallingAE
+			if calling == "" {
+				calling = cfg.AETitle
+			}
+			assoc, err := Dial(ctx, Config{
+				AETitle:              calling,
+				PresentationContexts: pcs,
+				TLS:                  cfg.TLS,
+				Logger:               cfg.Logger,
+			}, dest.Addr, called)
+			if err != nil {
+				// A Move Destination that will not take an association is what
+				// pynetdicom answers 0xA801 for (service_class.py:2166), not
+				// 0xA702: the transfer never started. The counts still add up to
+				// the number of matches, because they are what the SCU reads to
+				// decide whether to ask again.
+				results.recordMissing()
+				m := moveFinalMatch(results)
+				m.Status = dcmstatus.MoveDestinationUnknown
+				return write(m)
+			}
+			stores = assoc
+		case op.Store != nil:
+			if !sawPlan || stores == nil {
+				return write(RetrieveMatch{Status: dcmstatus.MoveUnrecognizedOperation})
+			}
+			// Between two sub-operations is the only place a stop can be
+			// honoured. Unlike C-GET the reader is free here — the stores are
+			// on another association — so the cancel is seen before the next
+			// one starts rather than after the batch is over.
+			switch r.pollStop(rq.MessageID) {
+			case stopAssociation:
+				stopHandler(ErrPeerReleased)
+				return nil
+			case stopCancelled:
+				return cancel()
+			}
+			store := *op.Store
+			if store.MoveOriginatorApplicationEntityTitle == "" {
+				store.MoveOriginatorApplicationEntityTitle = callingAE
+			}
+			if store.MoveOriginatorMessageID == 0 {
+				store.MoveOriginatorMessageID = rq.MessageID
+			}
+			res, err := stores.CStore(ctx, store)
+			status := uint16(0)
+			if res != nil {
+				status = res.Status
+			}
+			results.record(store.AffectedSOPInstanceUID, err, status)
+			op.Outcome = StoreOutcome{Status: status}
+			if err != nil {
+				// The association to the destination is gone, so nothing after
+				// this can be attempted either: record the rest as failures and
+				// report, rather than leaving the counts short of Total.
+				results.recordMissing()
+				return write(moveFinalMatch(results))
+			}
+			// Every completed sub-operation is progress the SCU can act on, and
+			// pynetdicom sends a Pending after each one (:2378-2384). The counts
+			// in it are the ones just measured, not a number the handler
+			// reported — which is the whole point of the framework owning the
+			// store.
+			if err := write(results.reconcileMatch(RetrieveMatch{Status: dimse.StatusPending})); err != nil {
+				return err
+			}
+		case op.Result != nil:
+			m := results.reconcileMatch(*op.Result)
+			if err := write(m); err != nil {
+				return err
+			}
+			if !dimse.IsPending(m.Status) {
+				return nil
+			}
+		}
+	}
+
+	// The handler ran out of items without saying how the operation ends.
+	// Without sub-operations there is nothing to account for and the answer is a
+	// bare Success, which is what pynetdicom sends when the plan was zero
+	// (service_class.py:2136); with them, the aggregate and the counts are the
+	// measurement.
+	if results.total == 0 {
+		return write(RetrieveMatch{Status: dimse.StatusSuccess})
+	}
+	return write(moveFinalMatch(results))
 }
 
 // subOpCount narrows a sub-operation count to the US field that carries it
@@ -1116,280 +1267,66 @@ func subOpCount(n int) uint16 {
 	return uint16(n)
 }
 
-// movePresentationContexts is qrscp handle_move:
-// contexts = list({build_context(sop_class_uid, transfer_syntax_uid)}).
-// build_context(sop, ts) offers only that transfer syntax. A StoreRequest
-// with no TransferSyntax offers Implicit VR Little Endian, which is the
-// syntax this path proposed before a stored syntax was available.
-func movePresentationContexts(stores []StoreRequest) ([]PresentationContext, error) {
-	type pair struct{ sop, ts string }
-	seen := map[pair]struct{}{}
+// resolveMoveDestination picks the endpoint a C-MOVE's sub-operations go to:
+// the plan's own Destination when it names one, ServerConfig.MoveDestinations
+// otherwise. A destination that is named but has no address is unknown, which
+// is what pynetdicom answers 0xA801 for when the first yield is (None, None).
+func resolveMoveDestination(cfg ServerConfig, rq *dimse.CMoveRQ, override *MoveDestination) (MoveDestination, bool) {
+	if override != nil {
+		return *override, override.Addr != ""
+	}
+	dest, ok := cfg.MoveDestinations[rq.MoveDestination]
+	return dest, ok && dest.Addr != ""
+}
+
+// moveFinalMatch is the aggregate a C-MOVE answers with when the operation runs
+// to the end: the status the sub-operations add up to, the counts, and the
+// Failed SOP Instance UID List the status requires.
+func moveFinalMatch(results *subOperations) RetrieveMatch {
+	return RetrieveMatch{
+		Status:        results.finalStatus(),
+		SubOperations: results.counts(),
+		Identifier:    results.failedIdentifier(),
+	}
+}
+
+// movePresentationContexts turns a C-MOVE plan's declared contexts into the
+// presentation contexts of the Storage association, which is qrscp's
+// build_context(sop_class_uid, transfer_syntax_uid): one context per SOP Class
+// and syntax, offering only that syntax.
+//
+// It used to derive them from the stores themselves, which worked because the
+// whole batch was in hand. An iterator does not have it, and an A-ASSOCIATE-RQ
+// has to name every context before the first C-STORE can be proposed — so the
+// handler declares them in RetrievePlan.Contexts instead. This is the same
+// information pynetdicom takes from ApplicationEntity.requested_contexts, and
+// the same failure when it is missing.
+func movePresentationContexts(contexts []StoreContext) ([]PresentationContext, error) {
+	seen := make(map[StoreContext]struct{}, len(contexts))
 	var pcs []PresentationContext
-	for _, store := range stores {
-		if store.AffectedSOPClassUID == "" {
+	for _, sc := range contexts {
+		if sc.SOPClassUID == "" {
 			continue
 		}
-		ts := store.TransferSyntax
+		ts := sc.TransferSyntax
 		if ts == "" {
 			ts = pdu.ImplicitVRLittleEndian
+			sc.TransferSyntax = ts
 		}
-		key := pair{store.AffectedSOPClassUID, ts}
-		if _, ok := seen[key]; ok {
+		if _, ok := seen[sc]; ok {
 			continue
 		}
-		seen[key] = struct{}{}
+		seen[sc] = struct{}{}
 		// ID left unset: Dial assigns the free odd IDs.
 		pcs = append(pcs, PresentationContext{
-			AbstractSyntax:   store.AffectedSOPClassUID,
+			AbstractSyntax:   sc.SOPClassUID,
 			TransferSyntaxes: []string{ts},
 		})
 	}
 	if len(pcs) == 0 {
-		return nil, fmt.Errorf("ae: C-MOVE stores missing SOP Class UID")
+		return nil, fmt.Errorf("ae: C-MOVE plan has sub-operations but no Store Contexts")
 	}
 	return pcs, nil
-}
-
-func scpPerformMoveStores(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, peerMax uint32, pcid byte, transferSyntax string, rq *dimse.CMoveRQ, moveOriginatorAE string, override *MoveDestination, stores []StoreRequest) error {
-	var dest MoveDestination
-	var ok bool
-	if override != nil {
-		dest = *override
-		ok = dest.Addr != ""
-	} else {
-		dest, ok = cfg.MoveDestinations[rq.MoveDestination]
-	}
-	if !ok || dest.Addr == "" {
-		return fmt.Errorf("ae: unknown Move Destination %q", rq.MoveDestination)
-	}
-	called := dest.CalledAE
-	if called == "" {
-		called = rq.MoveDestination
-	}
-	calling := dest.CallingAE
-	if calling == "" {
-		calling = cfg.AETitle
-	}
-
-	pcs, err := movePresentationContexts(stores)
-	if err != nil {
-		return err
-	}
-
-	prepared := make([]StoreRequest, len(stores))
-	for i, store := range stores {
-		if store.MoveOriginatorApplicationEntityTitle == "" {
-			store.MoveOriginatorApplicationEntityTitle = moveOriginatorAE
-		}
-		if store.MoveOriginatorMessageID == 0 {
-			store.MoveOriginatorMessageID = rq.MessageID
-		}
-		prepared[i] = store
-	}
-
-	// Counted in int, narrowed only where the wire demands it. The four
-	// Sub-Operations counts are US on the wire (PS3.7 Table 9.1-4), so 65535 is a
-	// real ceiling — but C-MOVE itself has no such limit, and counting in uint16
-	// meant the ceiling was crossed silently and in the wrong direction: at 65536
-	// stores `total` was 0, so the first Pending response told the SCU nothing was
-	// outstanding, and the next one computed total-done as 0-1 and said 65535 were.
-	// An SCU treating Remaining == 0 as the end of the transfer stopped there.
-	total := len(prepared)
-	if total > math.MaxUint16 {
-		cfg.logger(ctx).Warn("scp C-MOVE sub-operation counts saturated",
-			gonetdicom.AttrMessageID, rq.MessageID,
-			"sub_operations", total,
-			"limit", math.MaxUint16,
-		)
-	}
-	var (
-		mu       sync.Mutex
-		results  = newSubOperations(total)
-		writeErr error
-	)
-
-	writePending := func() error {
-		s := results.counts()
-		s.Remaining = subOpCount(total - results.attempted())
-		return writeRetrieveResponses(ctx, conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
-			Status:        dimse.StatusPending,
-			SubOperations: s,
-		}})
-	}
-
-	if err := writePending(); err != nil {
-		return err
-	}
-
-	// record tallies one sub-operation and reports progress. The status is
-	// classified, not merely compared against Success: a warning means the
-	// instance arrived, and counting it as a failure turned a transfer worth
-	// 0xB000 into 0xA702 — telling the SCU nothing was retrieved when in fact
-	// every instance was.
-	record := func(store StoreRequest, res *StoreResult, err error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if writeErr != nil {
-			return
-		}
-		var status uint16
-		if res != nil {
-			status = res.Status
-		}
-		results.record(store.AffectedSOPInstanceUID, err, status)
-		writeErr = writePending()
-	}
-
-	maxAssoc := dest.MaxAssociations
-	if maxAssoc <= 0 {
-		maxAssoc = 1
-	}
-	if maxAssoc > len(prepared) {
-		maxAssoc = len(prepared)
-	}
-
-	dialCfg := Config{
-		AETitle:              calling,
-		PresentationContexts: pcs,
-		TLS:                  cfg.TLS,
-		Logger:               cfg.Logger,
-	}
-
-	// A C-MOVE's sub-operations run on a different association from the one the
-	// request arrived on, so a C-CANCEL-RQ or an A-RELEASE-RQ lands on `r` while
-	// this function is busy dialling and storing. Between two sub-operations is
-	// the only place one can be honoured: PS3.4 C.4.2.1.4 requires the batch to
-	// stop, not the operation to be abandoned — the C-STORE already on the wire
-	// is finished, and what comes after it is never started.
-	var stopped atomic.Int32
-	stopSeen := func() stopReason { return stopReason(stopped.Load()) }
-	rememberStop := func(reason stopReason) {
-		if reason != stopNone {
-			stopped.CompareAndSwap(0, int32(reason))
-		}
-	}
-	pollStopBeforeStore := func() stopReason {
-		if reason := stopSeen(); reason != stopNone {
-			return reason
-		}
-		reason := r.pollStop(rq.MessageID)
-		rememberStop(reason)
-		return reason
-	}
-
-	if maxAssoc == 1 {
-		assoc, err := Dial(ctx, dialCfg, dest.Addr, called)
-		if err != nil {
-			return fmt.Errorf("ae: dial Move Destination: %w", err)
-		}
-		defer func() { _ = assoc.Release(ctx) }()
-	serial:
-		for _, store := range prepared {
-			switch pollStopBeforeStore() {
-			case stopAssociation:
-				return nil
-			case stopCancelled:
-				break serial
-			}
-			res, err := assoc.CStore(ctx, store)
-			record(store, res, err)
-			if writeErr != nil {
-				return writeErr
-			}
-		}
-	} else {
-		// Handed over one at a time, by a dispatcher that polls before each
-		// hand-off. Pre-filling the channel — which is what this did — puts the
-		// whole remainder beyond the reach of a stop: the workers would take it
-		// from a buffer that was filled before the stop arrived.
-		jobs := make(chan StoreRequest)
-		var wg sync.WaitGroup
-		var live atomic.Int32
-		live.Store(int32(maxAssoc))
-		workersGone := make(chan struct{})
-
-		for w := 0; w < maxAssoc; w++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				defer func() {
-					if live.Add(-1) == 0 {
-						close(workersGone)
-					}
-				}()
-				assoc, err := Dial(ctx, dialCfg, dest.Addr, called)
-				if err != nil {
-					return
-				}
-				defer func() { _ = assoc.Release(ctx) }()
-				for store := range jobs {
-					// The job may have been handed over before the stop
-					// arrived; starting it now would be a sub-operation the
-					// peer asked us not to begin.
-					if stopSeen() != stopNone {
-						return
-					}
-					res, err := assoc.CStore(ctx, store)
-					record(store, res, err)
-				}
-			}()
-		}
-
-	dispatch:
-		for _, store := range prepared {
-			if pollStopBeforeStore() != stopNone {
-				break
-			}
-			select {
-			case jobs <- store:
-			case <-workersGone:
-				break dispatch
-			}
-		}
-		close(jobs)
-		wg.Wait()
-	}
-
-	mu.Lock()
-	reason := stopSeen()
-	if reason == stopNone {
-		// A worker whose Dial failed never reached its stores; those are
-		// failures too, or the counts would not add up to the number of
-		// matches. A batch the requestor stopped is the opposite case: the
-		// sub-operations it never got to are Remaining, not Failed (PS3.4
-		// Table C.4-3), and calling them failures would tell the SCU that
-		// instances it still wants could not be stored.
-		results.recordMissing()
-	}
-	final := results.finalStatus()
-	subOps := results.counts()
-	failedList := results.failedIdentifier()
-	untried := total - results.attempted()
-	mu.Unlock()
-
-	switch reason {
-	case stopAssociation:
-		// The association is going away and the peer is waiting for its
-		// A-RELEASE-RP: the loop owns that, so nothing is written from here —
-		// including the error from a Pending response that failed to go out
-		// because the peer had already stopped reading.
-		return nil
-	case stopCancelled:
-		return writeRetrieveResponses(ctx, conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true,
-			[]RetrieveMatch{results.cancelMatch(untried)})
-	}
-	if writeErr != nil {
-		return writeErr
-	}
-
-	// The status is decided on the real counts, not the saturated ones: a batch
-	// where everything past 65535 failed is still a warning, whatever the reported
-	// number of failures says.
-	return writeRetrieveResponses(ctx, conn, pcid, peerMax, transferSyntax, rq.MessageID, rq.AffectedSOPClassUID, true, []RetrieveMatch{{
-		Status:        final,
-		SubOperations: subOps,
-		Identifier:    failedList,
-	}})
 }
 
 func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg ServerConfig, accepted map[byte]acceptedContext, peerMax uint32, pcid byte, rq *dimse.CGetRQ, ds []byte) error {
@@ -1500,6 +1437,13 @@ func scpHandleGet(ctx context.Context, conn net.Conn, r *assocReader, cfg Server
 			storeMsgID++
 			results.record(op.Store.AffectedSOPInstanceUID, nil, status)
 			op.Outcome = StoreOutcome{Status: status}
+			// One Pending per completed sub-operation, with the counts just
+			// measured — pynetdicom does the same for C-GET
+			// (:1983-1989). A handler that also yields a Pending is asking
+			// for a second response, which is allowed and means what it says.
+			if err := write(results.reconcileMatch(RetrieveMatch{Status: dimse.StatusPending})); err != nil {
+				return err
+			}
 			if cancelled {
 				return cancel()
 			}

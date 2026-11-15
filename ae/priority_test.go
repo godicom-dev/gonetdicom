@@ -69,9 +69,9 @@ func TestPriorityReachesPeerUnchanged(t *testing.T) {
 				rec.record("C-FIND", req.Priority)
 				return ae.FindSeq([]ae.FindMatch{{Status: dimse.StatusSuccess}})
 			},
-			OnCMove: func(_ context.Context, req ae.MoveRequest) ae.MovePlan {
+			OnCMove: func(_ context.Context, req ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
 				rec.record("C-MOVE", req.Priority)
-				return ae.MovePlan{Responses: []ae.RetrieveMatch{{Status: dimse.StatusSuccess}}}
+				return ae.PlannedMoveOps(ae.MovePlan{Responses: []ae.RetrieveMatch{{Status: dimse.StatusSuccess}}})
 			},
 			OnCGet: func(_ context.Context, req ae.GetRequest) iter.Seq2[*ae.RetrieveOp, error] {
 				rec.record("C-GET", req.Priority)

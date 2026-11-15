@@ -47,9 +47,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the aggregate status of every response are now the measured ones
   (`subOperations.reconcileMatch`), a store offered before the count is
   `0xC413`, more than 65535 sub-operations is `0xC416`, and a handler error is
-  `0xC411`. C-MOVE still returns a `MovePlan`: its sub-operations run on a second
-  association, and `MaxAssociations` fan-out and the iterator's write-back do not
-  both hold — that one needs its own decision
+  `0xC411`
+- **Breaking.** `ServerConfig.OnCMove` returns `iter.Seq2[*ae.RetrieveOp, error]`,
+  the C-GET contract plus the two things only C-MOVE needs. Its sub-operations
+  run on a second association, so `ae.RetrievePlan` now carries the
+  `Destination` and the `Contexts` the stores will be sent in. Both used to be
+  derived from the batch, which an iterator does not have, and an
+  A-ASSOCIATE-RQ has to name every presentation context before the first
+  C-STORE can be proposed — so the handler declares them, which is the same
+  information pynetdicom takes from `ApplicationEntity.requested_contexts`
+  (`ae.py:associate`, which raises when that list is empty). A plan that names
+  stores without contexts is answered with `0xC513`. Everything else follows
+  C-GET: the store goes on the wire before the handler resumes, `op.Outcome`
+  carries the destination's answer, and a handler error is `0xC511`.
+  `ae.PlannedMove(plan)` and `ae.PlannedMoveOps(plan)` adapt the old return
+  value, deriving the contexts from the plan's stores as before
+- **Breaking.** `ae.MoveDestination.MaxAssociations` is gone. C-MOVE
+  sub-operations run one at a time on one association, which is what pynetdicom
+  does (`service_class.py:2144` opens one and `:2354` stores through it). The
+  fan-out and the write-back are alternatives rather than complements: a handler
+  that resumes with `op.Outcome` filled in cannot have a store still in flight.
+  Fanning out also required the whole batch in memory — `make([]StoreRequest,
+  len(stores))` — which is exactly what #51 is about. Restoring the parallelism
+  needs a batched operation (yield a slice, read back a slice of outcomes) and
+  its own ADR
+- Every completed sub-operation is answered with a Pending response carrying the
+  measured counts, for C-GET and C-MOVE alike, as pynetdicom does
+  (`service_class.py:1983-1989`, `:2378-2384`). A C-MOVE plan also gets an
+  opening Pending that carries the whole of `Total`, which is what this package
+  sent before the batch started. A handler that wants a progress response of its
+  own still yields a Pending `Result`
+- C-MOVE counts past 65535 saturate rather than being refused with `0xC516` the
+  way pynetdicom does (`:2132`). The ceiling is real — the four counts are US —
+  but refusing a 65536-instance move is a worse answer than a `Remaining` that
+  stops moving, and this package chose saturation before the iterator contract.
+  The saturation is now logged with the count that was requested
 - **Breaking.** `ServerConfig.OnCFind` returns `iter.Seq2[ae.FindMatch, error]`
   rather than `[]ae.FindMatch`: the handler is the Go spelling of pynetdicom's
   C-FIND generator, so a match is encoded and written before the next one is

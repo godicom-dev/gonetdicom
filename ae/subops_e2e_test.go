@@ -252,7 +252,7 @@ func TestCMoveAggregatesSubOperationStatuses(t *testing.T) {
 					MoveDestinations: map[string]ae.MoveDestination{
 						"STORESCP": {Addr: storeLn.Addr().String()},
 					},
-					OnCMove: func(_ context.Context, _ ae.MoveRequest) ae.MovePlan {
+					OnCMove: func(_ context.Context, _ ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
 						plan := ae.MovePlan{}
 						for _, inst := range instances {
 							ds := godicom.NewDataset()
@@ -264,7 +264,7 @@ func TestCMoveAggregatesSubOperationStatuses(t *testing.T) {
 								Data:                   ds,
 							})
 						}
-						return plan
+						return ae.PlannedMoveOps(plan)
 					},
 				})
 			}()

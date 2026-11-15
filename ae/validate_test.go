@@ -111,9 +111,9 @@ func TestIdentifierValidatorRefusesRetrieval(t *testing.T) {
 			ae.PatientRootQueryRetrieveInformationModelGet,
 		},
 		IdentifierValidator: ae.QueryRetrieveLevelValidator("PATIENT"),
-		OnCMove: func(context.Context, ae.MoveRequest) ae.MovePlan {
+		OnCMove: func(context.Context, ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
 			moveCalls++
-			return ae.MovePlan{}
+			return ae.PlannedMoveOps(ae.MovePlan{})
 		},
 		OnCGet: func(context.Context, ae.GetRequest) iter.Seq2[*ae.RetrieveOp, error] {
 			getCalls++

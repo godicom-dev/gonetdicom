@@ -36,11 +36,11 @@ func TestCMoveSCURoundtrip(t *testing.T) {
 			AcceptedAbstractSyntaxes: []string{
 				ae.PatientRootQueryRetrieveInformationModelMove,
 			},
-			OnCMove: func(_ context.Context, req ae.MoveRequest) ae.MovePlan {
+			OnCMove: func(_ context.Context, req ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
 				if req.MoveDestination != "STORESCP" {
 					t.Errorf("MoveDestination=%q", req.MoveDestination)
 				}
-				return ae.MovePlan{Responses: []ae.RetrieveMatch{
+				return ae.PlannedMoveOps(ae.MovePlan{Responses: []ae.RetrieveMatch{
 					{
 						Status: dimse.StatusPending,
 						SubOperations: dimse.SubOperations{
@@ -53,7 +53,7 @@ func TestCMoveSCURoundtrip(t *testing.T) {
 							Remaining: 0, Completed: 1, Present: true,
 						},
 					},
-				}}
+				}})
 			},
 		})
 	}()
@@ -139,20 +139,15 @@ func TestCGetSCURoundtrip(t *testing.T) {
 						AffectedSOPInstanceUID: sopInstance,
 						Data:                   ds,
 					}},
-					Responses: []ae.RetrieveMatch{
-						{
-							Status: dimse.StatusPending,
-							SubOperations: dimse.SubOperations{
-								Remaining: 0, Completed: 1, Present: true,
-							},
+					// Only the closing response: the progress one for the
+					// sub-operation is the framework's, sent as the store
+					// completes.
+					Responses: []ae.RetrieveMatch{{
+						Status: dimse.StatusSuccess,
+						SubOperations: dimse.SubOperations{
+							Remaining: 0, Completed: 1, Present: true,
 						},
-						{
-							Status: dimse.StatusSuccess,
-							SubOperations: dimse.SubOperations{
-								Remaining: 0, Completed: 1, Present: true,
-							},
-						},
-					},
+					}},
 				})
 			},
 		})
@@ -286,18 +281,18 @@ func TestCMoveDestinationStore(t *testing.T) {
 			MoveDestinations: map[string]ae.MoveDestination{
 				"STORESCP": {Addr: storeLn.Addr().String()},
 			},
-			OnCMove: func(_ context.Context, _ ae.MoveRequest) ae.MovePlan {
+			OnCMove: func(_ context.Context, _ ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
 				ds := godicom.NewDataset()
 				ds.Set(godicom.NewDataElement(godicom.MustTag("SOPClassUID"), godicom.VRUI, ctUID))
 				ds.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, sopInstance))
 				ds.Set(godicom.NewDataElement(godicom.MustTag("PatientName"), godicom.VRPN, "DOE^JOHN"))
-				return ae.MovePlan{
+				return ae.PlannedMoveOps(ae.MovePlan{
 					Stores: []ae.StoreRequest{{
 						AffectedSOPClassUID:    ctUID,
 						AffectedSOPInstanceUID: sopInstance,
 						Data:                   ds,
 					}},
-				}
+				})
 			},
 		})
 	}()
@@ -377,8 +372,8 @@ func TestCMoveSubOperationCountSaturates(t *testing.T) {
 			},
 			// No MoveDestinations: the plan's stores are never attempted, so this
 			// stays a test about the count rather than about 65536 associations.
-			OnCMove: func(_ context.Context, _ ae.MoveRequest) ae.MovePlan {
-				return ae.MovePlan{Stores: make([]ae.StoreRequest, oversized)}
+			OnCMove: func(_ context.Context, _ ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
+				return ae.PlannedMoveOps(ae.MovePlan{Stores: make([]ae.StoreRequest, oversized)})
 			},
 		})
 	}()
@@ -469,12 +464,12 @@ func TestCMovePlanDestination(t *testing.T) {
 		errCh <- ae.Serve(ctx, moveLn, ae.ServerConfig{
 			AETitle:                  "MOVESCP",
 			AcceptedAbstractSyntaxes: []string{ae.PatientRootQueryRetrieveInformationModelMove},
-			OnCMove: func(_ context.Context, _ ae.MoveRequest) ae.MovePlan {
+			OnCMove: func(_ context.Context, _ ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
 				ds := godicom.NewDataset()
 				ds.Set(godicom.NewDataElement(godicom.MustTag("SOPClassUID"), godicom.VRUI, ctUID))
 				ds.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, sopInstance))
 				ds.Set(godicom.NewDataElement(godicom.MustTag("PatientName"), godicom.VRPN, "DOE^JOHN"))
-				return ae.MovePlan{
+				return ae.PlannedMoveOps(ae.MovePlan{
 					Destination: &ae.MoveDestination{Addr: storeLn.Addr().String()},
 					Stores: []ae.StoreRequest{{
 						AffectedSOPClassUID:    ctUID,
@@ -482,7 +477,7 @@ func TestCMovePlanDestination(t *testing.T) {
 						TransferSyntax:         explicit,
 						Data:                   ds,
 					}},
-				}
+				})
 			},
 		})
 	}()
@@ -542,8 +537,8 @@ func TestCMovePlanDestinationUnknown(t *testing.T) {
 		errCh <- ae.Serve(ctx, ln, ae.ServerConfig{
 			AETitle:                  "MOVESCP",
 			AcceptedAbstractSyntaxes: []string{ae.PatientRootQueryRetrieveInformationModelMove},
-			OnCMove: func(_ context.Context, _ ae.MoveRequest) ae.MovePlan {
-				return ae.MovePlan{Destination: &ae.MoveDestination{}}
+			OnCMove: func(_ context.Context, _ ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
+				return ae.PlannedMoveOps(ae.MovePlan{Destination: &ae.MoveDestination{}})
 			},
 		})
 	}()

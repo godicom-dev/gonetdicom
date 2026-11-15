@@ -72,6 +72,16 @@ const (
 	GetUnableToProcess       uint16 = 0xC411
 	GetUnrecognizedOperation uint16 = 0xC413
 	GetTooManySubOperations  uint16 = 0xC416
+
+	// Handler-failure codes for C-MOVE, the same two situations as C-GET
+	// (service_class.py:2072, :2116). There is no 0xC516 counterpart: pynetdicom
+	// refuses a batch of more than 65535 sub-operations, and this package
+	// saturates the counts instead — see ae/subops.go and the note in
+	// scpHandleMove. 0xC514/0xC515 are likewise absent: they name mistakes a
+	// *MoveDestination cannot make, because a destination that is present but
+	// unusable is simply unknown, and 0xA801 says that.
+	MoveUnableToProcess       uint16 = 0xC511
+	MoveUnrecognizedOperation uint16 = 0xC513
 )
 
 // Unified Procedure Step (UPS) statuses (PS3.4).

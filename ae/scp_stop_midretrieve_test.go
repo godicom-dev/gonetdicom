@@ -220,13 +220,19 @@ func TestSCPReleasesMidCGet(t *testing.T) {
 		if control != nil {
 			t.Fatalf("got %T, want A-RELEASE-RP", control)
 		}
-		if _, err := dimse.DecodeCStoreRQ(cmd); err != nil {
-			t.Fatalf("got a non-C-STORE message after the release: %v", err)
+		if _, err := dimse.DecodeCStoreRQ(cmd); err == nil {
+			stores++
+			if stores > 3 {
+				t.Fatalf("SCP kept sending sub-operations after the release (%d so far)", stores)
+			}
+			continue
 		}
-		stores++
-		if stores > 3 {
-			t.Fatalf("SCP kept sending sub-operations after the release (%d so far)", stores)
+		// A progress response per completed sub-operation, which the SCP sends
+		// before it notices the release: read and ignored like the stores.
+		if rsp, err := dimse.DecodeCGetRSP(cmd); err == nil && dimse.IsPending(rsp.Status) {
+			continue
 		}
+		t.Fatalf("got a non-C-STORE message after the release")
 	}
 }
 
@@ -279,6 +285,11 @@ func TestSCPCancelBetweenSubOperations(t *testing.T) {
 		rsp, err := dimse.DecodeCGetRSP(cmd)
 		if err != nil {
 			t.Fatalf("decode final response: %v", err)
+		}
+		if dimse.IsPending(rsp.Status) {
+			// Progress for the sub-operations that completed before the cancel
+			// arrived; the terminal one is still coming.
+			continue
 		}
 		if rsp.Status != dimse.StatusCancel {
 			t.Fatalf("final status 0x%04x, want 0x%04x (Cancel)", rsp.Status, dimse.StatusCancel)
@@ -336,16 +347,22 @@ func TestSCPCancelOvertakesStoreResponse(t *testing.T) {
 	scu.send(cancel, nil)
 	storeResponse(t, scu, rq)
 
-	control, cmd, err = scu.nextItem(10 * time.Second)
-	if err != nil || control != nil {
-		t.Fatalf("final response: control=%T err=%v", control, err)
-	}
-	if _, err := dimse.DecodeCStoreRQ(cmd); err == nil {
-		t.Fatal("SCP sent another sub-operation after the cancel")
-	}
-	final, err := dimse.DecodeCGetRSP(cmd)
-	if err != nil {
-		t.Fatalf("decode final response: %v", err)
+	var final *dimse.CGetRSP
+	for {
+		control, cmd, err = scu.nextItem(10 * time.Second)
+		if err != nil || control != nil {
+			t.Fatalf("final response: control=%T err=%v", control, err)
+		}
+		if _, err := dimse.DecodeCStoreRQ(cmd); err == nil {
+			t.Fatal("SCP sent another sub-operation after the cancel")
+		}
+		final, err = dimse.DecodeCGetRSP(cmd)
+		if err != nil {
+			t.Fatalf("decode final response: %v", err)
+		}
+		if !dimse.IsPending(final.Status) {
+			break
+		}
 	}
 	if final.Status != dimse.StatusCancel {
 		t.Fatalf("final status 0x%04x, want 0x%04x (Cancel)", final.Status, dimse.StatusCancel)

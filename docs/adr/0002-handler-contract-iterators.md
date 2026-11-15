@@ -1,13 +1,14 @@
 # 2. The handler contract: pynetdicom's generator, in Go
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-15
-- Implemented: decision 1 for C-FIND (`ae.FindHandler`, `ae.FindSeq`,
-  `ae.FindMatches`) and decision 2 for C-GET (`ae.GetHandler`, `ae.RetrieveOp`,
-  `ae.RetrievePlan`, `ae.StoreOutcome`, `ae.PlannedGet`, `ae.PlannedOps`), with
-  `ae.ErrPeerCancelled` / `ae.ErrPeerReleased` for both. Decisions 3–6 remain
-  proposed: C-MOVE still returns a `MovePlan`, and `StoreRequest.Source` and
-  `FragmentReader` are not written.
+- Implemented: decisions 1–3 and 6 for all three services — `ae.FindHandler` /
+  `ae.FindSeq` / `ae.FindMatches`, `ae.GetHandler` / `ae.PlannedGet` /
+  `ae.PlannedOps`, `ae.MoveHandler` / `ae.PlannedMove` / `ae.PlannedMoveOps`,
+  `ae.RetrieveOp`, `ae.RetrievePlan`, `ae.StoreContext`, `ae.StoreOutcome`, and
+  `ae.ErrPeerCancelled` / `ae.ErrPeerReleased` for all of them. Decision 5
+  (`StoreRequest.Source`, `pdu.FragmentReader`) is still proposed: a store
+  carries its dataset in memory on both sides of the association.
 
 ## The question
 
@@ -180,32 +181,59 @@ func(ctx context.Context, req ae.GetRequest) iter.Seq2[*ae.RetrieveOp, error] {
 framework dials it before it asks for the count — matching pynetdicom's order,
 where the association to the Move Destination is opened between the first and
 second yield. `Total == 0` means "nothing to do" and produces a Success with
-zero counts, as upstream does; `Total > 65535` is `0xC416` / `0xC516`.
+zero counts, as upstream does.
 
-### 2a. Two details the code settled
+A C-MOVE `Plan` also carries `Contexts []StoreContext`, which C-GET's does not.
+That asymmetry is the protocol's: the stores go out on a second association, and
+an A-ASSOCIATE-RQ has to name every presentation context before the first
+C-STORE can be proposed, so the list cannot be discovered by running the
+iterator. It used to be derived from the batch — `movePresentationContexts([]StoreRequest)` —
+which is the one thing about this service that a slice could do and an iterator
+cannot. pynetdicom resolves the same requirement with
+`ApplicationEntity.requested_contexts` and raises if it is empty
+(`ae.py:associate`); declaring it per operation is narrower, because a handler
+that knows which series it is about to move knows which SOP Classes are in it.
 
-Writing the C-GET half changed two things in the decision above, and both are
-corrections rather than drift:
+`Total > 65535` differs by service, deliberately. C-GET answers `0xC416`
+(pynetdicom, `:1739`). C-MOVE saturates the counts and logs the request instead
+of answering `0xC516` (`:2132`): the ceiling is real, but a PACS moving a
+65536-instance series needs the transfer to happen, and a `Remaining` that stops
+moving is something an SCU can act on while a refusal is not. That was this
+package's decision before the iterator contract, and translating a handler
+signature is not the place to reverse it.
 
-- **The framework does not invent a response for a `Store`.** pynetdicom's
-  contract is one response per yield, so a handler that wants the SCU to watch
-  progress yields a `Result` with a Pending status and the counts are filled in
-  on the way out (`subOperations.reconcileMatch`). Auto-sending a Pending after
-  every store would have doubled the responses of a handler that already yields
-  one, which is what every C-GET handler in the tree does.
+### 2a. Three details the code settled
+
+Writing the retrieval half changed three things in the decision above. Two are
+corrections to what this document said first, and one is a correction to the
+first implementation of C-GET:
+
+- **A completed `Store` is answered with a Pending, and the counts are the
+  measured ones.** The first C-GET implementation left the response to the
+  handler, on the argument that pynetdicom's contract is "one response per
+  yield". That was wrong about the reference: pynetdicom sends a Pending after
+  every store in both services (`service_class.py:1983-1989` for C-GET,
+  `:2378-2384` for C-MOVE), and the counts in it are the four it just updated.
+  Without it, a 500-instance retrieval produces no progress at all until the
+  final response, and an SCU with an idle timer declares the peer dead. So the
+  `Store` op's comment above — "perform this C-STORE now, then send its Pending
+  response" — is what the code does, and the handler's `Result` is for anything
+  beyond it. A C-MOVE plan additionally gets one opening Pending carrying the
+  whole of `Total`, because the destination association takes a round trip
+  before the first instance can go out.
 - **Reconciliation is per response, not per batch.** `reconcile` rewrote a slice
   after the fact; `reconcileMatch` fills the same numbers into one response as it
   is written, because a response that waits for the end of the operation is a
-  response the point of this ADR does not get to send.
-
-C-MOVE is the remaining service, and the reason it is not in the same change is
-decision 6: its sub-operations run on a second association and
-`MoveDestination.MaxAssociations` fans them out across a pool, which the
-write-back cannot survive — the handler resumes before a store dispatched to
-another goroutine comes back. Either the fan-out goes, or the batched operation
-that decision 6 sketches arrives first. That is a decision about a feature this
-package has and the reference does not, so it is not something to slip into a
-translation.
+  response the point of this ADR does not get to send. With `Total == 0` there
+  is nothing to measure and the response passes through untouched, so a handler
+  that reports its own progress for work this package is not doing keeps it.
+- **C-MOVE is the same contract, not a special case.** It was held back because
+  of decision 6 rather than because of anything about C-MOVE itself: the
+  destination fan-out and the write-back are alternatives. Removing the fan-out
+  turned out to cost less than the ADR first assumed — it was never a capability
+  the reference had — so the service now shares `RetrieveOp`, the write-back and
+  the reconcile with C-GET, and `MoveHandler` differs only in what its `Plan`
+  has to carry.
 
 ### 3. The statuses are pynetdicom's, and so is the arithmetic
 
@@ -297,25 +325,33 @@ Part 10 file minus its 132-byte preamble and file meta group *is* the dataset.
 A `godicom.Dataset.EncodeTo(io.Writer, UID)` would extend it to re-encoding,
 and that is a `godicom` decision, not this one.
 
-### 6. Sequential, and say so
+### 6. Sequential, and the fan-out goes
 
 An iterator cannot be fanned out without breaking the write-back: the handler
 resumes as soon as the framework asks for the next item, so a store dispatched
 to another goroutine has not finished by the time the handler reads
-`op.Outcome`. `MoveDestination.MaxAssociations` therefore has no meaning on
-this path, and the C-MOVE sub-operations run one at a time on the destination
-association.
+`op.Outcome`. `MoveDestination.MaxAssociations` therefore has no meaning on this
+path, and rather than leave a field that silently does nothing it is removed:
+C-MOVE sub-operations run one at a time on one destination association.
 
-This is the one place where the Go version is deliberately less concurrent than
-the code it replaces. The reason to accept it is that the two properties are
-not the same property: `MaxAssociations` buys throughput against a peer that
-can absorb parallel associations, and the iterator buys constant memory against
-a study that does not fit. The measurements in `PARITY.md` put a 1 MiB store at
-~2 ms end to end, so a 500-instance study is a second of transfer and 500 MB of
-memory saved; if throughput turns out to matter more, the honest way to restore
-it is a batched operation — `Store []StoreRequest` yielding `[]StoreOutcome`,
-ordered by index — which keeps the write-back and defines its own ordering
-rule. That is a separate ADR.
+That is not a capability regressing but a capability this package invented being
+retired. pynetdicom opens one association to the Move Destination
+(`service_class.py:2144`) and stores through it one at a time (`:2354`). The
+field's own documentation called itself "a Go concurrency advantage over typical
+single-threaded DIMSE stacks", which is an admission that it was never part of
+the port. It also cost the thing #51 is about: fanning out required the whole
+batch to exist — `make([]StoreRequest, len(stores))` — before the first store
+could be dispatched, which is the memory profile the issue was opened over.
+
+What it bought was throughput against a peer that can absorb parallel
+associations. The measurements in `PARITY.md` put a 1 MiB store at ~2 ms end to
+end, so a 500-instance study is about a second of transfer, against 500 MB of
+memory not held. If throughput turns out to matter more, the honest way to
+restore it is a batched operation — `Store []StoreRequest` yielding
+`[]StoreOutcome`, ordered by index — which keeps the write-back, defines an
+ordering rule for the responses in the same breath, and can keep the fan-out.
+That is a new capability rather than a translation, so it should be argued on
+its own terms in its own ADR.
 
 ## The rule behind the six decisions
 
@@ -351,13 +387,15 @@ that gap moves a `partial` to `covered` without changing a byte on the wire.
 
 ## Consequences
 
-- **Breaking.** Three handler signatures change. Migration is one line each via
-  adapters that keep the old shapes as values:
-  `ae.FindMatches([]FindMatch) FindHandler`,
-  `ae.PlannedGet(GetPlan) GetHandler`, `ae.PlannedMove(MovePlan) MoveHandler`.
-  They yield the materialised slice in order, which is exactly what the old
-  code did, so a caller that does not want streaming does not have to think
-  about iterators.
+- **Breaking.** Three handler signatures change, and one field goes.
+  Migration is one line each via adapters that keep the old shapes as values:
+  `ae.FindMatches([]FindMatch) FindHandler`, `ae.PlannedGet(GetPlan) GetHandler`,
+  `ae.PlannedMove(MovePlan) MoveHandler`, with `ae.FindSeq` / `ae.PlannedOps` /
+  `ae.PlannedMoveOps` for a handler that keeps its own body. They yield the
+  materialised slice in order, which is exactly what the old code did, so a
+  caller that does not want streaming does not have to think about iterators.
+  `MoveDestination.MaxAssociations` is deleted (decision 6) and cannot be
+  migrated: the behaviour it asked for is the one the write-back rules out.
 - **`subOperations` changes meaning at the source, not at the end.** Today the
   total is `len(plan.Stores)` and the counts are folded in afterwards by
   `reconcile`. Under the iterator the total arrives first and the counts
@@ -365,10 +403,13 @@ that gap moves a `partial` to `covered` without changing a byte on the wire.
   about "untried" as a subtraction from a plan — it is the tail of a loop that
   has not run. The PS3.4 rule it encodes (untried is Remaining, not Failed) is
   unchanged.
-- **C-GET gains a real Pending per store.** Today the handler supplies Pending
-  responses and `reconcile` may rewrite the final one. Under the iterator each
-  `Store` op sends its own Pending with counts this package measured, which is
-  what pynetdicom's one-yield-per-sub-operation produces too, minus the claim.
+- **Every service gains a real Pending per sub-operation.** Today a C-GET handler
+  supplies Pending responses and `reconcile` may rewrite the final one, while a
+  C-MOVE handler gets them from the batch path. Under the iterator each `Store`
+  op sends its own Pending with counts this package measured, which is what
+  pynetdicom's one-yield-per-sub-operation produces too, minus the claim. A
+  handler that also yields a Pending `Result` gets a second response, which is
+  allowed and means what it says.
 - **`writeMessage` grows a reader variant.** Two call sites (`ae/assoc.go:642`,
   `ae/scp.go:1535`); `FragmentMessage` stays for the command set, which is
   small and already in memory.
