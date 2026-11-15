@@ -19,6 +19,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Class UIDs are answered but appear in no list, because they are not abstract
   syntaxes. Storage names the existing `AllStorageSOPClasses` rather than a
   second copy of the same UIDs
+- `ae.ServiceClass.HasStatus`, the other half of that table: which statuses a
+  service may answer with. It carries the general list of PS3.7 Annex C and the
+  twelve class annexes of PS3.4 — Storage (B.2.3), C-FIND / C-GET / C-MOVE (C.4),
+  worklist (K), relevant patient (Q), substance administration (V), non-patient
+  storage (GG), procedure step, print job management (H), application event
+  logging (I), UPS (CC) and RT machine verification (DD). The operation is part
+  of the question for Query/Retrieve, where 0xB001 is a C-FIND warning and
+  0xA801 a C-MOVE failure; an empty `ae.RetrieveOperation` answers the union. An
+  unknown SOP Class answers the general list, as pynetdicom's base `ServiceClass`
+  does. The annexes' ranges are kept as ranges rather than expanded into four
+  thousand entries, and `TestStatusSetsMatchPynetdicom` compares the result with
+  `status.py` code for code. Three tables in that file are defined and attached
+  to nothing upstream — the Annex K worklist set, because
+  `BasicWorklistManagementServiceClass` answers the C-FIND set, and the Media
+  Creation and Storage Management sets, because neither class sets `statuses` —
+  so they are not copied here
+- `dimse.PeekResponseInfo` reads the Command Field, the Status and the Affected
+  SOP Class UID of a response in one pass. C-ECHO-RSP names the Verification SOP
+  Class, so the SOP Class is there to ask about even for a command a peer never
+  sends without a context
+- `gonetdicom.AttrSOPClass`, the log attribute the warning below carries
 - `pdu.ErrUndecodable`, which marks a PDU that arrived in full but does not
   parse — an unknown type, or a body its type does not explain — and nothing
   else: a read that ends early stays an I/O error, because a peer that
@@ -99,6 +120,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one that identifies the entity being retrieved (PS3.4 C.6.2.1.1)
 
 ### Changed
+- A response whose status the SOP Class does not define is logged at warn level
+  and sent unchanged, so a handler that answers a C-FIND with a C-MOVE status
+  leaves that status on the wire and the warning in the log. pynetdicom does the
+  same (`service_class.py`, "Unknown status value returned by callback"); a
+  package that substituted a status of its own would report the handler's bug to
+  the peer as a protocol violation the peer did not commit. The check is in
+  `writeMessage`, so it covers every response this package sends — including the
+  C-STORE-RSPs a C-GET SCP answers, whose SOP Class is the stored one, not the
+  one the request named
 - A PDU that arrives whole but does not decode — an unknown type, or a body its
   type does not explain — is answered with A-ABORT (source 0x02, reason 0x01
   *unrecognized PDU*) instead of a closed socket. Both sides do it, and the SCP

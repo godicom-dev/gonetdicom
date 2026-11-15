@@ -133,6 +133,35 @@ where it is this association's business. Registering it into a package-level
 table would be global mutable state that every other association then has to
 agree with.
 
+### Which statuses a service may answer with
+
+The same table knows what a service may say back. `ServiceClass.HasStatus` takes
+a status code and, for Query/Retrieve, the operation — the three have different
+lists:
+
+```go
+qr := ae.ServiceClassQueryRetrieve
+qr.HasStatus(ae.OperationFind, 0xB001) // true:  matches reached the limit
+qr.HasStatus(ae.OperationMove, 0xB001) // false: that is a C-FIND warning
+qr.HasStatus(ae.OperationMove, 0xA801) // true:  move destination unknown
+```
+
+The empty operation means "no operation in particular" and answers the union.
+Storage, Verification and the N-service classes ignore it. An unknown class — a
+private SOP Class — answers the general statuses of PS3.7 Annex C, which is what
+pynetdicom's base `ServiceClass` does.
+
+The SCP uses the same table on the way out: a response whose status the SOP Class
+does not define is logged at warn level and sent unchanged. pynetdicom logs the
+same warning and sends the same response, and the status is the handler's to
+answer for — a package that substituted 0xC002 for it would be reporting the
+handler's bug to the peer as its own.
+
+```text
+level=WARN msg="status is not defined for this service class; sending it anyway"
+  status=0xa801 command_name=C-FIND-RSP sop_class=1.2.840.10008.5.1.4.1.2.2.1
+```
+
 ## Examples
 
 **Verification SCU (C-ECHO)**

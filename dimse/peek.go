@@ -44,6 +44,34 @@ func PeekStatus(cmd []byte) (uint16, bool) {
 	return 0, false
 }
 
+// PeekResponseInfo returns the Command Field, the Status and the Affected SOP
+// Class UID of a response in one pass over the command set.
+//
+// ok is false when cmd is not a response -- PS3.7 Table 9.1-1 gives every
+// response the request's Command Field with bit 15 set -- or carries no Status
+// element. A request has no Status, so the two conditions usually coincide.
+func PeekResponseInfo(cmd []byte) (field, status uint16, sopClass string, ok bool) {
+	els, err := decodeElements(cmd)
+	if err != nil {
+		return 0, 0, "", false
+	}
+	var hasField, hasStatus bool
+	for _, e := range els {
+		switch e.tag {
+		case 0x00000100:
+			field, hasField = asUS(e.value), true
+		case 0x00000900:
+			status, hasStatus = asUS(e.value), true
+		case 0x00000002:
+			sopClass = trimUID(e.value)
+		}
+	}
+	if !hasField || !hasStatus || field&0x8000 == 0 {
+		return 0, 0, "", false
+	}
+	return field, status, sopClass, true
+}
+
 // CommandName returns a short name for a DIMSE Command Field value.
 func CommandName(field uint16) string {
 	switch field {

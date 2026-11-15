@@ -24,6 +24,7 @@ const (
 	AttrCommandName  = "command_name"
 	AttrMessageID    = "message_id"
 	AttrStatus       = "status"
+	AttrSOPClass     = "sop_class"
 	AttrMethod       = "method"
 	AttrURL          = "url"
 	AttrHTTPStatus   = "http_status"
