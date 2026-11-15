@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/godicom-dev/godicom"
 	"github.com/godicom-dev/gonetdicom/dimse"
@@ -11,20 +12,108 @@ import (
 
 // StoreRequest is an outbound C-STORE-RQ payload.
 //
-// Provide either Dataset (already encoded) or Data (godicom Dataset to
-// encode with the negotiated transfer syntax). Data takes precedence when
-// both are set.
+// Three ways to supply the dataset, in the order they take precedence:
+//
+//	Data     — already encoded bytes
+//	Dataset  — a godicom Dataset, encoded here with the negotiated transfer syntax
+//	Source   — bytes that are opened and read as they go out
+//
+// Data takes precedence over Dataset, which takes precedence over Source. Use
+// Source for an instance that should not be resident: a Part 10 file's dataset
+// is the case it was written for, and it is the only one of the three whose
+// memory cost does not follow the instance size.
 type StoreRequest struct {
 	AffectedSOPClassUID    string
 	AffectedSOPInstanceUID string
 	Dataset                []byte
 	Data                   *godicom.Dataset
-	TransferSyntax         string
+	// Source is read as it goes out — see StoreSource. Ignored when Data or
+	// Dataset is set.
+	Source         StoreSource
+	TransferSyntax string
 	// Priority requests a service priority from the peer, which may ignore it.
 	// The zero value is dimse.PriorityMedium — normal priority.
 	Priority                             uint16
 	MoveOriginatorApplicationEntityTitle string
 	MoveOriginatorMessageID              uint16
+}
+
+// StoreSource supplies a dataset without keeping it in memory.
+//
+// Open returns a reader over the bytes and how many of them there are. The
+// length is not optional: a PDV item length is explicit on the wire (PS3.8
+// Annex E), so a source that cannot say how large it is cannot be sent — and
+// the only way to find out is to buffer it, which is the cost this interface
+// exists to avoid.
+//
+// Open may be called more than once, and each call returns a fresh reader:
+// that is what makes a retry a retry. There is deliberately no Seek. DIMSE
+// P-DATA is a one-way ordered stream, the retry granularity this package offers
+// is the whole instance or the whole association, and an interface that offered
+// to resume mid-instance would ask every implementation to answer a question
+// the protocol never asks.
+//
+// A source is read once, during the store. An Open that fails is a store that
+// never started; a reader that fails part-way leaves a message whose declared
+// length cannot be filled, which ends the association — the protocol has no way
+// to say "that dataset was short".
+type StoreSource interface {
+	Open() (r io.ReadCloser, size int64, err error)
+}
+
+// SourceFunc adapts a function to a StoreSource, the way http.HandlerFunc
+// adapts a function to an http.Handler.
+type SourceFunc func() (io.ReadCloser, int64, error)
+
+// Open implements StoreSource.
+func (f SourceFunc) Open() (io.ReadCloser, int64, error) { return f() }
+
+// FileSource sends a dataset straight from a file: Size bytes starting at
+// Offset. For a Part 10 file the dataset begins after the 132-byte preamble and
+// the File Meta Information group, so Offset is 132 plus the group length;
+// for a file that already holds nothing but the dataset, both fields can be
+// left zero and Size is the whole file.
+//
+// Nothing is checked against the file here: the size is the caller's statement
+// about a dataset it has already parsed, and re-deriving it would mean reading
+// the file twice.
+type FileSource struct {
+	Path   string
+	Offset int64
+	Size   int64
+}
+
+// Open implements StoreSource.
+func (s FileSource) Open() (io.ReadCloser, int64, error) {
+	f, err := os.Open(s.Path)
+	if err != nil {
+		return nil, 0, err
+	}
+	if s.Offset > 0 {
+		if _, err := f.Seek(s.Offset, io.SeekStart); err != nil {
+			_ = f.Close()
+			return nil, 0, err
+		}
+	}
+	return f, s.Size, nil
+}
+
+// openStoreSource opens req.Source and checks that it declares a dataset,
+// returning a reader the caller closes.
+//
+// Both things are done here rather than at the write because the check has to
+// happen before the command set goes out: a C-STORE-RQ whose dataset turns out
+// to be empty is a promise made and then broken.
+func openStoreSource(src StoreSource) (io.ReadCloser, int64, error) {
+	r, size, err := src.Open()
+	if err != nil {
+		return nil, 0, fmt.Errorf("ae: open C-STORE source: %w", err)
+	}
+	if size <= 0 {
+		_ = r.Close()
+		return nil, 0, fmt.Errorf("ae: C-STORE source declares %d bytes of dataset", size)
+	}
+	return r, size, nil
 }
 
 // StoreResult is the peer's C-STORE-RSP summary.
@@ -108,6 +197,9 @@ func (ev StoreEvent) Decode() (*godicom.Dataset, error) {
 // dataset's SOPInstanceUID supplies one, CStore generates a UID and encodes a
 // copy of the Dataset carrying it, leaving the caller's Dataset as it was.
 // Supplying the UID skips the copy.
+//
+// A req.Source is opened once, read while the dataset is written, and closed
+// again; see StoreSource.
 func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResult, error) {
 	end, err := a.beginOp("C-STORE")
 	if err != nil {
@@ -152,7 +244,7 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 		}
 		payload = encoded
 	}
-	if len(payload) == 0 {
+	if len(payload) == 0 && req.Source == nil {
 		return nil, fmt.Errorf("ae: C-STORE missing dataset")
 	}
 
@@ -169,7 +261,12 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 	if err != nil {
 		return nil, err
 	}
-	if err := a.sendMessage(ctx, pc.ID, cmd, payload); err != nil {
+	if len(payload) > 0 {
+		err = a.sendMessage(ctx, pc.ID, cmd, payload)
+	} else {
+		err = a.sendStoreSource(ctx, pc.ID, cmd, req.Source)
+	}
+	if err != nil {
 		return nil, err
 	}
 	rspCmd, _, err := a.recvMessage(ctx)
@@ -188,6 +285,22 @@ func (a *Association) CStore(ctx context.Context, req StoreRequest) (*StoreResul
 		AffectedSOPClassUID:    rsp.AffectedSOPClassUID,
 		AffectedSOPInstanceUID: rsp.AffectedSOPInstanceUID,
 	}, nil
+}
+
+// sendStoreSource writes a C-STORE-RQ whose dataset comes from src, one
+// fragment at a time.
+//
+// The source is opened before anything of the message is written, so a file
+// that is not there — the ordinary case for the archive this exists for — is a
+// store that failed with nothing on the wire, rather than an association that
+// ends half-way through a message.
+func (a *Association) sendStoreSource(ctx context.Context, pcid byte, command []byte, src StoreSource) error {
+	r, size, err := openStoreSource(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = r.Close() }()
+	return a.sendMessageReader(ctx, pcid, command, r, size)
 }
 
 // newInboundStoreEvent builds an OnCStore payload from a received

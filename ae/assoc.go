@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"strings"
@@ -649,6 +650,21 @@ func (a *Association) sendMessage(ctx context.Context, pcid byte, command, datas
 		}
 	}
 	return nil
+}
+
+// sendMessageReader is sendMessage for a dataset that is read as it is sent.
+//
+// The in-memory path above materialises every P-DATA-TF before writing the
+// first, which is fine for a command set and for a Dataset the caller already
+// handed over as bytes; it is not fine for a 500 MB instance that never had to
+// be resident. Here the dataset is pulled from r one fragment at a time — see
+// pdu.FragmentReader — so what the transfer costs is one fragment.
+func (a *Association) sendMessageReader(ctx context.Context, pcid byte, command []byte, dataset io.Reader, size int64) error {
+	ctx = a.logCtx(ctx)
+	logDIMSE(ctx, "send", pcid, command)
+	return pdu.FragmentReader(pcid, command, dataset, size, a.peerMax, func(p *pdu.PDataTF) error {
+		return a.writePDU(ctx, p)
+	})
 }
 
 // recvMessage is recvMessagePC with the dataset read whole. Responses carry

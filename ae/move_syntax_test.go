@@ -8,12 +8,14 @@ import (
 
 func TestMovePresentationContexts(t *testing.T) {
 	jpeg := "1.2.840.10008.1.2.4.50"
-	pcs, err := movePresentationContexts([]StoreRequest{
+	// StoreContexts does the deduplication a plan's stores need, so a handler
+	// that still enumerates a batch gets the same contexts it always did.
+	pcs, err := movePresentationContexts(StoreContexts([]StoreRequest{
 		{AffectedSOPClassUID: "1.2.3", TransferSyntax: jpeg},
 		{AffectedSOPClassUID: "1.2.3", TransferSyntax: jpeg},
 		{AffectedSOPClassUID: "1.2.3", TransferSyntax: explicitVRLittleEndian},
 		{AffectedSOPClassUID: "1.2.4"},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,6 +33,18 @@ func TestMovePresentationContexts(t *testing.T) {
 	}
 	if _, err := movePresentationContexts(nil); err == nil {
 		t.Fatal("expected missing SOP class")
+	}
+	// A handler that declares duplicates in its plan is not punished for it:
+	// the association gets one context per pair either way.
+	dup, err := movePresentationContexts([]StoreContext{
+		{SOPClassUID: "1.2.3", TransferSyntax: jpeg},
+		{SOPClassUID: "1.2.3", TransferSyntax: jpeg},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dup) != 1 {
+		t.Fatalf("declared duplicates: %+v", dup)
 	}
 }
 

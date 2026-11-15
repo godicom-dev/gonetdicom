@@ -199,7 +199,7 @@ func main() {
 **Storage SCU (C-STORE)**
 
 Propose a storage presentation context, then send a *godicom* Dataset (or
-pre-encoded bytes):
+pre-encoded bytes, or a file that stays a file):
 
 ```go
 cfg := ae.Config{
@@ -228,6 +228,26 @@ the `[]string` these fields hold.
 `AffectedSOPInstanceUID` and no `SOPInstanceUID` in the dataset it generates a
 UID and encodes a copy carrying it, so reusing one `Dataset` across a series
 gives every instance its own identity; supplying the UID skips the copy.
+
+A dataset that is already on disk does not have to be read into memory to be
+sent. `Source` is opened, read one fragment at a time while the C-STORE-RQ goes
+out, and closed again, so the store costs one fragment of memory whatever the
+instance size — the mirror image of `StoreEvent.Stream()` on the way in.
+`ae.FileSource` is the archive case: a Part 10 file's dataset starts after its
+preamble and file meta group, which is two numbers the caller already parsed.
+
+```go
+res, err := assoc.CStore(ctx, ae.StoreRequest{
+	AffectedSOPClassUID:    string(uid.CTImageStorage),
+	AffectedSOPInstanceUID: sopInstanceUID,
+	Source:                 ae.FileSource{Path: path, Offset: datasetOffset, Size: datasetSize},
+})
+```
+
+`Source` is the last resort — `Data` and `Dataset` are sent from memory when they
+are set, because they already are — and it has to state the size, because a PDV's
+length is explicit on the wire. `ae.SourceFunc` adapts a function when the bytes
+come from somewhere `FileSource` does not know about.
 
 Leaving `ID` unset lets `Dial` assign the free odd Presentation-context-IDs,
 which is usually what you want; an explicit `ID` is kept as given. Since IDs are
@@ -512,10 +532,29 @@ _ = ae.Serve(ctx, moveLn, ae.ServerConfig{
 		ae.PatientRootQueryRetrieveInformationModelMove,
 	},
 	MoveDestinations: map[string]ae.MoveDestination{
-		"STORESCP": {Addr: "127.0.0.1:11112", MaxAssociations: 4},
+		"STORESCP": {Addr: "127.0.0.1:11112"},
 	},
-	OnCMove: func(_ context.Context, req ae.MoveRequest) ae.MovePlan {
-		return ae.MovePlan{Stores: []ae.StoreRequest{{ /* ... */ }}}
+	OnCMove: func(_ context.Context, _ ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
+		return func(yield func(*ae.RetrieveOp, error) bool) {
+			// The plan names the contexts the stores will be sent in: the
+			// Storage association is opened before the first C-STORE, so an
+			// A-ASSOCIATE-RQ cannot be assembled as the batch runs.
+			if !yield(&ae.RetrieveOp{Plan: &ae.RetrievePlan{
+				Total:    2,
+				Contexts: []ae.StoreContext{{SOPClassUID: "1.2.840.10008.5.1.4.1.1.2"}},
+			}}, nil) {
+				return
+			}
+			for _, inst := range instances {
+				op := &ae.RetrieveOp{Store: &ae.StoreRequest{ /* ... */ }}
+				if !yield(op, nil) {
+					return
+				}
+				// op.Outcome.Status is what the destination answered for this
+				// one. The counts the SCU sees were measured here, not reported
+				// by the handler.
+			}
+		}
 	},
 })
 ```
@@ -526,7 +565,16 @@ nothing failed, `0xB000` when some failed or warned, `0xA702` when every one
 failed — and a Warning or Failure carries the Failed SOP Instance UID List
 `(0008,0058)`. C-GET reports the same way. `SubOperations` on a `RetrieveMatch`
 the handler returns is replaced for the final response, because only the SCP
-knows how the transfers went.
+knows how the transfers went. Every completed sub-operation is answered with a
+Pending carrying those measured counts, and a C-MOVE plan is followed by one
+opening Pending that carries the whole of `Total`, so the SCU can watch a long
+retrieval rather than infer it.
+
+Sub-operations run one at a time on one association to the Move Destination.
+There is no fan-out setting: a handler that resumes with `op.Outcome` filled in
+cannot have a store still in flight, and fanning out would put the whole batch
+back in memory, which is the thing this contract exists to avoid. pynetdicom
+stores sequentially here too.
 
 **Storage Commitment & DIMSE-N**
 

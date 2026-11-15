@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"context"
+	"iter"
 	"sync"
 	"testing"
 	"time"
@@ -100,12 +101,12 @@ func TestAsyncOperationsWindowVisibleToHandler(t *testing.T) {
 		seen *pdu.AsyncOperationsWindow
 	)
 	assoc := dialNegotiated(t, ae.ServerConfig{
-		OnCFind: func(ctx context.Context, _ ae.FindRequest) []ae.FindMatch {
+		OnCFind: func(ctx context.Context, _ ae.FindRequest) iter.Seq2[ae.FindMatch, error] {
 			info, _ := ae.AssocFromContext(ctx)
 			mu.Lock()
 			seen = info.AsyncOperationsWindow
 			mu.Unlock()
-			return []ae.FindMatch{{Status: 0x0000}}
+			return ae.FindSeq([]ae.FindMatch{{Status: 0x0000}})
 		},
 	}, ae.Config{
 		AsyncOperationsWindow: &pdu.AsyncOperationsWindow{MaxInvoked: 2, MaxPerformed: 2},

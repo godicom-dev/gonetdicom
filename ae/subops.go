@@ -154,6 +154,37 @@ func (s *subOperations) failedIdentifier() *godicom.Dataset {
 	return ds
 }
 
+// reconcileMatch fills the framework's numbers into one response a handler
+// yielded, as it is written.
+//
+// A handler that yields responses as it goes — the iterator contract — cannot
+// reconcile them itself: the counts are what this package measured from the
+// C-STORE-RSPs, and a handler that yielded Success while a sub-operation failed
+// is answered with the aggregate instead (the same substitution reconcile makes
+// at the end of a slice). A Pending keeps its status and gains the counts of the
+// work done so far.
+//
+// With no sub-operations planned there is nothing to measure, so the response
+// passes through untouched: a handler that reports a progress count of its own
+// for work this package is not doing would otherwise have it zeroed.
+func (s *subOperations) reconcileMatch(m RetrieveMatch) RetrieveMatch {
+	if s.total == 0 {
+		return m
+	}
+	if dimse.IsPending(m.Status) {
+		m.SubOperations = s.countsWithRemaining(s.total - s.attempted())
+		return m
+	}
+	m.SubOperations = s.counts()
+	if categorizeStorageStatus(m.Status) == statusSuccess {
+		m.Status = s.finalStatus()
+	}
+	if categorizeStorageStatus(m.Status) != statusSuccess && m.Identifier == nil {
+		m.Identifier = s.failedIdentifier()
+	}
+	return m
+}
+
 // reconcile folds the sub-operation results into the handler's responses for
 // a C-GET, whose handler yields the responses the SCP sends.
 //

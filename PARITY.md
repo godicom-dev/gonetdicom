@@ -454,10 +454,20 @@ Decoding is now O(PDV count) rather than O(payload), which is why the 45x on the
 first row is real but the throughput figure it produces is an artefact: there is
 no longer data to move. The 3.4 MB that remain for a 1 MiB store are three
 payload-sized buffers — the MCH prefix `FragmentMessage` prepends, the buffer
-`Encode` writes, and the buffer `ReadLimit` fills. Removing any of them is
-structural: the first needs `PDV` to stop carrying its message control header
-inside `Value`, the third needs a streaming decoder that reads PDV headers as
-they arrive instead of buffering the PDU first.
+`Encode` writes, and the buffer `ReadLimit` fills — and they are sized by a PDU,
+not by the dataset, so a store of 1 MiB sums to 3 MiB only because the whole
+instance fits one PDU at that size.
+
+What `StoreRequest.Source` changes is not those three but how many of them exist
+at once. `pdu.FragmentReader` reads a fragment, encodes it, writes it, and only
+then reads the next, so a 500 MB instance costs three fragments of memory
+whatever its size; `FragmentMessage` materialises every P-DATA-TF of the message
+before the first one is written, which is the whole dataset plus the dataset.
+`TestFragmentReaderDoesNotReadAhead` is that claim rather than a benchmark's
+allowance. The two remaining copies per fragment are structural — `PDV.Value`
+carries the message control header, and `Encode` writes a fresh buffer — so
+removing them means changing what a PDV is and what the decoder produces, not the
+encoder's shape.
 
 Run them with a fixed time so the numbers are comparable between runs:
 

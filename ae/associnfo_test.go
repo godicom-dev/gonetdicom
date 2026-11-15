@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"context"
+	"iter"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -134,7 +135,7 @@ func TestServeCFindAssocContext(t *testing.T) {
 		errCh <- ae.Serve(ctx, ln, ae.ServerConfig{
 			AETitle:                  "FINDSCP",
 			AcceptedAbstractSyntaxes: []string{ae.PatientRootQueryRetrieveInformationModelFind},
-			OnCFind: func(hctx context.Context, _ ae.FindRequest) []ae.FindMatch {
+			OnCFind: func(hctx context.Context, _ ae.FindRequest) iter.Seq2[ae.FindMatch, error] {
 				info, ok := ae.AssocFromContext(hctx)
 				if !ok {
 					t.Error("AssocFromContext: not attached")
@@ -151,7 +152,7 @@ func TestServeCFindAssocContext(t *testing.T) {
 				if info.PresentationContextID != 1 {
 					t.Errorf("PresentationContextID=%d", info.PresentationContextID)
 				}
-				return []ae.FindMatch{{Status: dimse.StatusSuccess}}
+				return ae.FindSeq([]ae.FindMatch{{Status: dimse.StatusSuccess}})
 			},
 		})
 	}()
@@ -213,11 +214,11 @@ func TestCGetStoreAssocContext(t *testing.T) {
 				ctUID,
 			},
 			RoleSelections: []pdu.RoleSelection{ae.BuildRole(ctUID, true, true)},
-			OnCGet: func(_ context.Context, _ ae.GetRequest) ae.GetPlan {
+			OnCGet: func(context.Context, ae.GetRequest) iter.Seq2[*ae.RetrieveOp, error] {
 				ds := godicom.NewDataset()
 				ds.Set(godicom.NewDataElement(godicom.MustTag("SOPClassUID"), godicom.VRUI, ctUID))
 				ds.Set(godicom.NewDataElement(godicom.MustTag("SOPInstanceUID"), godicom.VRUI, sopInstance))
-				return ae.GetPlan{
+				return ae.PlannedOps(ae.GetPlan{
 					Stores: []ae.StoreRequest{{
 						AffectedSOPClassUID:    ctUID,
 						AffectedSOPInstanceUID: sopInstance,
@@ -227,7 +228,7 @@ func TestCGetStoreAssocContext(t *testing.T) {
 						Status:        dimse.StatusSuccess,
 						SubOperations: dimse.SubOperations{Completed: 1, Present: true},
 					}},
-				}
+				})
 			},
 		})
 	}()

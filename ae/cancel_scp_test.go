@@ -3,6 +3,7 @@ package ae_test
 import (
 	"context"
 	"fmt"
+	"iter"
 	"net"
 	"testing"
 	"time"
@@ -159,7 +160,7 @@ func findSCP(t *testing.T, n int) string {
 		_ = ae.Serve(ctx, ln, ae.ServerConfig{
 			AETitle:                  "CANCELSCP",
 			AcceptedAbstractSyntaxes: []string{ae.PatientRootQueryRetrieveInformationModelFind},
-			OnCFind: func(_ context.Context, _ ae.FindRequest) []ae.FindMatch {
+			OnCFind: func(context.Context, ae.FindRequest) iter.Seq2[ae.FindMatch, error] {
 				out := make([]ae.FindMatch, 0, n+1)
 				for i := 0; i < n; i++ {
 					ident := godicom.NewDataset()
@@ -167,7 +168,7 @@ func findSCP(t *testing.T, n int) string {
 					ident.Set(godicom.NewDataElement(godicom.MustTag("PatientID"), godicom.VRLO, fmt.Sprintf("P%04d", i)))
 					out = append(out, ae.FindMatch{Status: dimse.StatusPending, Identifier: ident})
 				}
-				return append(out, ae.FindMatch{Status: dimse.StatusSuccess})
+				return ae.FindSeq(append(out, ae.FindMatch{Status: dimse.StatusSuccess}))
 			},
 		})
 	}()

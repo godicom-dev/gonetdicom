@@ -3,6 +3,7 @@ package ae_test
 import (
 	"context"
 	"fmt"
+	"iter"
 	"net"
 	"strings"
 	"testing"
@@ -84,7 +85,7 @@ func TestCGetAggregatesSubOperationStatuses(t *testing.T) {
 						ctUID,
 					},
 					RoleSelections: []pdu.RoleSelection{ae.BuildRole(ctUID, true, true)},
-					OnCGet: func(_ context.Context, _ ae.GetRequest) ae.GetPlan {
+					OnCGet: func(context.Context, ae.GetRequest) iter.Seq2[*ae.RetrieveOp, error] {
 						plan := ae.GetPlan{}
 						for _, inst := range instances {
 							ds := godicom.NewDataset()
@@ -98,7 +99,7 @@ func TestCGetAggregatesSubOperationStatuses(t *testing.T) {
 							})
 						}
 						// No Responses: the framework reports the outcome.
-						return plan
+						return ae.PlannedOps(plan)
 					},
 				})
 			}()
@@ -251,7 +252,7 @@ func TestCMoveAggregatesSubOperationStatuses(t *testing.T) {
 					MoveDestinations: map[string]ae.MoveDestination{
 						"STORESCP": {Addr: storeLn.Addr().String()},
 					},
-					OnCMove: func(_ context.Context, _ ae.MoveRequest) ae.MovePlan {
+					OnCMove: func(_ context.Context, _ ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
 						plan := ae.MovePlan{}
 						for _, inst := range instances {
 							ds := godicom.NewDataset()
@@ -263,7 +264,7 @@ func TestCMoveAggregatesSubOperationStatuses(t *testing.T) {
 								Data:                   ds,
 							})
 						}
-						return plan
+						return ae.PlannedMoveOps(plan)
 					},
 				})
 			}()

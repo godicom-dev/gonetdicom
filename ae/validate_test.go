@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"context"
+	"iter"
 	"testing"
 	"time"
 
@@ -61,9 +62,9 @@ func TestIdentifierValidatorRefusesFind(t *testing.T) {
 	assoc := dialNegotiated(t, ae.ServerConfig{
 		AcceptedAbstractSyntaxes: []string{ae.PatientRootQueryRetrieveInformationModelFind},
 		IdentifierValidator:      ae.QueryRetrieveLevelValidator("PATIENT", "STUDY"),
-		OnCFind: func(context.Context, ae.FindRequest) []ae.FindMatch {
+		OnCFind: func(context.Context, ae.FindRequest) iter.Seq2[ae.FindMatch, error] {
 			called++
-			return []ae.FindMatch{{Status: dimse.StatusSuccess}}
+			return ae.FindSeq([]ae.FindMatch{{Status: dimse.StatusSuccess}})
 		},
 	}, ae.Config{
 		PresentationContexts: []ae.PresentationContext{
@@ -110,13 +111,13 @@ func TestIdentifierValidatorRefusesRetrieval(t *testing.T) {
 			ae.PatientRootQueryRetrieveInformationModelGet,
 		},
 		IdentifierValidator: ae.QueryRetrieveLevelValidator("PATIENT"),
-		OnCMove: func(context.Context, ae.MoveRequest) ae.MovePlan {
+		OnCMove: func(context.Context, ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
 			moveCalls++
-			return ae.MovePlan{}
+			return ae.PlannedMoveOps(ae.MovePlan{})
 		},
-		OnCGet: func(context.Context, ae.GetRequest) ae.GetPlan {
+		OnCGet: func(context.Context, ae.GetRequest) iter.Seq2[*ae.RetrieveOp, error] {
 			getCalls++
-			return ae.GetPlan{}
+			return ae.PlannedOps(ae.GetPlan{})
 		},
 	}, ae.Config{
 		PresentationContexts: []ae.PresentationContext{

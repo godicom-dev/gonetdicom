@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"context"
+	"iter"
 	"net"
 	"strconv"
 	"sync/atomic"
@@ -124,7 +125,7 @@ func TestStorageCommitmentAsyncNewAssociation(t *testing.T) {
 	<-errCh
 }
 
-func TestCMoveParallelDestinationStores(t *testing.T) {
+func TestCMoveStoresSequentially(t *testing.T) {
 	t.Parallel()
 
 	ctUID := string(uid.CTImageStorage)
@@ -177,11 +178,10 @@ func TestCMoveParallelDestinationStores(t *testing.T) {
 			},
 			MoveDestinations: map[string]ae.MoveDestination{
 				"STORESCP": {
-					Addr:            storeLn.Addr().String(),
-					MaxAssociations: 4,
+					Addr: storeLn.Addr().String(),
 				},
 			},
-			OnCMove: func(_ context.Context, _ ae.MoveRequest) ae.MovePlan {
+			OnCMove: func(_ context.Context, _ ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
 				stores := make([]ae.StoreRequest, n)
 				for i := range stores {
 					ds := godicom.NewDataset()
@@ -194,7 +194,7 @@ func TestCMoveParallelDestinationStores(t *testing.T) {
 						Data:                   ds,
 					}
 				}
-				return ae.MovePlan{Stores: stores}
+				return ae.PlannedMoveOps(ae.MovePlan{Stores: stores})
 			},
 		})
 	}()
@@ -227,8 +227,12 @@ func TestCMoveParallelDestinationStores(t *testing.T) {
 	if stored.Load() != n {
 		t.Fatalf("stored=%d want %d", stored.Load(), n)
 	}
-	if peak.Load() < 2 {
-		t.Fatalf("expected concurrent stores, peak inflight=%d", peak.Load())
+	// One at a time, on one association. The write-back contract requires it:
+	// a handler that resumes with RetrieveOp.Outcome filled in cannot have a
+	// store still in flight, so the batch is not fanned out across
+	// associations the way it used to be (ADR 0002 §6).
+	if peak.Load() != 1 {
+		t.Fatalf("expected stores one at a time, peak inflight=%d", peak.Load())
 	}
 	last := matches[len(matches)-1]
 	if last.Status != dimse.StatusSuccess || last.SubOperations.Completed != n {

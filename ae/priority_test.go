@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"context"
+	"iter"
 	"net"
 	"sync"
 	"testing"
@@ -64,17 +65,17 @@ func TestPriorityReachesPeerUnchanged(t *testing.T) {
 				rec.record("C-STORE", ev.Priority)
 				return dimse.StatusSuccess
 			},
-			OnCFind: func(_ context.Context, req ae.FindRequest) []ae.FindMatch {
+			OnCFind: func(_ context.Context, req ae.FindRequest) iter.Seq2[ae.FindMatch, error] {
 				rec.record("C-FIND", req.Priority)
-				return []ae.FindMatch{{Status: dimse.StatusSuccess}}
+				return ae.FindSeq([]ae.FindMatch{{Status: dimse.StatusSuccess}})
 			},
-			OnCMove: func(_ context.Context, req ae.MoveRequest) ae.MovePlan {
+			OnCMove: func(_ context.Context, req ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
 				rec.record("C-MOVE", req.Priority)
-				return ae.MovePlan{Responses: []ae.RetrieveMatch{{Status: dimse.StatusSuccess}}}
+				return ae.PlannedMoveOps(ae.MovePlan{Responses: []ae.RetrieveMatch{{Status: dimse.StatusSuccess}}})
 			},
-			OnCGet: func(_ context.Context, req ae.GetRequest) ae.GetPlan {
+			OnCGet: func(_ context.Context, req ae.GetRequest) iter.Seq2[*ae.RetrieveOp, error] {
 				rec.record("C-GET", req.Priority)
-				return ae.GetPlan{Responses: []ae.RetrieveMatch{{Status: dimse.StatusSuccess}}}
+				return ae.PlannedOps(ae.GetPlan{Responses: []ae.RetrieveMatch{{Status: dimse.StatusSuccess}}})
 			},
 		})
 	}()

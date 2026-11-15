@@ -55,6 +55,33 @@ const (
 
 	UnableToProcess  uint16 = 0xC000
 	CannotUnderstand uint16 = 0xC000
+
+	// Handler-failure codes for C-FIND. pynetdicom answers a handler that
+	// returns an error with 0xC311 (service_class.py:311) and a response
+	// whose Identifier will not encode with 0xC312 (:376); C-GET and C-MOVE
+	// use 0xC411/0xC413 and 0xC511/0xC514 for the same two situations. These
+	// numbers coincide with UPS codes above — which service is in flight
+	// decides which reading applies.
+	FindUnableToProcess        uint16 = 0xC311
+	FindIdentifierNotEncodable uint16 = 0xC312
+
+	// C-GET failures a handler can cause: raising (:1777), yielding something
+	// the framework cannot read as the sub-operation count (:1739), or
+	// planning more sub-operations than the four US fields can report
+	// (:1746).
+	GetUnableToProcess       uint16 = 0xC411
+	GetUnrecognizedOperation uint16 = 0xC413
+	GetTooManySubOperations  uint16 = 0xC416
+
+	// Handler-failure codes for C-MOVE, the same two situations as C-GET
+	// (service_class.py:2072, :2116). There is no 0xC516 counterpart: pynetdicom
+	// refuses a batch of more than 65535 sub-operations, and this package
+	// saturates the counts instead — see ae/subops.go and the note in
+	// scpHandleMove. 0xC514/0xC515 are likewise absent: they name mistakes a
+	// *MoveDestination cannot make, because a destination that is present but
+	// unusable is simply unknown, and 0xA801 says that.
+	MoveUnableToProcess       uint16 = 0xC511
+	MoveUnrecognizedOperation uint16 = 0xC513
 )
 
 // Unified Procedure Step (UPS) statuses (PS3.4).

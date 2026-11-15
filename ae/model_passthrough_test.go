@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"context"
+	"iter"
 	"testing"
 	"time"
 
@@ -27,9 +28,9 @@ func TestCFindServesModelsWithoutDedicatedCode(t *testing.T) {
 	addr := serveSCP(t, ae.ServerConfig{
 		AETitle:                  "MODELSCP",
 		AcceptedAbstractSyntaxes: models,
-		OnCFind: func(_ context.Context, req ae.FindRequest) []ae.FindMatch {
+		OnCFind: func(_ context.Context, req ae.FindRequest) iter.Seq2[ae.FindMatch, error] {
 			seen[req.QueryModel]++
-			return []ae.FindMatch{{Status: dimse.StatusSuccess}}
+			return ae.FindSeq([]ae.FindMatch{{Status: dimse.StatusSuccess}})
 		},
 	})
 
@@ -82,7 +83,7 @@ func TestCMoveServesModelWithoutDedicatedCode(t *testing.T) {
 	addr := serveSCP(t, ae.ServerConfig{
 		AETitle:                  "MOVEMODEL",
 		AcceptedAbstractSyntaxes: []string{model},
-		OnCMove: func(_ context.Context, req ae.MoveRequest) ae.MovePlan {
+		OnCMove: func(_ context.Context, req ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
 			gotCalled++
 			gotModel = req.QueryModel
 			if req.IdentifierData != nil {
@@ -90,7 +91,7 @@ func TestCMoveServesModelWithoutDedicatedCode(t *testing.T) {
 			}
 			// No stores and no destination: the SCP answers with counts alone,
 			// which is enough to prove the request reached the handler.
-			return ae.MovePlan{}
+			return ae.PlannedMoveOps(ae.MovePlan{})
 		},
 	})
 

@@ -31,8 +31,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ae.NoContextError`, returned by `Dial` when the acceptor accepted nothing. It
   names each refused class and the reason, and unwraps to `ErrNoContext`, so
   `errors.Is` still works for callers that only checked that
+- `ae.StoreRequest.Source`, which sends a dataset that never has to be resident:
+  `Open()` returns a reader and its length, and the bytes are read one fragment
+  at a time as the C-STORE-RQ goes out, so a 500 MB instance costs one fragment
+  of memory on the sending side. `ae.FileSource` is the archive case — a path, an
+  offset and a length, which is a Part 10 file minus its preamble and file meta
+  group — and `ae.SourceFunc` adapts a function, as `http.HandlerFunc` adapts a
+  handler. `Data` and `Dataset` still take precedence, and the wire format is
+  unchanged: the store goes out through the new `pdu.FragmentReader`, which emits
+  what `pdu.FragmentMessage` builds, one PDU at a time instead of all of them
+  first. A source that ends before its declared length is `io.ErrUnexpectedEOF`
+  rather than a short instance the peer would store, and an `Open` that fails
+  leaves nothing on the wire, so the association is still usable. This is the
+  sending half of #51; see `docs/adr/0002-handler-contract-iterators.md` §5
 
 ### Changed
+- **Breaking.** `ServerConfig.OnCGet` returns `iter.Seq2[*ae.RetrieveOp, error]`
+  for the same reason `OnCFind` does, and with more to gain: the handler states
+  the sub-operation count (`ae.RetrievePlan{Total}`), then offers one `Store` at
+  a time, and the framework performs the store on the association and writes the
+  peer's C-STORE-RSP back into `op.Outcome` before the yield returns. A
+  five-hundred-instance retrieval therefore produces one instance at a time
+  instead of materialising five hundred `StoreRequest`s, and the handler learns
+  what actually happened to each of them — which pynetdicom's C-GET cannot
+  report, because there the handler calls `send_c_store` itself and the
+  framework only tallies what it is told. `ae.PlannedGet(plan)` and
+  `ae.PlannedOps(plan)` adapt the old return value in one line. The counts and
+  the aggregate status of every response are now the measured ones
+  (`subOperations.reconcileMatch`), a store offered before the count is
+  `0xC413`, more than 65535 sub-operations is `0xC416`, and a handler error is
+  `0xC411`
+- **Breaking.** `ServerConfig.OnCMove` returns `iter.Seq2[*ae.RetrieveOp, error]`,
+  the C-GET contract plus the two things only C-MOVE needs. Its sub-operations
+  run on a second association, so `ae.RetrievePlan` now carries the
+  `Destination` and the `Contexts` the stores will be sent in. Both used to be
+  derived from the batch, which an iterator does not have, and an
+  A-ASSOCIATE-RQ has to name every presentation context before the first
+  C-STORE can be proposed — so the handler declares them, which is the same
+  information pynetdicom takes from `ApplicationEntity.requested_contexts`
+  (`ae.py:associate`, which raises when that list is empty). A plan that names
+  stores without contexts is answered with `0xC513`. Everything else follows
+  C-GET: the store goes on the wire before the handler resumes, `op.Outcome`
+  carries the destination's answer, and a handler error is `0xC511`.
+  `ae.PlannedMove(plan)` and `ae.PlannedMoveOps(plan)` adapt the old return
+  value, deriving the contexts from the plan's stores as before
+- **Breaking.** `ae.MoveDestination.MaxAssociations` is gone. C-MOVE
+  sub-operations run one at a time on one association, which is what pynetdicom
+  does (`service_class.py:2144` opens one and `:2354` stores through it). The
+  fan-out and the write-back are alternatives rather than complements: a handler
+  that resumes with `op.Outcome` filled in cannot have a store still in flight.
+  Fanning out also required the whole batch in memory — `make([]StoreRequest,
+  len(stores))` — which is exactly what #51 is about. Restoring the parallelism
+  needs a batched operation (yield a slice, read back a slice of outcomes) and
+  its own ADR
+- Every completed sub-operation is answered with a Pending response carrying the
+  measured counts, for C-GET and C-MOVE alike, as pynetdicom does
+  (`service_class.py:1983-1989`, `:2378-2384`). A C-MOVE plan also gets an
+  opening Pending that carries the whole of `Total`, which is what this package
+  sent before the batch started. A handler that wants a progress response of its
+  own still yields a Pending `Result`
+- C-MOVE counts past 65535 saturate rather than being refused with `0xC516` the
+  way pynetdicom does (`:2132`). The ceiling is real — the four counts are US —
+  but refusing a 65536-instance move is a worse answer than a `Remaining` that
+  stops moving, and this package chose saturation before the iterator contract.
+  The saturation is now logged with the count that was requested
+- **Breaking.** `ServerConfig.OnCFind` returns `iter.Seq2[ae.FindMatch, error]`
+  rather than `[]ae.FindMatch`: the handler is the Go spelling of pynetdicom's
+  C-FIND generator, so a match is encoded and written before the next one is
+  produced and a result set is never resident as a whole — the streaming half of
+  #51, with the reasoning in `docs/adr/0002-handler-contract-iterators.md`. A
+  handler that already holds its matches returns `ae.FindSeq(matches)`, or the
+  whole handler becomes `ae.FindMatches(matches)`; one that produces them
+  incrementally ranges over its own source and yields, and stops when the yield
+  reports that nothing is listening. Three behaviours came with it: a handler
+  error is answered with `0xC311` and an Identifier that will not encode with
+  `0xC312` instead of ending the association, an operation whose handler yielded
+  no terminal response ends with Success as the reference does
+  (`service_class.py:398-402`) instead of being left open, and the handler's
+  context is cancelled the moment the peer cancels, so `context.Cause` reports
+  `ae.ErrPeerCancelled` or `ae.ErrPeerReleased` to a call that is blocked rather
+  than a flag to poll
 - `Serve` returns after the last association has ended rather than when the
   listener closes. Cancelling the context already closed every association;
   returning earlier left handlers running behind a function that had returned,

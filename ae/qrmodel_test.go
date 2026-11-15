@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"context"
+	"iter"
 	"testing"
 	"time"
 
@@ -273,9 +274,9 @@ func TestQueryModelValidatorRefusesRetrieveWithoutKey(t *testing.T) {
 	assoc := dialNegotiated(t, ae.ServerConfig{
 		AcceptedAbstractSyntaxes: []string{ae.PatientRootQueryRetrieveInformationModelMove},
 		IdentifierValidator:      ae.QueryModelValidator(),
-		OnCMove: func(context.Context, ae.MoveRequest) ae.MovePlan {
+		OnCMove: func(context.Context, ae.MoveRequest) iter.Seq2[*ae.RetrieveOp, error] {
 			moveCalls++
-			return ae.MovePlan{}
+			return ae.PlannedMoveOps(ae.MovePlan{})
 		},
 	}, ae.Config{
 		PresentationContexts: []ae.PresentationContext{

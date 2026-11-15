@@ -2,6 +2,7 @@ package ae
 
 import (
 	"context"
+	"iter"
 	"net"
 	"sync"
 	"testing"
@@ -101,13 +102,15 @@ func TestAbortDuringBlockedOperation(t *testing.T) {
 		errCh <- Serve(ctx, ln, ServerConfig{
 			AETitle:                  "ABORTSCP",
 			AcceptedAbstractSyntaxes: []string{msgIDFindModel},
-			OnCFind: func(hctx context.Context, _ FindRequest) []FindMatch {
-				entered <- struct{}{}
-				select {
-				case <-release:
-				case <-hctx.Done():
+			OnCFind: func(hctx context.Context, _ FindRequest) iter.Seq2[FindMatch, error] {
+				return func(yield func(FindMatch, error) bool) {
+					entered <- struct{}{}
+					select {
+					case <-release:
+					case <-hctx.Done():
+					}
+					yield(FindMatch{Status: dimse.StatusSuccess}, nil)
 				}
-				return []FindMatch{{Status: dimse.StatusSuccess}}
 			},
 		})
 	}()
