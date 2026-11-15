@@ -31,6 +31,32 @@ func (c *Client) SearchSeries(ctx context.Context, studyUID string, query url.Va
 	return c.search(ctx, path, query)
 }
 
+// SearchAllSeries performs QIDO-RS Search for Series with no study above it
+// (GET /series), the target PS3.18 calls "All Series".
+//
+// This is a separate method rather than SearchSeries with an empty UID: a study
+// UID that arrives empty from a variable is a bug, and turning that bug into
+// "return everything" would answer with the archive instead of refusing.
+func (c *Client) SearchAllSeries(ctx context.Context, query url.Values) ([]*godicom.Dataset, error) {
+	path, err := c.resolve("series")
+	if err != nil {
+		return nil, err
+	}
+	return c.search(ctx, path, query)
+}
+
+// SearchAllInstances performs QIDO-RS Search for Instances with neither study
+// nor series above it (GET /instances), the target PS3.18 calls
+// "All Instances". See SearchAllSeries for why the absent levels are a method of
+// their own instead of empty arguments.
+func (c *Client) SearchAllInstances(ctx context.Context, query url.Values) ([]*godicom.Dataset, error) {
+	path, err := c.resolve("instances")
+	if err != nil {
+		return nil, err
+	}
+	return c.search(ctx, path, query)
+}
+
 // SearchInstances performs QIDO-RS Search for Instances under a study/series.
 // seriesUID may be empty to search all instances in the study
 // (GET /studies/{study}/instances).

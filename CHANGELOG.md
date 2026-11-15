@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The two top-level Search targets of the Studies Service, "All Series"
+  (`GET /series`) and "All Instances" (`GET /instances`): `Handler` answers both,
+  and `Client` gained `SearchAllSeries` and `SearchAllInstances`. They are
+  separate methods rather than `SearchSeries` with an empty UID, because a study
+  UID that arrives empty from a variable is a bug and turning it into "return the
+  archive" would answer instead of refusing. On the server side the empty UID is
+  now a stated contract: it is the absent level of the URI, so
+  `Store.SearchSeries("")` must return every series the store holds — a store that
+  returns nothing there makes the server answer `204` to a request it could have
+  answered, which reads as an empty archive
+- A study or series above the searched level is now a query key as well as a
+  level: `/series?StudyInstanceUID=` and `/instances?SeriesInstanceUID=` narrow to
+  one parent, which is the only way to ask for it when the URI names none. Those
+  keys were silently ignored before, so a filtered request returned a superset the
+  requestor had no way to notice
 - The Non-Patient Instance Service (PS3.18 section 12): `Handler` serves Retrieve,
   Store and Search on the six resource names — colour palettes, hanging
   protocols, implant templates, defined procedure protocols, protocol approvals,

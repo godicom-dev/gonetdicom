@@ -24,10 +24,21 @@ type Store interface {
 	PutInstance(studyUID string, part10 []byte) error
 	// SearchStudies returns matching study-level datasets for QIDO-RS.
 	SearchStudies(query url.Values) ([]*godicom.Dataset, error)
-	// SearchSeries returns series-level datasets under a study.
+	// SearchSeries returns series-level datasets for QIDO-RS.
+	//
+	// studyUID may be empty, which is the Search target "All Series"
+	// (GET /series) rather than a study named by the empty string: every series
+	// of every study the store holds. An implementation that reads a query as
+	// "under the study I was given" and so returns nothing for "" makes the
+	// server answer 204 to a request it could have answered, which looks like an
+	// empty archive instead of an unsupported one.
 	SearchSeries(studyUID string, query url.Values) ([]*godicom.Dataset, error)
-	// SearchInstances returns instance-level datasets under a study/series.
-	// seriesUID may be empty to search all series in the study.
+	// SearchInstances returns instance-level datasets for QIDO-RS.
+	//
+	// Both UIDs may be empty, and the empty ones are the absent levels of the
+	// target rather than levels named by an empty string: seriesUID empty means
+	// every series of the study, studyUID empty means every study (the Search
+	// target "All Instances", GET /instances).
 	SearchInstances(studyUID, seriesUID string, query url.Values) ([]*godicom.Dataset, error)
 }
 
@@ -269,7 +280,12 @@ func (s *MemoryStore) SearchSeries(studyUID string, query url.Values) ([]*godico
 		if studyUID != "" && study != studyUID {
 			continue
 		}
-		if !matchQuery(meta, query, "SeriesInstanceUID", "Modality", "SeriesNumber") {
+		// StudyInstanceUID is a query key as well as a level: in the All Series
+		// target there is no study in the URI, so a requestor that wants one
+		// study's series against /series asks for it here. Ignoring the key
+		// would answer with every series in the archive, which is a superset the
+		// requestor has no way to notice.
+		if !matchQuery(meta, query, "StudyInstanceUID", "SeriesInstanceUID", "Modality", "SeriesNumber") {
 			continue
 		}
 		series := uidFromMeta(meta, key, 1, "SeriesInstanceUID")
@@ -296,7 +312,15 @@ func (s *MemoryStore) SearchInstances(studyUID, seriesUID string, query url.Valu
 		if seriesUID != "" && series != seriesUID {
 			continue
 		}
-		if !matchQuery(meta, query, "SOPInstanceUID", "SOPClassUID", "InstanceNumber", "Modality") {
+		// The levels above the instance are query keys too: in the All Instances
+		// target neither the study nor the series is in the URI, so /instances
+		// with StudyInstanceUID or SeriesInstanceUID is how a requestor asks for
+		// one parent's instances. Dropping those keys would answer with the whole
+		// archive.
+		if !matchQuery(meta, query,
+			"StudyInstanceUID", "SeriesInstanceUID",
+			"SOPInstanceUID", "SOPClassUID", "InstanceNumber", "Modality",
+		) {
 			continue
 		}
 		out = append(out, projectMeta(meta,
@@ -487,6 +511,30 @@ func Handler(store Store, prefix string, opts ...HandlerOption) http.Handler {
 			http.NotFound(w, r)
 		}
 	})
+	// The two top-level Search targets, All Series (GET /series) and All
+	// Instances (GET /instances). They are the same transaction as the nested
+	// ones with the enclosing levels left out, and the levels are left out the
+	// way a URI leaves them out — not by naming a study or series with the empty
+	// string. Search is the only transaction PS3.18 10.3 puts on these two: the
+	// Store Transaction is defined on /studies and /studies/{study}, so POST
+	// here is a method that does not exist rather than one this server omits.
+	mux.HandleFunc(prefix+"/series", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		matches, err := store.SearchSeries("", r.URL.Query())
+		writeQIDO(w, r, matches, err)
+	})
+	mux.HandleFunc(prefix+"/instances", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		matches, err := store.SearchInstances("", "", r.URL.Query())
+		writeQIDO(w, r, matches, err)
+	})
+
 	registerNonPatient(mux, store, prefix, maxBytes)
 	return mux
 }
