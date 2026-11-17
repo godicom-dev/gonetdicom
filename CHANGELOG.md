@@ -5,7 +5,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.23.0] - 2026-11-17
+
+A store that is not in the syntax of the context carrying it is refused, where
+it used to go out labelled as something it was not. Implicit VR Little Endian
+and Explicit VR Little Endian negotiate for each other — they differ only in
+the VR field — so a peer that accepted Explicit VR alone was sent Implicit VR
+bytes and told they were Explicit VR. The receiver decodes under the context's
+syntax, so a strict peer fails an instance that was never wrong and a lenient
+decoder hides the damage until the instance is read back.
+`ae.ErrTransferSyntaxMismatch` is that refusal, and `StoreRequest.Data` is the
+conversion: a godicom Dataset is encoded into whatever the context declares.
+The same rule covers a C-GET sub-operation and an N-EVENT-REPORT. A C-GET
+store no accepted context can carry is counted failed and reported, which is
+what PS3.4 Table C.4-3 asks, instead of ending the association.
+
+The rest is the server and the DICOMweb origin answering questions they used
+to guess. `ServerConfig.RequiredCallingAETitles` rejects any other requestor
+with calling-AE-title-not-recognized. QIDO `limit`, `offset`, `fuzzymatching`
+and `includefield` are honoured, and a parameter that cannot be is
+`dicomweb.ErrBadQuery` and a 400 rather than a different result set than the
+one asked for. Retrieve Rendered at study and series level returns one image
+per instance that has something to render, and 406 only when nothing does.
+Shutting the server down sends A-ABORT before the socket closes: the handshake
+watcher could still win that race after the accept was on the wire, and the
+peer read EOF, which is the network fault a shutdown must not look like.
+`examples/` is a runnable program per service, each on its own loopback port.
 
 ### Fixed
 - Shutting a server down could close an association without the A-ABORT that
