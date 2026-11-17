@@ -571,12 +571,16 @@ func handleAssociation(ctx context.Context, conn net.Conn, cfg ServerConfig, srv
 			UserIdentityAC:             userIdentityAC,
 		},
 	}
+	// The association exists once this accept is committed to, which is before
+	// it is on the wire. The handshake watcher closes on cancellation, and it
+	// cannot say goodbye; the defer below can. Stopping the watcher after the
+	// write leaves a gap the peer can win: it reads the accept, the server is
+	// shut down, and the still-armed watcher closes the socket, so the peer
+	// reads EOF instead of the A-ABORT.
+	stopHandshakeWatch()
 	if err := writePDUConn(ctx, conn, ac); err != nil {
 		return err
 	}
-	// The association exists from here on, so ending it is the defer's job: it
-	// can say goodbye before closing, which the handshake watcher cannot.
-	stopHandshakeWatch()
 
 	// Negotiation is over: drop its deadline and let IdleTimeout (if any) govern
 	// the association from here on.
