@@ -68,10 +68,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	limiter := newAssocLimiter(cfg.MaxConcurrentAssociations)
 	go func() {
 		<-ctx.Done()
-		// The listener is what Serve is blocked on; the associations watch ctx
-		// themselves and answer it with A-ABORT (see abortOnDone), so a peer
-		// still connected is told the server is going away rather than left to
-		// read a closed socket as a network fault.
+		// The listener is what Serve is blocked on. An association that already
+		// exists answers the same cancel with A-ABORT before its socket closes
+		// (handleAssociation). One still in the handshake has nothing to abort,
+		// so closeOnDone closes it.
 		_ = ln.Close()
 	}()
 	for {

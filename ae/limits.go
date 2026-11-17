@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/godicom-dev/gonetdicom"
@@ -228,26 +227,23 @@ func withIdleTimeout(conn net.Conn, idle time.Duration) net.Conn {
 // closeOnDone closes conn when ctx is cancelled, and returns a function that
 // stops watching.
 //
-// Serve documents that it serves "until ctx is cancelled", but cancelling only
-// closes the listener: a goroutine blocked reading an established association
-// stays blocked until its peer acts. Closing the connection is what actually
-// unblocks it.
+// Cancelling Serve's context closes the listener, which unblocks Accept. It
+// does not unblock a handshake blocked in Read: nothing else is watching ctx
+// until an association exists, so without this close a shutdown waits out
+// HandshakeTimeout. A connection that has not sent an A-ASSOCIATE-RQ has
+// nothing to abort, so it gets a close. Once the association exists,
+// handleAssociation stops the watcher and its own defer ends it with A-ABORT,
+// then closes.
 //
-// This is the pre-association watcher only: a connection that has not sent an
-// A-ASSOCIATE-RQ has no association to abort, so it gets a close. Once one
-// exists, handleAssociation's own defer ends it with A-ABORT instead.
+// AfterFunc, not a goroutine selecting on ctx.Done and a done channel. stop is
+// called at the moment the association exists, which can be before that
+// goroutine is scheduled; a cancel that arrives in the gap finds both channels
+// ready, and select chooses at random. The close branch wins often enough that
+// the peer reads EOF and treats a shutdown as a network fault — the outcome the
+// abort exists to prevent. AfterFunc's stop either prevents the close or reports
+// that it has already started, and a second call (the defer, after the explicit
+// one) is a no-op.
 func closeOnDone(ctx context.Context, conn net.Conn) func() {
-	done := make(chan struct{})
-	var once sync.Once
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = conn.Close()
-		case <-done:
-		}
-	}()
-	// Idempotent because the caller stops the watcher at the point where the
-	// association takes over ending the connection itself, and a second
-	// close(done) would panic in the middle of that handover.
-	return func() { once.Do(func() { close(done) }) }
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	return func() { stop() }
 }

@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Shutting a server down could close an association without the A-ABORT that
+  was supposed to precede the close. The handshake watcher stopped by closing a
+  channel that a goroutine `select`ed against `ctx.Done`, and a cancel that
+  arrived before that goroutine was scheduled found both ready. `select` then
+  closed the socket at random. Stopping the watcher after the A-ASSOCIATE-AC
+  was written left the same hole: the peer could read the accept and the
+  server could shut down while the watcher was still armed, and the peer read
+  EOF either way — a shutdown that looked like a network fault, which is the
+  case the abort exists to prevent. The watcher now stops through
+  `context.AfterFunc`, and it is stopped before the accept is sent
 - A C-STORE whose pre-encoded bytes are not in the syntax of the context that
   carries them is refused with `ae.ErrTransferSyntaxMismatch`, where it used to
   go out mislabelled. The two little-endian syntaxes negotiate for each other —
