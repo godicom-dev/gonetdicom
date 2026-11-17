@@ -17,7 +17,7 @@ decoder hides the damage until the instance is read back.
 `ae.ErrTransferSyntaxMismatch` is that refusal, and `StoreRequest.Data` is the
 conversion: a godicom Dataset is encoded into whatever the context declares.
 The same rule covers a C-GET sub-operation and an N-EVENT-REPORT. A C-GET
-store no accepted context can carry is counted failed and reported, which is
+store that no accepted context can carry is counted failed and reported, which is
 what PS3.4 Table C.4-3 asks, instead of ending the association.
 
 The rest is the server and the DICOMweb origin answering questions they used
